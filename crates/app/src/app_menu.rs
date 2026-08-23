@@ -1,8 +1,5 @@
 use super::*;
 
-
-
-
 pub(super) const APP_MENU_HEIGHT: f32 = 22.0;
 #[cfg(not(target_os = "macos"))]
 const APP_MENU_FILE_WIDTH: f32 = 54.0;
@@ -197,7 +194,7 @@ pub(super) fn delete_layout_menu_popup_rect(layout_count: usize) -> Rect {
 #[cfg(not(target_os = "macos"))]
 pub(super) fn help_menu_popup_rect() -> Rect {
     let anchor = help_menu_button_rect();
-    measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 204.0, 1).0
+    measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 260.0, 3).0
 }
 #[cfg(not(target_os = "macos"))]
 fn menu_item_rect(popup: Rect, index: usize) -> Rect {
@@ -216,8 +213,8 @@ pub(super) fn view_menu_item_rect() -> Rect {
     menu_item_rect(view_menu_popup_rect(), 0)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn help_menu_item_rect() -> Rect {
-    menu_item_rect(help_menu_popup_rect(), 0)
+pub(super) fn help_menu_item_rect(index: usize) -> Rect {
+    menu_item_rect(help_menu_popup_rect(), index)
 }
 #[cfg(not(target_os = "macos"))]
 pub(super) fn file_menu_item_rect(index: usize, has_latest: bool) -> Rect {
@@ -363,7 +360,7 @@ pub(super) fn command_meta(
         .definition(id)
         .map(|definition| {
             (
-                Some(definition.icon),
+                definition.icon,
                 definition.shortcut.map(|shortcut| shortcut.to_string()),
             )
         })
@@ -377,6 +374,8 @@ pub(super) struct NativeMenu {
     settings: MenuItem,
     quit: MenuItem,
     view_palette: MenuItem,
+    report_issue: MenuItem,
+    get_help: MenuItem,
     new_project: MenuItem,
     save: MenuItem,
     save_as: MenuItem,
@@ -518,6 +517,14 @@ impl NativeMenu {
             .expect("append native View menu item");
         menu.append(&view_menu).expect("append native View menu");
 
+        let help_menu = Submenu::new("Help", true);
+        let report_issue = MenuItem::new("Report an issue / give feedback", true, None);
+        let get_help = MenuItem::new("Get help", true, None);
+        help_menu
+            .append_items(&[&report_issue, &get_help])
+            .expect("append native Help menu items");
+        menu.append(&help_menu).expect("append native Help menu");
+
         let layout_menu = Submenu::new("Layout", true);
         let save_layout = MenuItem::new("Save Layout…", true, None);
         let restore_default_layout = MenuItem::new("Restore Default Layout", true, None);
@@ -540,6 +547,8 @@ impl NativeMenu {
             settings,
             quit,
             view_palette,
+            report_issue,
+            get_help,
             new_project,
             save,
             save_as,
@@ -573,6 +582,16 @@ impl NativeMenu {
 
     pub(super) fn view_command(&self, event: &MenuEvent) -> Option<&'static str> {
         (event.id == self.view_palette.id()).then_some("application.command-palette")
+    }
+
+    pub(super) fn help_command(&self, event: &MenuEvent) -> Option<&'static str> {
+        if event.id == self.report_issue.id() {
+            Some("application.report-issue")
+        } else if event.id == self.get_help.id() {
+            Some("application.get-help")
+        } else {
+            None
+        }
     }
 
     pub(super) fn file_command(&self, event: &MenuEvent) -> Option<FileCommand> {
@@ -696,7 +715,8 @@ impl EditorApp {
         match self.app_menu {
             AppMenuState::File { .. } => file_menu_commands(&recent_projects()).len(),
             AppMenuState::Edit => EDIT_MENU_COMMANDS.len(),
-            AppMenuState::View | AppMenuState::Help => 1,
+            AppMenuState::View => 1,
+            AppMenuState::Help => 3,
             AppMenuState::Layout { .. } => saved_layouts().len() + 3,
             AppMenuState::Closed => 0,
         }
@@ -779,9 +799,19 @@ impl EditorApp {
                 }
             }
             AppMenuState::Help => {
+                let command_id = match self.app_menu_keyboard.item {
+                    0 => "application.report-issue",
+                    1 => "application.get-help",
+                    2 => "application.about",
+                    _ => return,
+                };
                 self.app_menu = AppMenuState::Closed;
                 self.app_menu_keyboard.active = false;
-                self.open_modal(Modal::About(SimpleDialog::new()));
+                if command_id == "application.about" {
+                    self.open_modal(Modal::About(SimpleDialog::new()));
+                } else if let Some(command) = self.command_registry.command(command_id) {
+                    self.command_queue.push(command);
+                }
             }
             AppMenuState::Closed => {}
         }
@@ -977,8 +1007,10 @@ impl EditorApp {
                 }
             }
             AppMenuState::Help => {
-                if help_menu_item_rect().contains(self.cursor) {
-                    self.app_menu_keyboard.item = 0;
+                if let Some(index) =
+                    (0..3).find(|index| help_menu_item_rect(*index).contains(self.cursor))
+                {
+                    self.app_menu_keyboard.item = index;
                     self.app_menu_keyboard.active = false;
                     return true;
                 }
@@ -1128,9 +1160,18 @@ impl EditorApp {
                 self.app_menu = AppMenuState::Closed;
             }
             AppMenuState::Help => {
-                if help_menu_item_rect().contains(self.cursor) {
+                if let Some(index) =
+                    (0..3).find(|index| help_menu_item_rect(*index).contains(self.cursor))
+                {
                     self.app_menu = AppMenuState::Closed;
-                    self.open_modal(Modal::About(SimpleDialog::new()));
+                    if index == 2 {
+                        self.open_modal(Modal::About(SimpleDialog::new()));
+                    } else if let Some(command) = self.command_registry.command(match index {
+                        0 => "application.report-issue",
+                        _ => "application.get-help",
+                    }) {
+                        self.command_queue.push(command);
+                    }
                     return true;
                 }
                 if help_menu_popup_rect().contains(self.cursor) {
@@ -1419,10 +1460,38 @@ pub(super) fn build_app_menu(
         build_popup(ctx, "app-help-menu-popup", popup);
         build_item(
             ctx,
-            "app-help-about",
-            help_menu_item_rect(),
+            "app-help-report-issue",
+            help_menu_item_rect(0),
             cursor,
             keyboard.active && keyboard.item == 0,
+            "Report an issue / give feedback",
+            None,
+            None,
+            true,
+            10.5,
+            None,
+            icons,
+        );
+        build_item(
+            ctx,
+            "app-help-get-help",
+            help_menu_item_rect(1),
+            cursor,
+            keyboard.active && keyboard.item == 1,
+            "Get help",
+            None,
+            None,
+            true,
+            10.5,
+            None,
+            icons,
+        );
+        build_item(
+            ctx,
+            "app-help-about",
+            help_menu_item_rect(2),
+            cursor,
+            keyboard.active && keyboard.item == 2,
             "About Kama Studio…",
             None,
             Some(AppIcon::Inspector),

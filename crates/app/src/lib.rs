@@ -1025,12 +1025,18 @@ impl EditorApp {
         std::mem::swap(&mut self.palette, &mut state.palette);
         std::mem::swap(&mut self.snapshot, &mut state.snapshot);
         std::mem::swap(&mut self.drag, &mut state.drag);
-        std::mem::swap(&mut self.external_drag_items, &mut state.external_drag_items);
+        std::mem::swap(
+            &mut self.external_drag_items,
+            &mut state.external_drag_items,
+        );
         std::mem::swap(
             &mut self.external_drag_uses_window_cursor,
             &mut state.external_drag_uses_window_cursor,
         );
-        std::mem::swap(&mut self.animated_drop_preview, &mut state.animated_drop_preview);
+        std::mem::swap(
+            &mut self.animated_drop_preview,
+            &mut state.animated_drop_preview,
+        );
         std::mem::swap(&mut self.focus_levels, &mut state.focus_levels);
         std::mem::swap(&mut self.focus_frame, &mut state.focus_frame);
         #[cfg(not(target_os = "macos"))]
@@ -1041,8 +1047,14 @@ impl EditorApp {
         std::mem::swap(&mut self.modal_queue, &mut state.modal_queue);
         std::mem::swap(&mut self.waveform_textures, &mut state.waveform_textures);
         std::mem::swap(&mut self.monitor, &mut state.monitor);
-        std::mem::swap(&mut self.razor_cursor_active, &mut state.razor_cursor_active);
-        std::mem::swap(&mut self.touch_gesture_cursor, &mut state.touch_gesture_cursor);
+        std::mem::swap(
+            &mut self.razor_cursor_active,
+            &mut state.razor_cursor_active,
+        );
+        std::mem::swap(
+            &mut self.touch_gesture_cursor,
+            &mut state.touch_gesture_cursor,
+        );
         std::mem::swap(
             &mut self.value_drag_cursor_locked,
             &mut state.value_drag_cursor_locked,
@@ -1092,7 +1104,7 @@ impl EditorApp {
             .remove(&next_id)
             .expect("selected detached window must exist");
         self.swap_window_state(&mut next);
-        
+
         drop(next);
         true
     }
@@ -1103,9 +1115,8 @@ impl EditorApp {
         transfer: DockTransfer,
         screen_position: Option<[f64; 2]>,
     ) -> Result<WindowId> {
-        let position = screen_position.map(|point| {
-            PhysicalPosition::new((point[0] - 80.0) as i32, (point[1] - 20.0) as i32)
-        });
+        let position = screen_position
+            .map(|point| PhysicalPosition::new((point[0] - 80.0) as i32, (point[1] - 20.0) as i32));
         let dock = DockState::from_spec(transfer.into_layout_spec());
         let state = EditorWindowState::new(
             event_loop,
@@ -1146,7 +1157,10 @@ impl EditorApp {
         let scale = if self.window.id() == window_id {
             self.renderer.scale_factor() as f64
         } else {
-            self.secondary_windows.get(&window_id)?.renderer.scale_factor() as f64
+            self.secondary_windows
+                .get(&window_id)?
+                .renderer
+                .scale_factor() as f64
         };
         Some([(position.x / scale) as f32, (position.y / scale) as f32])
     }
@@ -1162,20 +1176,14 @@ impl EditorApp {
             &self.secondary_windows.get(&window_id)?.window
         };
         let origin = window.inner_position().ok()?;
-        Some([
-            origin.x as f64 + position.x,
-            origin.y as f64 + position.y,
-        ])
+        Some([origin.x as f64 + position.x, origin.y as f64 + position.y])
     }
 
     fn set_active_cursor_from_screen(&mut self, screen: [f64; 2]) {
         let Ok(origin) = self.window.inner_position() else {
             return;
         };
-        self.cursor_physical = [
-            screen[0] - origin.x as f64,
-            screen[1] - origin.y as f64,
-        ];
+        self.cursor_physical = [screen[0] - origin.x as f64, screen[1] - origin.y as f64];
         let scale = self.renderer.scale_factor() as f64;
         self.cursor = [
             (self.cursor_physical[0] / scale) as f32,
@@ -1257,9 +1265,8 @@ impl EditorApp {
         } else {
             drop_zone(target.rect, point)
         };
-        let insert = (zone == DropZone::Center).then(|| {
-            insertion_index(&self.snapshot, target.stack.id, TabId(u64::MAX), point[0])
-        });
+        let insert = (zone == DropZone::Center)
+            .then(|| insertion_index(&self.snapshot, target.stack.id, TabId(u64::MAX), point[0]));
         self.dock
             .drop_external(transfer, target.stack.id, zone, insert)
             .is_some()
@@ -3079,15 +3086,12 @@ impl EditorApp {
             }
         }
         if timeline_focused
-            && self
-                .editor
-                .timeline
-                .pointer_moved(
-                    &self.snapshot,
-                    self.cursor,
-                    self.modifiers,
-                    &self.editor.project,
-                )
+            && self.editor.timeline.pointer_moved(
+                &self.snapshot,
+                self.cursor,
+                self.modifiers,
+                &self.editor.project,
+            )
         {
             if let Some(label) = self.editor.timeline.history_gesture_label() {
                 self.set_history_gesture_label(label);
@@ -4613,6 +4617,11 @@ impl EditorApp {
             EditorCommand::OpenKeybinds => {
                 self.open_modal(Modal::Keybinds(KeybindsDialog::new()));
             }
+            EditorCommand::OpenUrl(url) => {
+                if let Err(error) = open::that(url) {
+                    eprintln!("failed to open URL {url}: {error}");
+                }
+            }
             EditorCommand::Exit => self.request_exit(),
         }
     }
@@ -5366,10 +5375,7 @@ impl App {
                         true
                     }
                     Err(error) => {
-                        messages::error(
-                            "Window",
-                            format!("could not detach pane: {error:#}"),
-                        );
+                        messages::error("Window", format!("could not detach pane: {error:#}"));
                         let restored = editor_app.restore_dock_transfer(source_id, fallback);
                         if restored {
                             self.focused_window = Some(source_id);
@@ -6031,8 +6037,7 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        if let (Some(editor_app), Some(window_id)) =
-            (self.editor_app.as_mut(), self.focused_window)
+        if let (Some(editor_app), Some(window_id)) = (self.editor_app.as_mut(), self.focused_window)
         {
             let _ = editor_app.activate_window(window_id);
         }
@@ -6062,6 +6067,11 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                     editor_app.window.request_redraw();
                 } else if let Some(command_id) = editor_app.native_menu.view_command(&event) {
+                    if let Some(command) = editor_app.command_registry.command(command_id) {
+                        editor_app.command_queue.push(command);
+                    }
+                    editor_app.window.request_redraw();
+                } else if let Some(command_id) = editor_app.native_menu.help_command(&event) {
                     if let Some(command) = editor_app.command_registry.command(command_id) {
                         editor_app.command_queue.push(command);
                     }
