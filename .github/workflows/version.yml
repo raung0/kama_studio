@@ -1,0 +1,116 @@
+name: Version
+
+on:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "23 3 1 * *"
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Release channel
+        required: true
+        default: alpha
+        type: choice
+        options:
+          - alpha
+          - beta
+          - rc
+          - stable
+
+concurrency:
+  group: kama-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out master and tags
+        uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Select release channel
+        id: channel
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            label="$REQUESTED_LABEL"
+          else
+            label=dev
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+      - name: Select version
+        id: version
+        shell: bash
+        env:
+          LABEL: ${{ steps.channel.outputs.label }}
+        run: |
+          set -euo pipefail
+          version="$(python3 .github/scripts/next_version.py "$LABEL")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      - name: Write version and push to master
+        id: commit
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$VERSION" > VERSION
+
+          if git diff --quiet -- VERSION; then
+            echo "VERSION is already $VERSION; nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: set version $VERSION"
+          git push origin HEAD:master
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tag release
+        if: steps.channel.outputs.label != 'dev'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            tagged_commit="$(git rev-list -n 1 "$VERSION")"
+            head_commit="$(git rev-parse HEAD)"
+            if [[ "$tagged_commit" != "$head_commit" ]]; then
+              echo "Tag $VERSION already exists on another commit." >&2
+              exit 1
+            fi
+            echo "$VERSION already tags this commit; nothing to do."
+            exit 0
+          fi
+
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Start release build
+        if: steps.channel.outputs.label != 'dev'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh workflow run release.yml --repo raung0/kama_studio --ref master -f tag="$VERSION"
