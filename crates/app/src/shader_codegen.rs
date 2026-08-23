@@ -28,6 +28,7 @@ pub fn build_fused_pointwise_shader(
         let namespaced = namespace_effect(effect, &namespace)
             .with_context(|| format!("namespace pointwise node {node_type}"))?;
         modules.push_str("\n");
+        modules.push_str("// ");
         modules.push_str(node_type);
         modules.push_str("\n");
         modules.push_str(&namespaced);
@@ -306,6 +307,19 @@ mod tests {
     #[test]
     fn new_builtin_gpu_effects_and_generators_validate_through_naga() {
         let registry = PluginRegistry::load_default("").unwrap();
+        for effect in [
+            "builtin.vignette",
+            "builtin.color_grade",
+            "builtin.film_grain",
+            "builtin.color_correction",
+            "builtin.chroma_key",
+            "builtin.invert",
+            "builtin.rounded_corners",
+            "builtin.crop",
+            "builtin.black_white",
+        ] {
+            build_fused_pointwise_shader(&[effect.to_owned()], &registry).unwrap();
+        }
         for effect in [
             "builtin.blur",
             "builtin.padding",
