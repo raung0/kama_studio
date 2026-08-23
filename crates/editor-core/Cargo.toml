@@ -1,0 +1,9 @@
+[package]
+name = "kama-editor-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive", "rc"] }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-576,-25)">
+        <g id="messages" transform="matrix(1,0,0,1,-720,25)">
+            <rect x="1296" y="0" width="20" height="20" style="fill:none;"/>
+            <g transform="matrix(0.875,0,0,0.6875,793.25,-14.5625)">
+                <path d="M586.964,26.219L594.964,42.219C595.188,42.667 595.203,43.235 595.002,43.7C594.801,44.165 594.417,44.455 594,44.455L578,44.455C577.583,44.455 577.199,44.165 576.998,43.7C576.797,43.235 576.812,42.667 577.036,42.219L585.036,26.219C585.246,25.8 585.609,25.545 586,25.545C586.391,25.545 586.754,25.8 586.964,26.219ZM586,27L578,43L594,43L586,27Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,720,-25)">
+                <circle cx="586" cy="38" r="1" style="fill:white;"/>
+            </g>
+            <g transform="matrix(-1,0,-0,-0.625,1893,30.375)">
+                <path d="M587,31C587,31 588,33.008 588,37.4C588,38.283 587.552,39 587,39C586.448,39 586,38.283 586,37.4C586,33.008 587,31 587,31Z" style="fill:white;"/>
+            </g>
+        </g>
+    </g>
+</svg>

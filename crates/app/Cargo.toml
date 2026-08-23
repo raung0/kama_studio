@@ -1,0 +1,49 @@
+[package]
+name = "kama"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "kama"
+path = "src/main.rs"
+
+[features]
+static-ffmpeg = ["ffmpeg-next/static"]
+
+[dependencies]
+anyhow = "1"
+asset-importer = { version = "0.8", features = ["static-link"] }
+arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
+ctrlc = "3"
+rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path"] }
+vfs = { version = "0.13", features = ["embedded-fs"] }
+kama-ui = { path = "../ui" }
+kama-editor-core = { path = "../editor-core" }
+pollster = "0.3"
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+toml = "0.8"
+image = "0.25.10"
+ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
+flate2 = "1"
+naga = { version = "0.20", features = ["wgsl-in", "wgsl-out"] }
+cosmic-text = "0.19"
+rfd = "0.17.2"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
+wgpu = "0.20"
+bytemuck = { version = "1.16", features = ["derive"] }
+wasmtime = "24.0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.19.3"
+
+[build-dependencies]
+resvg = "0.47"
+winresource = "0.1"
+
+[package.metadata.bundle]
+name = "Kama"
+identifier = "app.kama.Kama"
+osx_minimum_system_version = "15.0"

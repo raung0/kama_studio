@@ -1,0 +1,14 @@
+[package]
+name = "kama-ui-renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1"
+bytemuck = { version = "1.16", features = ["derive"] }
+wgpu = "0.20"
+winit = "0.30"
+
+[build-dependencies]
+naga = { version = "0.20", features = ["wgsl-in"] }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-432,0)">
+        <g id="cut" transform="matrix(1,0,0,1,-48,0)">
+            <rect x="480" y="0" width="20" height="20" style="fill:none;"/>
+            <g transform="matrix(1,0,0,1,48,0)">
+                <path d="M442,8.586L442.954,7.632" style="fill:none;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,48,0)">
+                <path d="M442.954,7.632L447.586,3L449,3L449,4.414L444.414,9" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,48,0)">
+                <path d="M444.414,9L443.414,10" style="fill:none;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,48,0)">
+                <path d="M443.414,10L449,15.586L449,17L447.586,17L442,11.414L440.707,12.707C440.317,13.097 439.683,13.097 439.293,12.707C438.903,12.317 438.903,11.683 439.293,11.293L440.586,10L439.293,8.707C438.903,8.317 438.903,7.683 439.293,7.293C439.683,6.903 440.317,6.903 440.707,7.293L442,8.586" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,48,0)">
+                <path d="M437.5,2C439.432,2 441,3.568 441,5.5C441,7.432 439.432,9 437.5,9C435.568,9 434,7.432 434,5.5C434,3.568 435.568,2 437.5,2ZM437.5,4C436.672,4 436,4.672 436,5.5C436,6.328 436.672,7 437.5,7C438.328,7 439,6.328 439,5.5C439,4.672 438.328,4 437.5,4Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1.166667,48,-3)">
+                <path d="M437.5,12C439.432,12 441,13.344 441,15C441,16.656 439.432,18 437.5,18C435.568,18 434,16.656 434,15C434,13.344 435.568,12 437.5,12ZM437.5,13.714C436.672,13.714 436,14.29 436,15C436,15.71 436.672,16.286 437.5,16.286C438.328,16.286 439,15.71 439,15C439,14.29 438.328,13.714 437.5,13.714Z" style="fill:white;"/>
+            </g>
+        </g>
+    </g>
+</svg>

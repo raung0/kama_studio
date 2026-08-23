@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-576,0)">
+        <rect id="redo" x="576" y="0" width="20" height="20" style="fill:none;"/>
+        <g id="redo1" serif:id="redo">
+            <g transform="matrix(-1,0,0,0.956522,1147.683724,1.695652)">
+                <path d="M562,6.591L562,8.792C562,8.992 561.901,9.178 561.738,9.284C561.575,9.389 561.371,9.398 561.199,9.309L554.989,6.063C554.802,5.965 554.684,5.764 554.684,5.545C554.684,5.326 554.802,5.126 554.989,5.028L561.199,1.782C561.371,1.692 561.575,1.702 561.738,1.807C561.901,1.913 562,2.099 562,2.299L562,4.5L563.5,4.5C566.536,4.5 569,7.076 569,10.25C569,13.424 566.536,16 563.5,16L558,16C557.448,16 557,15.532 557,14.955C557,14.378 557.448,13.909 558,13.909L563.5,13.909C565.432,13.909 567,12.27 567,10.25C567,8.23 565.432,6.591 563.5,6.591L562,6.591Z" style="fill:white;"/>
+            </g>
+        </g>
+    </g>
+</svg>
