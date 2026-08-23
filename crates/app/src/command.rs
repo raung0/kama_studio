@@ -118,6 +118,7 @@ pub(crate) enum EditorCommand {
     TogglePenTool,
     OpenSettings,
     OpenKeybinds,
+    OpenUrl(&'static str),
     Exit,
 }
 
@@ -267,8 +268,6 @@ impl KeyBinding {
             return None;
         }
         let key = match event.physical_key {
-            
-            
             PhysicalKey::Code(KeyCode::Comma) => BindingKey::Comma,
             PhysicalKey::Code(KeyCode::Period) => BindingKey::Period,
             PhysicalKey::Code(KeyCode::BracketLeft) => BindingKey::BracketLeft,
@@ -277,8 +276,6 @@ impl KeyBinding {
                 Key::Character(text) => {
                     let text = text.as_str();
                     match text {
-                        
-                        
                         "," => BindingKey::Comma,
                         "." => BindingKey::Period,
                         "[" => BindingKey::BracketLeft,
@@ -400,7 +397,7 @@ pub(crate) struct CommandDefinition {
     pub(crate) label: String,
     pub(crate) description: String,
     pub(crate) shortcut: Option<KeyBinding>,
-    pub(crate) icon: AppIcon,
+    pub(crate) icon: Option<AppIcon>,
     pub(crate) command: EditorCommand,
     scope: CommandScope,
     palette_visible: bool,
@@ -453,6 +450,20 @@ impl CommandRegistry {
         ] {
             registry.register_editor_command(id, label, description, shortcut, icon, command);
         }
+        registry.register_editor_command_without_icon(
+            "application.report-issue",
+            "Report an issue / give feedback",
+            "Open GitHub issue form",
+            EditorCommand::OpenUrl("https://github.com/raung0/kama_studio/issues/new"),
+        );
+        registry.register_editor_command_without_icon(
+            "application.get-help",
+            "Get help",
+            "Open GitHub Q&A discussions",
+            EditorCommand::OpenUrl(
+                "https://github.com/raung0/kama_studio/discussions/categories/q-a",
+            ),
+        );
 
         registry.register_scoped_editor_command(CommandRegistration {
             id: "media.import-clipboard".into(),
@@ -632,7 +643,26 @@ impl CommandRegistry {
             label: label.into(),
             description: description.into(),
             shortcut,
-            icon,
+            icon: Some(icon),
+            command,
+            scope: CommandScope::Global,
+            palette_visible: true,
+        });
+    }
+
+    fn register_editor_command_without_icon(
+        &mut self,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+        command: EditorCommand,
+    ) {
+        self.insert(CommandDefinition {
+            id: id.into(),
+            label: label.into(),
+            description: description.into(),
+            shortcut: None,
+            icon: None,
             command,
             scope: CommandScope::Global,
             palette_visible: true,
@@ -645,7 +675,7 @@ impl CommandRegistry {
             label: registration.label,
             description: registration.description,
             shortcut: registration.shortcut,
-            icon: registration.icon,
+            icon: Some(registration.icon),
             command: registration.command,
             scope: registration.scope,
             palette_visible: registration.palette_visible,
@@ -665,7 +695,7 @@ impl CommandRegistry {
             label: label.into(),
             description: description.into(),
             shortcut: None,
-            icon,
+            icon: Some(icon),
             command,
             scope: CommandScope::Global,
             palette_visible: false,

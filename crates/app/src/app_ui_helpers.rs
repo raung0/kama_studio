@@ -1707,7 +1707,7 @@ pub(super) fn palette_entries(
                         ),
                         path: Vec::new(),
                         aliases: Vec::new(),
-                        icon: definition.icon,
+                        icon: definition.icon.unwrap_or(AppIcon::Plus),
                         target: PaletteTarget::Command(definition.command.clone()),
                     }),
             );
