@@ -159,6 +159,7 @@ fn embed_builtin_plugin(out_dir: &Path) {
             .arg(&manifest)
             .arg("--target-dir")
             .arg(&target)
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
             .unwrap_or_else(|error| panic!("launch builtin {crate_name} WASM build: {error}"));
         if !status.success() {
