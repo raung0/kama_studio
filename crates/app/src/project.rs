@@ -63,9 +63,7 @@ pub struct Project {
     pub next_pipeline_id: PipelineId,
     pub next_node_id: NodeId,
     pub next_composition_id: CompositionId,
-    
-    
-    
+
     #[serde(skip)]
     pub active_composition: CompositionId,
 }
@@ -130,8 +128,7 @@ impl Project {
         let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let mut project: Self = serde_json::from_slice(&data)
             .with_context(|| format!("parse .kama v{KAMA_FORMAT_VERSION} {}", path.display()))?;
-        if !(MIN_MIGRATABLE_FORMAT_VERSION..=KAMA_FORMAT_VERSION)
-            .contains(&project.format_version)
+        if !(MIN_MIGRATABLE_FORMAT_VERSION..=KAMA_FORMAT_VERSION).contains(&project.format_version)
         {
             anyhow::bail!(
                 "unsupported .kama format version {}; expected {}..={}",
@@ -179,9 +176,7 @@ impl Project {
                 let Some((settings, intrinsic_size)) = legacy_model_settings.get(media) else {
                     continue;
                 };
-                
-                
-                
+
                 let size: [f32; 3] = std::array::from_fn(|axis| {
                     let intrinsic = intrinsic_size[axis];
                     if intrinsic.abs() > 1.0e-6 {
@@ -205,8 +200,7 @@ impl Project {
                 .with_context(|| format!("invalid composition {}", composition.name))?;
             composition.timeline.resolve_relative_paths(base);
         }
-        
-        
+
         for composition in &mut project.compositions {
             composition.timeline.repair_id_counters();
         }
@@ -480,10 +474,7 @@ impl Project {
                     track.name
                 );
                 anyhow::ensure!(
-                    track
-                        .property_rows
-                        .iter()
-                        .any(|row| row.matches(clip)),
+                    track.property_rows.iter().any(|row| row.matches(clip)),
                     "clip {} has no layer-owned source row",
                     clip.name
                 );
@@ -590,26 +581,15 @@ impl Project {
             } else if let Some(effect) = plugins.audio_effect(&node.node_type) {
                 (Some("audio"), effect.inputs.as_slice())
             } else if let Some(generator) = plugins.generator(&node.node_type) {
-                
-                
-                
                 if node.node_type == "builtin.shape" && !node.inputs.contains_key("shape_type") {
-                    
-                    
                     node.inputs
                         .insert("shape_type".into(), Binding::Constant(GpuValue::Enum(1)));
                 }
                 (None, generator.inputs.as_slice())
             } else {
-                
-                
-                
                 return;
             };
 
-            
-            
-            
             node.inputs
                 .entry("enabled".into())
                 .or_insert(Binding::Constant(GpuValue::Bool(true)));
@@ -648,9 +628,6 @@ impl Project {
         }
         for composition in &mut self.compositions {
             for clip in &mut composition.timeline.clips {
-                
-                
-                
                 if let VisualSource::Generator(GeneratorSource::Plugin {
                     generator_type,
                     parameters,
@@ -660,8 +637,6 @@ impl Project {
                         if generator_type == "builtin.shape"
                             && !parameters.contains_key("shape_type")
                         {
-                            
-                            
                             parameters.insert(
                                 "shape_type".into(),
                                 HostBinding::Gpu(Binding::Constant(GpuValue::Enum(1))),
@@ -765,10 +740,6 @@ impl Project {
     }
 
     pub fn authored_signature(&mut self) -> Vec<u8> {
-        
-        
-        
-        
         let waveforms = self
             .media
             .iter_mut()
@@ -960,9 +931,6 @@ impl Project {
             .any(|clip| audio_tracks.contains(&clip.track))
     }
 
-    
-    
-    
     pub fn can_reference_composition(&self, parent: CompositionId, child: CompositionId) -> bool {
         if parent == child
             || self.composition(parent).is_none()
@@ -1078,9 +1046,7 @@ impl Project {
             .pipelines
             .iter()
             .position(|pipeline| pipeline.id == id)?;
-        
-        
-        
+
         let selector_remaps = self
             .pipelines
             .iter()
@@ -1197,9 +1163,7 @@ impl Project {
         let mut duplicate = source;
         duplicate.id = id;
         duplicate.name = format!("{} Copy", duplicate.name);
-        
-        
-        
+
         duplicate.revision = duplicate.revision.saturating_add(1);
         self.pipelines.push(duplicate);
         Some(id)
@@ -1476,7 +1440,7 @@ impl Project {
             return false;
         };
         node.value = next;
-        
+
         true
     }
 
@@ -1765,9 +1729,6 @@ impl Project {
             .and_then(|target| target.dynamic_image_inputs.as_ref())
             .is_some_and(|dynamic| dynamic.count_input == input)
         {
-            
-            
-            
             return false;
         }
         let binding = if targets_value_node {
@@ -1921,7 +1882,7 @@ impl Project {
             return false;
         };
         node.ui_position = Some(position);
-        
+
         true
     }
 

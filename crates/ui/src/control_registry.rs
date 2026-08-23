@@ -440,7 +440,6 @@ impl<K: Clone + Eq + Hash> KnobControlsExt<K> for ControlRegistry<K, Knob> {
                 .map(|value| (target.clone(), value))
         })
     }
-
 }
 
 pub trait SliderControlsExt<K> {

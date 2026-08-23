@@ -128,10 +128,6 @@ impl ComboBox {
         self.build_popup(ctx, &id, rect, options, style);
     }
 
-    
-    
-    
-    
     pub fn build_control(
         &self,
         ctx: &mut BuildCtx,
@@ -187,8 +183,6 @@ impl ComboBox {
         });
     }
 
-    
-    
     pub fn build_popup(
         &self,
         ctx: &mut BuildCtx,

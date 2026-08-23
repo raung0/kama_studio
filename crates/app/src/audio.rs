@@ -31,9 +31,6 @@ use crate::{
 const AUDIO_DRIFT_TOLERANCE: f32 = 0.090;
 const AUDIO_RETRY_DELAY: Duration = Duration::from_secs(2);
 
-
-
-
 macro_rules! delegate_source_metadata {
     () => {
         fn sample_rate(&self) -> SampleRate {
@@ -714,8 +711,7 @@ impl AudioPlayback {
                         .all(|(current, next)| current.same_processor(next))
                     || (voice.mapping_offset - desired.mapping_offset).abs() > f32::EPSILON
                     || (voice.speed - desired.speed).abs() > f32::EPSILON
-                    || desired.source_time
-                        + AUDIO_DRIFT_TOLERANCE * desired.speed.max(0.01)
+                    || desired.source_time + AUDIO_DRIFT_TOLERANCE * desired.speed.max(0.01)
                         < voice.source_anchor
                     || voice.player.empty()
             });
@@ -776,16 +772,9 @@ impl AudioPlayback {
                 + AUDIO_DRIFT_TOLERANCE * desired.speed.max(0.01)
                 < voice.last_source_time;
             let should_seek = if playing {
-                
-                
-                
                 if started_playing {
                     (actual - player_time).abs() > AUDIO_DRIFT_TOLERANCE
                 } else {
-                    
-                    
-                    
-                    
                     ((transport_rewound || source_rewound)
                         && (actual - player_time).abs() > AUDIO_DRIFT_TOLERANCE)
                         || actual + AUDIO_DRIFT_TOLERANCE < player_time
@@ -852,7 +841,7 @@ struct AudioRouteLayer<'a> {
     clip: &'a Clip,
     track: &'a Track,
     pipeline: &'a PipelineInstance,
-    
+
     time_offset: f32,
     time_rate: f32,
 }
@@ -866,7 +855,7 @@ struct AudioRoute<'a> {
     root_end: f32,
     source_offset: f32,
     source_rate: f32,
-    
+
     layers: Vec<AudioRouteLayer<'a>>,
 }
 
@@ -1016,11 +1005,6 @@ fn looped_source_segments(
         return vec![(root_range.0, root_range.1, source_offset)];
     };
 
-    
-    
-    
-    
-    
     let source_offset64 = f64::from(source_offset);
     let source_rate64 = f64::from(source_rate);
     let duration64 = f64::from(duration);
@@ -1101,7 +1085,8 @@ fn audio_route_mix(route: &AudioRoute<'_>, root_time: f32) -> (f32, f32) {
             layer.clip.duration,
             layer.clip.fade_in,
             layer.clip.fade_out,
-        ) * layer.clip.volume.clamp(0.0, 1.0) * track_volume;
+        ) * layer.clip.volume.clamp(0.0, 1.0)
+            * track_volume;
         pan = (pan + track_pan).clamp(-1.0, 1.0);
     }
     (volume, pan)
@@ -1126,9 +1111,6 @@ fn collect_desired_voices(
     timeline_time: f32,
     desired: &mut HashMap<u64, DesiredVoice>,
 ) {
-    
-    
-    
     let point_end = next_f32_up(timeline_time);
     let mut routes = Vec::new();
     collect_audio_routes(
@@ -1181,7 +1163,6 @@ fn nested_audio_scope(scope: u64, clip: u32, composition: CompositionId) -> u64 
 }
 
 fn stereo_mix_gains(volume: f32, pan: f32) -> [f32; 2] {
-    
     let pan = pan.clamp(-1.0, 1.0);
     [
         volume
@@ -1276,9 +1257,6 @@ fn clip_volume(local: f32, duration: f32, fade_in: f32, fade_out: f32) -> f32 {
     }
     volume
 }
-
-
-
 
 pub(crate) fn render_audio_wav(
     project: &Project,
@@ -1425,7 +1403,7 @@ pub(crate) fn render_audio_wav(
     file.write_all(&riff_len.to_le_bytes())?;
     file.write_all(b"WAVEfmt ")?;
     file.write_all(&16u32.to_le_bytes())?;
-    file.write_all(&3u16.to_le_bytes())?; 
+    file.write_all(&3u16.to_le_bytes())?;
     file.write_all(&2u16.to_le_bytes())?;
     file.write_all(&sample_rate.to_le_bytes())?;
     file.write_all(&(sample_rate.saturating_mul(8)).to_le_bytes())?;

@@ -168,8 +168,7 @@ fn gizmo_scale_change(
         corners[index][0] * source_size[0],
         corners[index][1] * source_size[1],
     ];
-    
-    
+
     let pivot_source = if modifiers.control_key() || drag.keep_position_on_scale {
         [source_size[0] * 0.5, source_size[1] * 0.5]
     } else {
@@ -601,9 +600,6 @@ struct PluginHandleSet {
 
 const GRAPH_GENERATOR_VARIANT_CAPACITY: usize = 4;
 
-
-
-
 #[derive(Debug)]
 struct GraphGeneratorVariants<T> {
     variants: crate::app_shared::BoundedCache<u64, T>,
@@ -974,7 +970,7 @@ struct RenderContext<'a> {
     project: &'a Project,
     effects: &'a EffectRuntime,
     plugins: &'a PluginRegistry,
-    
+
     render_scale: f32,
     scrubbing: bool,
     blocking_decode: bool,
@@ -1477,8 +1473,7 @@ impl MonitorState {
         if let Some(gpu) = &mut self.gpu {
             gpu.prewarm(renderer.device(), effects, plugins);
         }
-        
-        
+
         self.graph_generator_gpu_cache.clear();
         self.last_signature = None;
     }
@@ -1505,15 +1500,13 @@ impl MonitorState {
             .map(|clip| clip.id)
             .collect::<HashSet<_>>();
         let live_cache_clip_ids = live_cache_clip_ids(project, timeline);
-        
-        
-        
+
         self.video_decoders.begin_frame();
         self.video_gpu_cache
             .retain(|clip, _| live_cache_clip_ids.contains(clip));
         self.generator_gpu_cache
             .retain(|clip, _| live_cache_clip_ids.contains(clip));
-        
+
         self.source_geometry
             .retain(|clip, _| top_level_clip_ids.contains(clip));
 
@@ -1599,8 +1592,6 @@ impl MonitorState {
             self.presentation = Some(presentation);
         }
 
-        
-        
         let mut gpu = self.gpu.take().expect("monitor GPU initialized");
         let result = (|| -> Result<()> {
             let device = renderer.device();
@@ -1631,8 +1622,6 @@ impl MonitorState {
                 }
             } else if let (Some(cache), Some(cached)) = (render_cache, cached_render_frame.as_ref())
             {
-                
-                
                 self.upload_render_cache_frame(&gpu, device, queue, &mut encoder, cache, cached)
             } else {
                 let mut render = RenderContext {
@@ -1678,9 +1667,6 @@ impl MonitorState {
         Ok(())
     }
 
-    
-    
-    
     pub(crate) fn render_export_rgba16_on(
         &mut self,
         args: ExportRgba16Args<'_>,
@@ -1745,8 +1731,6 @@ impl MonitorState {
             self.finish_export_decode_frame();
             let surface = self.export_readbacks.rgba();
 
-            
-            
             gpu.export_rgba16_into(
                 ExportPassArgs {
                     device,
@@ -1783,10 +1767,7 @@ impl MonitorState {
             slice.map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-            
-            
-            
-            
+
             let map_result = loop {
                 match rx.try_recv() {
                     Ok(result) => break result,
@@ -1816,10 +1797,6 @@ impl MonitorState {
         result
     }
 
-    
-    
-    
-    
     pub(crate) fn render_export_yuv_batch_to_writer_on<W: std::io::Write>(
         &mut self,
         args: ExportYuvBatchArgs<'_, W>,
@@ -1910,8 +1887,6 @@ impl MonitorState {
                         false
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        
-                        
                         let _ = device.poll(wgpu::Maintain::WaitForSubmissionIndex(submission));
                         match rx.recv() {
                             Ok(Ok(())) => true,
@@ -2057,10 +2032,6 @@ impl MonitorState {
             .collect::<Vec<_>>();
         upcoming.sort_unstable_by(|left, right| left.start.total_cmp(&right.start));
 
-        
-        
-        
-        
         let mut warmed_tracks = HashSet::new();
         for clip in upcoming {
             if warmed_tracks.contains(&clip.track) {
@@ -2118,9 +2089,7 @@ impl MonitorState {
 
     fn finish_export_decode_frame(&mut self) {
         let epoch = self.export_decode_epoch;
-        
-        
-        
+
         self.export_video_decoders
             .retain(|_, (_, _, last_used)| *last_used == epoch);
     }
@@ -2591,8 +2560,6 @@ impl MonitorState {
             .is_some_and(|selection| graph_selection_is_transform(timeline, plugins, selection));
         let allow_transform_gizmo = graph_selection.is_none() || graph_transform_selected;
 
-        
-        
         if monitor_stage_rect(rect).contains(point) {
             if handle_selected_gradient_midpoint_press(
                 point,
@@ -2628,9 +2595,7 @@ impl MonitorState {
                 self.plugin_handle_drag = None;
                 return true;
             }
-            
-            
-            
+
             if handle_selected_generator_pen_press(
                 point,
                 modifiers,
@@ -2647,9 +2612,7 @@ impl MonitorState {
                 self.plugin_handle_drag = None;
                 return true;
             }
-            
-            
-            
+
             if self.pen_tool {
                 self.gizmo_drag = None;
                 self.generator_vec2_drag = None;
@@ -2687,9 +2650,6 @@ impl MonitorState {
             self.plugin_handle_drag = None;
             return rect.contains(point);
         }
-
-        
-        
 
         if let Some(id) = monitor_clip_at(
             preview,
@@ -2965,9 +2925,6 @@ impl MonitorState {
                 return true;
             }
 
-            
-            
-            
             let raw_midpoint = (((point[0] - drag.start[0]) * delta[0]
                 + (point[1] - drag.start[1]) * delta[1])
                 / length_sq)
@@ -3030,9 +2987,7 @@ impl MonitorState {
                 self.pen_drag = None;
                 return false;
             };
-            
-            
-            
+
             source[0] = source[0] / drag.source_scale[0].max(0.000_001) + drag.source_origin[0];
             source[1] = source[1] / drag.source_scale[1].max(0.000_001) + drag.source_origin[1];
 
@@ -3294,9 +3249,6 @@ impl MonitorState {
             .iter()
             .any(|track| track.kind != TrackKind::Audio && track.solo);
 
-        
-        
-        
         let mut active_clips_by_track: HashMap<u32, Vec<&Clip>> = HashMap::new();
         for clip in clips {
             if timeline_time >= clip.start && timeline_time < clip.end() {
@@ -3323,8 +3275,8 @@ impl MonitorState {
                     let row = track.property_row(&clip.source, clip.source_instance);
                     let composite = row.map(|row| &row.composite).unwrap_or(&clip.composite);
                     let pipeline = row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline);
-                    let clip_opacity = composite.opacity(timeline_time as f64)
-                        * clip.opacity.clamp(0.0, 1.0);
+                    let clip_opacity =
+                        composite.opacity(timeline_time as f64) * clip.opacity.clamp(0.0, 1.0);
                     if clip_opacity <= 0.0 && render.blocking_decode {
                         continue;
                     }
@@ -3364,9 +3316,6 @@ impl MonitorState {
                 continue;
             }
 
-            
-            
-            
             let mut track_frame: Option<GpuFrame> = None;
             for &clip in active_clips {
                 let row = track.property_row(&clip.source, clip.source_instance);
@@ -3374,8 +3323,8 @@ impl MonitorState {
                 let composite = row.map(|row| &row.composite).unwrap_or(&clip.composite);
                 let pipeline = row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline);
                 let model3d = row.map(|row| &row.model3d).unwrap_or(&clip.model3d);
-                let clip_opacity = composite.opacity(timeline_time as f64)
-                    * clip.opacity.clamp(0.0, 1.0);
+                let clip_opacity =
+                    composite.opacity(timeline_time as f64) * clip.opacity.clamp(0.0, 1.0);
                 if clip_opacity <= 0.0 && render.blocking_decode {
                     continue;
                 }
@@ -3562,8 +3511,6 @@ impl MonitorState {
                 let font_size =
                     generator_f32(parameters, "font_size", keyframe_time).unwrap_or(72.0);
                 self.wasm.as_mut().map(|runtime| {
-                    
-                    
                     let [width, height] =
                         runtime.measure_text(&text, family.as_deref(), font_size, 1.0);
                     (width, height)
@@ -4361,9 +4308,6 @@ impl MonitorState {
         local_output_size: Option<[u32; 2]>,
         local_position_offset: [f32; 2],
     ) -> GpuFrame {
-        
-        
-        
         if let Some(id) = instance.pipeline {
             if let Some(pipeline) = render.project.pipeline(id) {
                 let values = RefCell::new(ValueEvaluator::new(
@@ -4407,8 +4351,6 @@ impl MonitorState {
                                     frame = render.apply_stage(frame, stage, &nodes, &effect);
                                 }
                             } else {
-                                
-                                
                                 for node in pipeline.main_path() {
                                     frame = render.apply_local(frame, node, &effect);
                                 }
@@ -5128,9 +5070,6 @@ fn monitor_clips_at(
         .any(|track| track.kind != TrackKind::Audio && track.solo);
     let mut hits = Vec::new();
 
-    
-    
-    
     for track in timeline.tracks() {
         if matches!(track.kind, TrackKind::Audio | TrackKind::Effect)
             || track.muted
@@ -6379,16 +6318,12 @@ fn handle_selected_generator_pen_press(
     });
     if gradient_stops && !setup.points.is_empty() {
         if index == setup.points.len() {
-            
-            
             let endpoint = *setup
                 .points
                 .last()
                 .expect("gradient has at least one point");
             setup.points.push(endpoint);
         } else {
-            
-            
             let projected = projected_unselected.unwrap_or_else(|| {
                 project_point_to_segment(point, handles[index - 1].point, handles[index].point)
             });

@@ -6,8 +6,6 @@ use std::{
 use super::{Clip, ClipboardClip, TimelineDocument};
 use crate::project::{MediaId, VisualSource};
 
-
-
 #[derive(Debug)]
 pub struct TimelineEditState {
     pub(super) document: TimelineDocument,

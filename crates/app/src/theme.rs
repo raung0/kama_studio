@@ -59,11 +59,9 @@ fn set_theme_mix(value: f32) {
     THEME_MIX_BITS.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-
 pub(crate) fn set_theme(theme: ThemePreset) {
     store_theme(theme);
 }
-
 
 pub(crate) fn set_theme_immediate(theme: ThemePreset) {
     store_theme(theme);
@@ -89,7 +87,6 @@ pub(crate) fn set_system_appearance(light: bool) {
         sync_kama_ui_theme();
     }
 }
-
 
 pub(crate) fn tick(dt: f32) -> bool {
     let target = theme_target(theme());
@@ -135,7 +132,7 @@ pub(crate) fn accent() -> Color {
 
 pub(crate) fn accent_text() -> Color {
     let accent = accent();
-    
+
     let luminance = accent.r * 0.2126 + accent.g * 0.7152 + accent.b * 0.0722;
     if luminance >= 0.56 {
         Color::BLACK
@@ -219,13 +216,9 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32, alpha: f32) -> Color {
 
 fn appearance_lightness(base: f32) -> f32 {
     let mix = theme_mix();
-    
-    
-    
+
     let target = brightness() + (1.0 - 2.0 * brightness()) * mix;
-    
-    
-    
+
     let reference = 0.122 + (0.973 - 0.122) * mix;
     if target < reference {
         base * (target / reference.max(1e-4))
@@ -238,8 +231,7 @@ fn surface_color(base: Color) -> Color {
     let [accent_hue, _, _] = rgb_to_hsl(accent());
     let [base_hue, base_saturation, base_lightness] = rgb_to_hsl(base);
     let mixing = accent_mixing();
-    
-    
+
     let hue = if mixing <= 1e-6 { base_hue } else { accent_hue };
     let saturation = base_saturation + (0.62 - base_saturation) * mixing;
     hsl_to_rgb(
@@ -314,8 +306,7 @@ const LIGHT: Palette = Palette {
     focused: Color::rgb8(0xd9, 0xdb, 0xde),
     line: Color::rgb8(0xc5, 0xc8, 0xcd),
     line_soft: Color::rgb8(0xd2, 0xd5, 0xda),
-    
-    
+
     text: Color::rgb8(0x12, 0x14, 0x17),
     muted: Color::rgb8(0x49, 0x4d, 0x54),
     timeline_bg: Color::rgb8(0xee, 0xef, 0xf1),
@@ -373,7 +364,6 @@ palette_accessors!(text, muted, timeline_grid, timeline_text, timeline_muted);
 
 pub(crate) fn toggle_icon_color(active: bool) -> Color {
     if active {
-        
         palette_color(DARK.timeline_bg, LIGHT.text)
     } else {
         text()

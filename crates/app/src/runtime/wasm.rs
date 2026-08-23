@@ -43,8 +43,6 @@ fn rgba32f_lengths(width: u32, height: u32) -> Option<(usize, usize)> {
     (bytes <= MEMORY_LIMIT_BYTES).then_some((values, bytes))
 }
 
-
-
 pub struct WasmRenderRequest<'a> {
     pub module_path: &'a Path,
     pub entry: &'a str,
@@ -141,15 +139,6 @@ impl WasmRuntime {
         Ok(())
     }
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
     pub fn render(&mut self, request: WasmRenderRequest<'_>) -> Result<CpuFrame> {
         let WasmRenderRequest {
             module_path,
@@ -839,7 +828,7 @@ impl TextHost {
             width = width.max(run.line_w);
             height = height.max(run.line_top + run.line_height);
         }
-        
+
         [
             width.ceil().max(1.0) as u32 + 4,
             height.ceil().max(1.0) as u32 + 4,

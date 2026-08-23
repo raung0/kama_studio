@@ -60,7 +60,6 @@ impl HistoryPanelState {
             }
         });
 
-        
         for (row_number, row_info) in rows.iter().enumerate() {
             let node = history
                 .entry(row_info.index)
@@ -247,8 +246,6 @@ fn vertical_line(x: f32, a: f32, b: f32) -> Rect {
 }
 
 fn history_branch_color(branch: usize) -> Color {
-    
-    
     let hue = (0.58 + branch as f32 * 0.618_034).fract();
     let saturation = 0.66;
     let value = 0.92;

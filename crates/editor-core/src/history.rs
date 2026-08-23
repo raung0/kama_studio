@@ -19,11 +19,6 @@ struct HistoryNode<S> {
     snapshot: S,
 }
 
-
-
-
-
-
 pub struct HistoryGraph<S> {
     nodes: Vec<HistoryNode<S>>,
     current: usize,

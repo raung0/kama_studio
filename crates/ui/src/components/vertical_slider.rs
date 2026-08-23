@@ -9,7 +9,6 @@ const TRACK: f32 = 4.0;
 const THUMB_H: f32 = 8.0;
 const THUMB_W: f32 = 14.0;
 
-
 pub struct VerticalSlider {
     value: f32,
     shown: f32,
@@ -33,8 +32,7 @@ impl VerticalSlider {
     pub fn set_value(&mut self, value: f32) {
         let value = value.clamp(0.0, 1.0);
         self.value = value;
-        
-        
+
         if self.drag_track.is_none() {
             self.shown = value;
         }

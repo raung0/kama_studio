@@ -133,8 +133,7 @@ fn interpolate_host_value(a: &HostValue, b: &HostValue, t: f32) -> HostValue {
         (HostValue::F32List(a), HostValue::F32List(b)) if a.len() == b.len() => {
             HostValue::F32List(a.iter().zip(b).map(|(a, b)| a + (b - a) * t).collect())
         }
-        
-        
+
         _ => a.clone(),
     }
 }
@@ -173,15 +172,14 @@ impl HostComponentKeyframes {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum HostBinding {
     Constant(HostValue),
-    
+
     Keyframes(HostKeyframeTrack),
     Components(HostComponentKeyframes),
-    
+
     Gpu(Binding),
 }
 
 impl HostBinding {
-    
     pub fn shift_keyframes(&mut self, delta: f64) {
         if delta.abs() <= f64::EPSILON {
             return;

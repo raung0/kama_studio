@@ -83,11 +83,6 @@ fn tooltip_text() -> Color {
     atomic_color(&TOOLTIP_TEXT_RGBA)
 }
 
-
-
-
-
-
 #[derive(Clone, Copy, Debug)]
 pub enum ColorKind {
     Fixed(Color),
@@ -117,8 +112,6 @@ impl ColorKind {
     }
 }
 
-
-
 pub fn set_theme_chrome(
     foreground: Color,
     tooltip_bg_color: Color,
@@ -138,8 +131,6 @@ pub fn set_rounded_corners_enabled(enabled: bool) {
 pub fn rounded_corners_enabled() -> bool {
     ROUNDED_CORNERS_ENABLED.load(Ordering::Relaxed)
 }
-
-
 
 pub fn set_interaction_darken(darken: bool) {
     DARKEN_INTERACTIONS.store(darken, Ordering::Relaxed);
@@ -233,7 +224,6 @@ pub enum Align {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u64);
-
 
 pub struct FormatKey<'a>(std::fmt::Arguments<'a>);
 
@@ -459,11 +449,6 @@ pub struct BuildCtx {
     clip_stack: Vec<ClipShape>,
 }
 
-
-
-
-
-
 #[derive(Clone, Debug, Default)]
 pub struct LayoutRects {
     rects: HashMap<BlockId, Rect>,
@@ -474,10 +459,6 @@ impl LayoutRects {
         self.rects.get(&id).copied()
     }
 }
-
-
-
-
 
 pub fn measure_layout<R>(
     viewport: Rect,
@@ -943,10 +924,6 @@ impl Ui<'_> {
             match error {
                 None => break (base_commands, overlay_commands, vertices),
                 Some(err) if !retried_glyph_atlas && err.downcast_ref::<AtlasFull>().is_some() => {
-                    
-                    
-                    
-                    
                     self.gui.glyphs.clear();
                     self.renderer.reset_glyph_atlas();
                     retried_glyph_atlas = true;
@@ -1188,9 +1165,6 @@ fn layout_block(
     block.clips = inherited_clips.to_vec();
     if !(block.layer == Layer::Overlay && inherited_layer == Layer::Base) {
         for mut clip in block.explicit_clips.iter().copied() {
-            
-            
-            
             clip.rect.x += explicit_clip_origin[0];
             clip.rect.y += explicit_clip_origin[1];
             push_clip(&mut block.clips, clip);
@@ -1231,8 +1205,7 @@ fn layout_block(
     for child in &mut block.children {
         if !is_flow(child) {
             let rect = absolute_rect(child, content);
-            
-            
+
             let child_clips = if child.layer == Layer::Overlay && block.layer == Layer::Base {
                 &[][..]
             } else {
@@ -1403,9 +1376,7 @@ fn resolve_absolute(spec: Size, available: f32, intrinsic: f32) -> f32 {
     match spec {
         Size::Pixels(value) => value.max(0.0),
         Size::Fill => available.max(0.0),
-        
-        
-        
+
         Size::Fit => intrinsic.max(0.0),
     }
 }
@@ -1417,9 +1388,7 @@ fn intrinsic_size(block: &Block, horizontal: bool) -> f32 {
             if horizontal {
                 let advance = match block.font_kind {
                     FontKind::Sans => 0.55,
-                    
-                    
-                    
+
                     FontKind::Monospace => 0.60,
                 };
                 text.chars().count() as f32 * block.font_size * advance
@@ -1452,8 +1421,7 @@ fn intrinsic_size(block: &Block, horizontal: bool) -> f32 {
 fn preferred_size(block: &Block, horizontal: bool) -> f32 {
     match axis_spec(block, horizontal) {
         Size::Pixels(value) => value.max(0.0),
-        
-        
+
         Size::Fit | Size::Fill => intrinsic_size(block, horizontal),
     }
 }
@@ -1927,12 +1895,6 @@ fn emit_text(
 
         let mut physical = Vec::new();
         for run in runs {
-            
-            
-            
-            
-            
-            
             let origin = (
                 text_rect.x * scale,
                 ((text_rect.y + run.line_y + y_shift) * scale).round(),

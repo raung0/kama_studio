@@ -19,7 +19,6 @@ enum KnobDrag {
     Circular { center: [f32; 2], last_angle: f64 },
 }
 
-
 pub struct Knob {
     value: f64,
     shown: f32,
@@ -114,7 +113,6 @@ impl Knob {
         (self.shown - normalized(self.value, self.minimum, self.maximum)).abs() > 0.001
     }
 
-    
     pub fn pointer_pressed(&mut self, rect: Rect, point: [f32; 2]) -> Option<f64> {
         if !rect.contains(point) {
             return None;
@@ -145,8 +143,6 @@ impl Knob {
         None
     }
 
-    
-    
     pub fn pointer_moved(&mut self, point: [f32; 2]) -> Option<f64> {
         let next = match self.drag? {
             KnobDrag::Linear {
@@ -269,8 +265,7 @@ mod tests {
     fn circular_drag_accumulates_across_angle_wrap() {
         let mut knob = Knob::new(-3600.0, 3600.0, 350.0).step(0.1).circular();
         let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
-        
-        
+
         assert_eq!(knob.pointer_pressed(rect, [0.1, 51.0]), None);
         let before = knob.value();
         let after = knob.pointer_moved([0.1, 49.0]).unwrap();

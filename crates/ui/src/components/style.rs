@@ -11,11 +11,9 @@ pub struct Style {
     pub border: Color,
     pub radius_sm: f32,
     pub radius_md: f32,
-    
+
     pub text_scale: f32,
-    
-    
-    
+
     pub ui_scale: f32,
 }
 

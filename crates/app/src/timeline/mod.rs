@@ -391,8 +391,7 @@ impl Model3dClipTransform {
         }
 
         self.size = Binding::Constant(GpuValue::Vec3(size));
-        
-        
+
         transform_binding(&mut self.scale, [0.0; 3], scale);
         transform_binding(&mut self.rotation, rotation, [1.0; 3]);
         self.shading = shading;
@@ -433,9 +432,6 @@ pub(crate) struct Clip {
     pub(crate) model3d: Model3dClipTransform,
 }
 
-
-
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct LayerPropertyRow {
     pub(crate) source: VisualSource,
@@ -445,7 +441,6 @@ pub(crate) struct LayerPropertyRow {
     pub(crate) composite: LayerComposite,
     pub(crate) model3d: Model3dClipTransform,
 }
-
 
 #[derive(Clone, Debug, Deserialize)]
 struct LegacyMediaPropertyRow {
@@ -487,12 +482,7 @@ fn sources_share_property_row(
 
 impl LayerPropertyRow {
     pub(crate) fn matches_source(&self, source: &VisualSource, source_instance: u64) -> bool {
-        sources_share_property_row(
-            &self.source,
-            self.source_instance,
-            source,
-            source_instance,
-        )
+        sources_share_property_row(&self.source, self.source_instance, source, source_instance)
     }
 
     pub(crate) fn matches(&self, clip: &Clip) -> bool {
@@ -585,7 +575,8 @@ fn merge_host_animation(target: &mut HostBinding, source: &HostBinding) {
 }
 
 fn merge_source_animation(target: &mut VisualSource, source: &VisualSource) {
-    let (VisualSource::Generator(target), VisualSource::Generator(source)) = (target, source) else {
+    let (VisualSource::Generator(target), VisualSource::Generator(source)) = (target, source)
+    else {
         return;
     };
     for (input, source_binding) in source.parameters() {
@@ -630,7 +621,10 @@ fn merge_pipeline_animation(target: &mut PipelineInstance, source: &PipelineInst
 
 fn merge_property_row_animation(target: &mut LayerPropertyRow, source: &LayerPropertyRow) {
     merge_binding_animation(&mut target.composite.opacity, &source.composite.opacity);
-    merge_binding_animation(&mut target.composite.blend_mode, &source.composite.blend_mode);
+    merge_binding_animation(
+        &mut target.composite.blend_mode,
+        &source.composite.blend_mode,
+    );
     merge_binding_animation(
         &mut target.composite.alpha_blend_mode,
         &source.composite.alpha_blend_mode,
@@ -647,8 +641,7 @@ fn merge_property_row_animation(target: &mut LayerPropertyRow, source: &LayerPro
 struct ClipboardClip {
     clip: Clip,
     properties: LayerPropertyRow,
-    
-    
+
     track_rank: usize,
     track_kind: TrackKind,
 }
@@ -729,7 +722,6 @@ impl Clip {
             }
         }
     }
-
 
     pub(crate) fn end(&self) -> f32 {
         self.start + self.duration
@@ -1458,10 +1450,9 @@ enum Drag {
         shift_adjust_anchor: u32,
         duplicated: bool,
         shift_toggle_on_click: Option<u32>,
-        
-        
+
         collapse_selection_on_click: Option<u32>,
-        
+
         preview_tracks: Vec<u32>,
     },
     ClipEdge {
@@ -1640,9 +1631,6 @@ pub(crate) struct MediaDropPreviewSpec {
     pub(crate) duration: f32,
 }
 
-
-
-
 #[derive(Debug)]
 pub struct TimelineState {
     edit: TimelineEditState,
@@ -1671,19 +1659,14 @@ pub struct TimelineState {
     render_cache_ranges: Vec<RenderCacheRange>,
     render_output_range: Option<(f32, f32)>,
     expanded_keyframe_tracks: HashSet<u32>,
-    
-    
-    
+
     expanded_keyframe_lanes: HashSet<KeyframeLaneGroup>,
     keyframe_track_expansion: HashMap<u32, f32>,
     keyframe_lane_expansion: HashMap<KeyframeLaneGroup, f32>,
-    
-    
-    
+
     keyframe_lane_snapshot: Vec<Vec<KeyframeLane>>,
     keyframe_row_heights: HashMap<u32, f32>,
-    
-    
+
     track_prefix_heights: Vec<f32>,
 }
 
@@ -1799,23 +1782,21 @@ impl TimelineDocument {
         );
         self.next_source_instance = next_u64_id(
             self.next_source_instance,
-            self.clips
-                .iter()
-                .map(|clip| clip.source_instance)
-                .chain(self.tracks.iter().flat_map(|track| {
-                    track.property_rows.iter().map(|row| row.source_instance)
-                })),
+            self.clips.iter().map(|clip| clip.source_instance).chain(
+                self.tracks
+                    .iter()
+                    .flat_map(|track| track.property_rows.iter().map(|row| row.source_instance)),
+            ),
         );
         self.assign_missing_source_instances();
         self.migrate_clip_properties_to_rows();
         self.next_source_instance = next_u64_id(
             self.next_source_instance,
-            self.clips
-                .iter()
-                .map(|clip| clip.source_instance)
-                .chain(self.tracks.iter().flat_map(|track| {
-                    track.property_rows.iter().map(|row| row.source_instance)
-                })),
+            self.clips.iter().map(|clip| clip.source_instance).chain(
+                self.tracks
+                    .iter()
+                    .flat_map(|track| track.property_rows.iter().map(|row| row.source_instance)),
+            ),
         );
     }
 
@@ -1845,9 +1826,7 @@ impl TimelineDocument {
                 }
             }
         }
-        
-        
-        
+
         for clip in &mut self.clips {
             if source_requires_instance(&clip.source) {
                 if clip.source_instance == 0 {
@@ -1862,10 +1841,12 @@ impl TimelineDocument {
     }
 
     fn migrate_clip_properties_to_rows(&mut self) {
-        
-        
         for legacy in std::mem::take(&mut self.legacy_media_property_rows) {
-            let Some(track_index) = self.tracks.iter().position(|track| track.id == legacy.track) else {
+            let Some(track_index) = self
+                .tracks
+                .iter()
+                .position(|track| track.id == legacy.track)
+            else {
                 continue;
             };
             let source = self
@@ -1898,8 +1879,6 @@ impl TimelineDocument {
             }
         }
 
-        
-        
         for track in &mut self.tracks {
             let mut rows: Vec<LayerPropertyRow> = Vec::new();
             for row in std::mem::take(&mut track.property_rows) {
@@ -1915,8 +1894,6 @@ impl TimelineDocument {
             track.property_rows = rows;
         }
 
-        
-        
         let mut clips = self.clips.clone();
         clips.sort_by(|left, right| {
             left.track
@@ -1984,7 +1961,6 @@ impl TimelineDocument {
             }
         }
     }
-
 }
 
 fn next_id(current: u32, ids: impl Iterator<Item = u32>) -> u32 {
@@ -2071,9 +2047,7 @@ pub(crate) struct CompositionExtraction {
     pub(crate) duration: f32,
     pub(crate) has_video: bool,
     pub(crate) has_audio: bool,
-    
-    
-    
+
     video_anchor_track: Option<u32>,
     audio_anchor_track: Option<u32>,
     video_was_solo: bool,
@@ -2220,15 +2194,11 @@ impl TimelineState {
     }
 
     pub fn load_document_preserving_clipboard(&mut self, document: TimelineDocument) {
-        
-        
         let clipboard = std::mem::take(&mut self.clipboard);
         self.load_document(document);
         self.clipboard = clipboard;
     }
 
-    
-    
     pub(crate) fn ensure_composition_visual_pipelines(&mut self, plugins: &PluginRegistry) -> bool {
         let video_tracks = self
             .tracks
@@ -2391,9 +2361,6 @@ impl TimelineState {
             .iter()
             .any(|clip| track_kinds.get(&clip.track) != Some(&TrackKind::Audio));
 
-        
-        
-        
         let selected_track_ids = selected
             .iter()
             .map(|clip| clip.track)
@@ -2425,8 +2392,7 @@ impl TimelineState {
             .into_iter()
             .map(|track| {
                 let mut track = track.clone();
-                
-                
+
                 track.property_rows.retain(|row| {
                     selected
                         .iter()
@@ -2438,8 +2404,7 @@ impl TimelineState {
             .collect();
         for clip in &mut selected {
             clip.start = (clip.start - start).max(0.0);
-            
-            
+
             clip.clear_owned_keyframes();
         }
         timeline.clips = selected;
@@ -2466,16 +2431,17 @@ impl TimelineState {
             .unwrap_or(0)
             .saturating_add(1)
             .max(1);
-        timeline.next_source_instance = next_u64_id(
-            1,
-            timeline
-                .clips
-                .iter()
-                .map(|clip| clip.source_instance)
-                .chain(timeline.tracks.iter().flat_map(|track| {
-                    track.property_rows.iter().map(|row| row.source_instance)
-                })),
-        );
+        timeline.next_source_instance =
+            next_u64_id(
+                1,
+                timeline
+                    .clips
+                    .iter()
+                    .map(|clip| clip.source_instance)
+                    .chain(timeline.tracks.iter().flat_map(|track| {
+                        track.property_rows.iter().map(|row| row.source_instance)
+                    })),
+            );
         timeline.end_time = Some((end - start).max(0.001));
 
         let selected = &self.edit.selected;
@@ -2525,10 +2491,6 @@ impl TimelineState {
         extraction: &CompositionExtraction,
         visual_pipeline: PipelineInstance,
     ) {
-        
-        
-        
-        
         let video_track = extraction.has_video.then(|| {
             self.add_composition_reference_track(
                 TrackKind::Video,
@@ -2811,10 +2773,12 @@ impl TimelineState {
     }
 
     pub fn set_selected_local_node_position(&mut self, node: u64, position: [f32; 2]) -> bool {
-        let Some(node) = self
-            .selected_pipeline_mut()
-            .and_then(|pipeline| pipeline.local_nodes.iter_mut().find(|candidate| candidate.id == node))
-        else {
+        let Some(node) = self.selected_pipeline_mut().and_then(|pipeline| {
+            pipeline
+                .local_nodes
+                .iter_mut()
+                .find(|candidate| candidate.id == node)
+        }) else {
             return false;
         };
         node.ui_position = Some(position);
@@ -2883,13 +2847,14 @@ impl TimelineState {
                 duplicated: true, ..
             } => Some("Duplicate clips"),
             Drag::Clips {
-                shift_adjust: Some(_), ..
+                shift_adjust: Some(_),
+                ..
             } => Some("Adjust clip offset and level"),
             Drag::Clips { .. } => Some("Move clips"),
             Drag::Track { .. } => Some("Reorder track"),
             Drag::Keyframe { .. } => Some("Move keyframe"),
             Drag::KeyframeEase(_) => Some("Edit keyframe easing"),
-            
+
             Drag::Pan { .. } | Drag::BoxSelect { .. } | Drag::Playhead | Drag::Overview { .. } => {
                 None
             }
@@ -3161,9 +3126,6 @@ impl TimelineState {
         )
     }
 
-    
-    
-    
     pub fn insert_av_media_clip_at(
         &mut self,
         at: (u32, f32),
@@ -3897,8 +3859,6 @@ impl TimelineState {
             .is_some_and(|instance| instance.overrides.contains(node, input))
     }
 
-    
-    
     pub fn make_pipeline_input_unique(
         &mut self,
         project: &Project,
@@ -3975,9 +3935,6 @@ impl TimelineState {
         )
     }
 
-    
-    
-    
     pub fn reconcile_pipeline_overrides(&mut self, project: &Project) {
         fn reconcile(instance: &mut PipelineInstance, project: &Project) {
             let Some(pipeline) = instance.pipeline.and_then(|id| project.pipeline(id)) else {
@@ -4204,7 +4161,10 @@ impl TimelineState {
     fn transform_binding_mut(&mut self, input: &str) -> Option<(&mut Binding, f64)> {
         let time = self.playhead as f64;
         Some((
-            self.selected_pipeline_mut()?.transform_mut()?.inputs.get_mut(input)?,
+            self.selected_pipeline_mut()?
+                .transform_mut()?
+                .inputs
+                .get_mut(input)?,
             time,
         ))
     }
@@ -4393,7 +4353,9 @@ impl TimelineState {
         let clip_id = self.selected_model3d_clip_id(project)?;
         let index = self.ensure_property_row_for_clip(clip_id)?;
         Some((
-            self.tracks[index.track].property_rows[index.row].model3d.binding_mut(input)?,
+            self.tracks[index.track].property_rows[index.row]
+                .model3d
+                .binding_mut(input)?,
             time,
         ))
     }
@@ -4423,7 +4385,9 @@ impl TimelineState {
             return;
         };
         if let Some(index) = self.ensure_property_row_for_clip(clip_id) {
-            self.tracks[index.track].property_rows[index.row].model3d.shading = shading;
+            self.tracks[index.track].property_rows[index.row]
+                .model3d
+                .shading = shading;
         }
     }
 
@@ -4480,7 +4444,10 @@ impl TimelineState {
         let time = self.playhead as f64;
         if let Some(id) = self.selected_clip_id() {
             let index = self.ensure_property_row_for_clip(id)?;
-            return Some((&mut self.tracks[index.track].property_rows[index.row].composite, time));
+            return Some((
+                &mut self.tracks[index.track].property_rows[index.row].composite,
+                time,
+            ));
         }
         Some((
             &mut self.edit.track_mut(self.selected_track?)?.composite,
@@ -4846,9 +4813,7 @@ impl TimelineState {
             now.saturating_duration_since(self.selection_frame)
                 .as_secs_f32()
         };
-        
-        
-        
+
         let dt = elapsed.min(0.05);
         self.selection_frame = now;
 
@@ -4869,8 +4834,7 @@ impl TimelineState {
                 let target = self.expanded_keyframe_lanes.contains(lane) as u8 as f32;
                 (*amount - target).abs() > 0.001
             });
-        
-        
+
         if self.keyframe_lane_snapshot.len() != self.tracks.len() || !accordion_animating {
             let snapshot = (0..self.tracks.len())
                 .map(|index| self.build_keyframe_lanes_for_track(index))
@@ -4910,9 +4874,6 @@ impl TimelineState {
         }
         self.track_prefix_heights = track_prefix_heights;
 
-        
-        
-        
         if matches!(self.drag, Some(Drag::Playhead)) {
             if let Some(layout) = self.focused_layout(snapshot) {
                 let overflow = if self.cursor[0] < layout.body.x {
@@ -5687,8 +5648,7 @@ impl TimelineState {
             }
             let old_start = clip.start;
             clip.start = (self.playhead + clip.start - origin).max(0.0);
-            
-            
+
             let property_time_delta = (clip.start - old_start) as f64;
             let preferred_track = self.track_at_kind_rank(kind, track_rank);
             let wanted = self.track_index(preferred_track).unwrap_or(0);
@@ -5844,8 +5804,7 @@ impl TimelineState {
             return;
         }
         self.clips.extend(right_halves);
-        
-        
+
         self.selected = right_ids.iter().copied().collect();
         self.primary_selected = right_primary.or_else(|| right_ids.first().copied());
         self.selected_track = None;
@@ -5856,10 +5815,6 @@ impl TimelineState {
             return;
         }
 
-        
-        
-        
-        
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         enum Unit {
             Group(u32),
@@ -5909,8 +5864,6 @@ impl TimelineState {
                 .max_by(f32::total_cmp);
 
             if let Some(mut move_by) = delta.take() {
-                
-                
                 move_by = move_by.min(0.0);
                 for (member_track, member_start) in &members {
                     let blocker_end = self
@@ -6199,8 +6152,6 @@ impl TimelineState {
     }
 
     fn add_track(&mut self, kind: TrackKind, near: Option<usize>) -> usize {
-        
-        
         self.add_track_at(kind, near.unwrap_or(0))
     }
 
@@ -6281,9 +6232,6 @@ impl TimelineState {
     }
 
     fn insert_clip(&mut self, kind: TrackKind, time: f32, near: Option<usize>) {
-        
-        
-        
         if kind != TrackKind::Audio {
             return;
         }
@@ -6408,8 +6356,6 @@ impl TimelineState {
     }
 
     fn move_keyframes_horizontal(&mut self, points: &mut [KeyframeDragPoint], delta_time: f64) {
-        
-        
         self.move_keyframes(points, delta_time, None, false);
     }
 
@@ -6520,8 +6466,6 @@ impl TimelineState {
         self.clips[index].fade_in = self.clips[index].fade_in.min(duration);
         self.clips[index].fade_out = self.clips[index].fade_out.min(duration);
 
-        
-        
         if let Some(group) = self.clips[index].group {
             let (start, duration, source_offset, speed) = {
                 let anchor = &self.clips[index];
@@ -6555,8 +6499,6 @@ impl TimelineState {
         preview_tracks: &mut Vec<u32>,
         point: [f32; 2],
     ) -> f64 {
-        
-        
         for origin in origins {
             self.clips[origin.index].track = origin.track;
         }
@@ -6570,10 +6512,6 @@ impl TimelineState {
             pointer: start,
         } = anchor;
 
-        
-        
-        
-        
         let pointer_dx = point[0] - start[0];
         let pointer_dy = point[1] - start[1];
         if pointer_dx * pointer_dx + pointer_dy * pointer_dy
@@ -8078,7 +8016,9 @@ mod effect_model_tests {
             .opacity
             .set_value(7.0, GpuValue::F32(0.8));
 
-        let row = source_track.property_row_mut(&source, source_instance).unwrap();
+        let row = source_track
+            .property_row_mut(&source, source_instance)
+            .unwrap();
         row.pipeline.pipeline = Some(77);
         let mut override_binding = Binding::Constant(GpuValue::F32(0.25));
         override_binding.toggle_keyframe(5.0);
@@ -8136,10 +8076,16 @@ mod effect_model_tests {
 
         let moved = &extraction.timeline.clips[0];
         assert_eq!(moved.start, 0.0);
-        assert!(!moved.pipeline.overrides.iter().any(|(_, _, binding)| binding.has_keyframes()));
+        assert!(!moved
+            .pipeline
+            .overrides
+            .iter()
+            .any(|(_, _, binding)| binding.has_keyframes()));
         assert!(!moved.composite.opacity.has_keyframes());
         assert!(!moved.model3d.position.has_keyframes());
-        let moved_row = moved_track.property_row(&moved.source, moved.source_instance).unwrap();
+        let moved_row = moved_track
+            .property_row(&moved.source, moved.source_instance)
+            .unwrap();
         assert_eq!(moved_row.pipeline.pipeline, Some(77));
         assert_eq!(
             moved_row
@@ -8188,8 +8134,6 @@ mod effect_model_tests {
             vec![0.0, 2.0]
         );
 
-        
-        
         let track_count_before_reference = timeline.tracks.len();
         timeline.insert_composition_reference(
             42,
@@ -8579,7 +8523,11 @@ mod effect_model_tests {
         timeline.playhead = 12.0;
 
         timeline.toggle_selected_opacity_keyframe();
-        let clip = timeline.clips.iter().find(|clip| clip.id == clip_id).unwrap();
+        let clip = timeline
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .unwrap();
         let row = timeline
             .tracks
             .iter()
@@ -8589,14 +8537,17 @@ mod effect_model_tests {
         assert!(row.composite.opacity.has_keyframe(12.0));
         assert!(!row.composite.opacity.has_keyframe(2.0));
 
-        
         timeline
             .clips
             .iter_mut()
             .find(|clip| clip.id == clip_id)
             .unwrap()
             .start = 20.0;
-        let clip = timeline.clips.iter().find(|clip| clip.id == clip_id).unwrap();
+        let clip = timeline
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .unwrap();
         let row = timeline
             .tracks
             .iter()
@@ -8671,7 +8622,10 @@ mod effect_model_tests {
                 .find(|candidate| candidate.id == track)
                 .and_then(|track| {
                     track.property_rows.iter().find(|row| {
-                        matches!(row.source, VisualSource::Media(42) | VisualSource::Audio(42))
+                        matches!(
+                            row.source,
+                            VisualSource::Media(42) | VisualSource::Audio(42)
+                        )
                     })
                 })
                 .unwrap()
@@ -8698,7 +8652,11 @@ mod effect_model_tests {
         timeline.toggle_generator_keyframe("amount");
 
         let first_clip = timeline.clips.iter().find(|clip| clip.id == first).unwrap();
-        let second_clip = timeline.clips.iter().find(|clip| clip.id == second).unwrap();
+        let second_clip = timeline
+            .clips
+            .iter()
+            .find(|clip| clip.id == second)
+            .unwrap();
         assert_eq!(first_clip.track, second_clip.track);
         assert_ne!(first_clip.source_instance, second_clip.source_instance);
         let track = timeline
@@ -8761,7 +8719,11 @@ mod effect_model_tests {
         timeline.set_generator_value("amount", GpuValue::F32(0.75));
 
         let first_clip = timeline.clips.iter().find(|clip| clip.id == first).unwrap();
-        let second_clip = timeline.clips.iter().find(|clip| clip.id == second).unwrap();
+        let second_clip = timeline
+            .clips
+            .iter()
+            .find(|clip| clip.id == second)
+            .unwrap();
         assert_eq!(first_clip.source_instance, second_clip.source_instance);
         let track = timeline
             .tracks
@@ -8822,7 +8784,10 @@ mod effect_model_tests {
             .find(|candidate| candidate.id == track)
             .and_then(|track| {
                 track.property_rows.iter().find(|row| {
-                    matches!(row.source, VisualSource::Media(42) | VisualSource::Audio(42))
+                    matches!(
+                        row.source,
+                        VisualSource::Media(42) | VisualSource::Audio(42)
+                    )
                 })
             })
             .unwrap();
@@ -8929,7 +8894,10 @@ mod effect_model_tests {
         timeline.toggle_selected_opacity_keyframe();
 
         let mut encoded = serde_json::to_value(timeline.document()).unwrap();
-        encoded.as_object_mut().unwrap().remove("next_source_instance");
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("next_source_instance");
         for clip in encoded["clips"].as_array_mut().unwrap() {
             clip.as_object_mut().unwrap().remove("source_instance");
         }

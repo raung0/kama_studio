@@ -613,8 +613,6 @@ impl Renderer {
         Ok(())
     }
 
-    
-    
     pub fn device(&self) -> &wgpu::Device {
         self.device.as_ref()
     }
@@ -623,13 +621,10 @@ impl Renderer {
         self.queue.as_ref()
     }
 
-    
-    
     pub fn device_handle(&self) -> Arc<wgpu::Device> {
         Arc::clone(&self.device)
     }
 
-    
     pub fn queue_handle(&self) -> Arc<wgpu::Queue> {
         Arc::clone(&self.queue)
     }

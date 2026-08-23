@@ -36,7 +36,7 @@ impl Color {
             self.a + (other.a - self.a) * t,
         )
     }
-    
+
     pub fn from_linear(value: [f32; 4]) -> Self {
         fn linear_to_srgb(value: f32) -> f32 {
             if value <= 0.003_130_8 {

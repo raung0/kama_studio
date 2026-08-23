@@ -224,7 +224,6 @@ pub(super) fn media_streams(asset: &crate::project::MediaAsset) -> Vec<MediaStre
             .collect();
     }
 
-    
     match asset.kind {
         MediaKind::Video => {
             let mut streams = vec![MediaStream::Video(0)];

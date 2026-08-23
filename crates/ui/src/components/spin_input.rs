@@ -4,8 +4,6 @@ use crate::{BuildCtx, FormatKey, Rect};
 
 use super::Style;
 
-
-
 pub struct SpinInput;
 
 impl SpinInput {

@@ -14,7 +14,6 @@ use super::{SpinInput, Style, TextEdit};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(360);
 
-
 pub struct NumberInput {
     value: f64,
     minimum: f64,
@@ -116,7 +115,6 @@ impl NumberInput {
         }
     }
 
-    
     pub fn pointer_pressed(
         &mut self,
         rect: Rect,
@@ -163,18 +161,15 @@ impl NumberInput {
         None
     }
 
-    
-    
     pub fn pointer_dragged(&mut self, delta_y: f32) -> Option<f64> {
         if self.editing || self.drag.is_none() {
             return None;
         }
-        let next = (self.value - delta_y as f64 * self.units_per_pixel)
-            .clamp(self.minimum, self.maximum);
+        let next =
+            (self.value - delta_y as f64 * self.units_per_pixel).clamp(self.minimum, self.maximum);
         if (next - self.value).abs() > f64::EPSILON {
             self.value = next;
-            
-            
+
             if let Some((start_y, start_value)) = &mut self.drag {
                 *start_y += delta_y;
                 *start_value = next;

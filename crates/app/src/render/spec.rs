@@ -2,9 +2,6 @@ use std::path::PathBuf;
 
 use super::RenderPreset;
 
-
-
-
 #[derive(Clone, Debug)]
 pub(super) struct RenderSpec {
     pub(super) preset: RenderPreset,

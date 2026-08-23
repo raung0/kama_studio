@@ -471,9 +471,6 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
     }
 
     fn is_cursor_lock_dragging(&self) -> bool {
-        
-        
-        
         self.numbers.is_dragging()
             || self.angles.is_number_dragging()
             || self.sliders.is_dragging()
@@ -2163,8 +2160,7 @@ impl InspectorState {
         self.vector_link_rects.clear();
         self.reset_targets.clear();
         self.controls.color_rect = None;
-        
-        
+
         let rect = Rect::new(0.0, 0.0, rect.width, rect.height);
         kama_ui::ui!(ctx, {
             Rect("inspector-bg", rect) {
@@ -4225,7 +4221,6 @@ struct InspectorLayout {
 }
 
 fn accordion_hit(rect: Rect, y: f32) -> Rect {
-    
     let (_, rows) = crate::ui_layout::fit_column_at(
         rect,
         [rect.x, y],

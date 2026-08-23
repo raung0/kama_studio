@@ -526,7 +526,6 @@ impl MediaPanelState {
     }
 
     pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, project: &Project, icons: Icons) {
-        
         let rect = Rect::new(0.0, 0.0, rect.width, rect.height);
         kama_ui::ui!(ctx, {
             Rect("media-bg", rect) {

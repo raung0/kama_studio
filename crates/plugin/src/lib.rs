@@ -1,5 +1,3 @@
-
-
 mod host {
     #[cfg_attr(target_arch = "wasm32", link(wasm_import_module = "kama"))]
     unsafe extern "C" {
@@ -16,14 +14,9 @@ mod host {
     }
 }
 
-
-
-
-
 pub fn get_parameter<T: Parameter>(name: &str, fallback: T) -> T {
     T::get(parameter_hash(name), fallback)
 }
-
 
 pub fn parameter_id(name: &str) -> u32 {
     parameter_hash(name) as u32

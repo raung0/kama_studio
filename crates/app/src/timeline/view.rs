@@ -24,9 +24,9 @@ impl TimelineState {
                     let dragged = self.dragged_track();
                     let visible_start = self.scroll_time as f32;
                     let visible_end = (self.scroll_time + self.visible_duration(local)) as f32;
-                    
-                    
-                    
+
+
+
                     let overscan = ((visible_end - visible_start) * 0.05).max(0.25);
                     for clip in &self.clips {
                         if clip.end() < visible_start - overscan
@@ -56,7 +56,7 @@ impl TimelineState {
                     );
                     self.build_overview(ctx, local, stack, icons);
                     self.build_overlays(ctx, local, stack, [content.x, content.y]);
-                    
+
                     self.build_transport(ctx, local, stack, icons);
                     self.build_context_menu(ctx, local, stack, [content.x, content.y], icons, project);
                     self.build_mixer_exact(ctx, local, stack);
@@ -1217,7 +1217,11 @@ impl TimelineState {
             };
             let mut batches: Vec<[Vec<[f32; 2]>; 2]> =
                 (0..batch_count).map(|_| [Vec::new(), Vec::new()]).collect();
-            for &clip in overview_clips.get(&track.id).map(Vec::as_slice).unwrap_or(&[]) {
+            for &clip in overview_clips
+                .get(&track.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+            {
                 let x = body.x + (clip.start as f64 / total * body.width as f64) as f32;
                 let right = x + (clip.duration as f64 / total * body.width as f64).max(1.0) as f32;
                 let first = ((x - body.x) / OVERVIEW_BATCH_W).floor().max(0.0) as usize;

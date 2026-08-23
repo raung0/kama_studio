@@ -117,8 +117,6 @@ fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
 }
 
-
-
 #[derive(Clone)]
 pub struct CpuFrame {
     pub width: u32,
@@ -164,14 +162,13 @@ impl CpuFrame {
 pub enum NativeVideoLayout {
     Yuv420p,
     Nv12,
-    
+
     P010,
     Yuv422p,
-    
+
     P210,
     Yuv444p,
-    
-    
+
     Ayuv,
 }
 
@@ -203,16 +200,12 @@ impl NativeVideoLayout {
 
 #[derive(Clone)]
 pub enum VideoFramePixels {
-    
     Rgba16(Vec<u8>),
-    
-    
+
     NativeYuv {
         layout: NativeVideoLayout,
         bit_depth: u32,
-        
-        
-        
+
         frame: Arc<AvVideoFrame>,
         has_alpha: bool,
     },
@@ -220,7 +213,6 @@ pub enum VideoFramePixels {
 
 #[derive(Clone)]
 pub struct VideoFrame {
-    
     pub width: u32,
     pub height: u32,
     pub source_width: u32,
@@ -228,11 +220,10 @@ pub struct VideoFrame {
     pub fit_width: u32,
     pub fit_height: u32,
     pub pixels: VideoFramePixels,
-    
-    
+
     pub transfer: u32,
     pub bt2020_primaries: bool,
-    
+
     pub yuv_matrix: u32,
     pub full_range: bool,
 }
@@ -363,8 +354,6 @@ struct NativeVideoUploadSurface {
     bind_group: wgpu::BindGroup,
 }
 
-
-
 enum VideoUploadSurfaceInner {
     Packed(Box<PackedVideoUploadSurface>),
     NativeYuv(Box<NativeVideoUploadSurface>),
@@ -402,8 +391,6 @@ impl VideoUploadSurface {
         }
     }
 }
-
-
 
 pub struct GpuFrame {
     surface_id: u64,
@@ -488,8 +475,6 @@ impl GpuFrame {
     }
 }
 
-
-
 pub struct PresentationTexture {
     texture: wgpu::Texture,
     storage_view: wgpu::TextureView,
@@ -572,8 +557,6 @@ pub struct EffectEvalContext {
 }
 
 impl EffectEvalContext {
-    
-    
     pub fn keyframe_time(self) -> f64 {
         self.timeline_time
     }
@@ -592,7 +575,7 @@ pub struct EffectInputs<'graph, 'values> {
     pub instance: Option<&'graph PipelineInstance>,
     pub plugins: &'graph PluginRegistry,
     pub context: EffectEvalContext,
-    
+
     render_scale: f32,
     values: &'values RefCell<ValueEvaluator<'graph>>,
 }
@@ -617,17 +600,62 @@ impl<'graph, 'values> EffectInputs<'graph, 'values> {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum BindGroupCacheKey {
-    Generator { pipeline: usize, output: u64, params_chunk: usize, params_size: u64 },
-    Source { pipeline: usize, output: u64, params_chunk: usize, params_size: u64, runtime_chunk: usize, runtime_size: u64 },
-    Unary { pipeline: usize, input: u64, output: u64, params_chunk: usize, params_size: u64, runtime_chunk: usize, runtime_size: u64 },
-    UnaryUniform { pipeline: usize, input: u64, output: u64, params_chunk: usize, params_size: u64 },
-    Binary { pipeline: usize, first: u64, second: u64, output: u64, params_chunk: usize, params_size: u64, runtime_chunk: usize, runtime_size: u64 },
-    BinaryUniform { pipeline: usize, first: u64, second: u64, output: u64, params_chunk: usize, params_size: u64 },
-    Composite { destination: u64, source: u64, output: u64, params_chunk: usize, params_size: u64 },
+    Generator {
+        pipeline: usize,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+    },
+    Source {
+        pipeline: usize,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+        runtime_chunk: usize,
+        runtime_size: u64,
+    },
+    Unary {
+        pipeline: usize,
+        input: u64,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+        runtime_chunk: usize,
+        runtime_size: u64,
+    },
+    UnaryUniform {
+        pipeline: usize,
+        input: u64,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+    },
+    Binary {
+        pipeline: usize,
+        first: u64,
+        second: u64,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+        runtime_chunk: usize,
+        runtime_size: u64,
+    },
+    BinaryUniform {
+        pipeline: usize,
+        first: u64,
+        second: u64,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+    },
+    Composite {
+        destination: u64,
+        source: u64,
+        output: u64,
+        params_chunk: usize,
+        params_size: u64,
+    },
 }
-
-
-
 
 pub struct VideoGpuRuntime {
     clear: wgpu::ComputePipeline,
@@ -649,8 +677,7 @@ pub struct VideoGpuRuntime {
     programs: HashMap<u64, Arc<wgpu::ComputePipeline>>,
     generator_programs: HashMap<String, Arc<wgpu::ComputePipeline>>,
     shader_programs: HashMap<u64, Arc<wgpu::ComputePipeline>>,
-    
-    
+
     frame_pool: HashMap<(u32, u32), Vec<GpuFrame>>,
     frame_pool_len: usize,
     frame_pool_bytes: u64,
@@ -848,9 +875,7 @@ impl VideoGpuRuntime {
         if frame.format != wgpu::TextureFormat::Rgba16Float {
             return;
         }
-        
-        
-        
+
         let frame_bytes = frame.width as u64 * frame.height as u64 * 8;
         if Arc::strong_count(&frame.texture) == 1
             && self.frame_pool_len < GPU_FRAME_POOL_CAPACITY
@@ -875,12 +900,12 @@ impl VideoGpuRuntime {
         self.frame_pool_bytes = self
             .frame_pool
             .iter()
-            .map(|(&(width, height), frames)| width as u64 * height as u64 * 8 * frames.len() as u64)
+            .map(|(&(width, height), frames)| {
+                width as u64 * height as u64 * 8 * frames.len() as u64
+            })
             .sum();
     }
 
-    
-    
     pub fn prewarm(
         &mut self,
         device: &wgpu::Device,
@@ -954,12 +979,7 @@ impl VideoGpuRuntime {
             device,
             queue,
             "kama solid fill parameters",
-            bytemuck::cast_slice(&[[
-                color[0] * alpha,
-                color[1] * alpha,
-                color[2] * alpha,
-                alpha,
-            ]]),
+            bytemuck::cast_slice(&[[color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha]]),
         );
         let layout = self.solid.get_bind_group_layout(0);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -987,9 +1007,6 @@ impl VideoGpuRuntime {
         queue: &wgpu::Queue,
         frame: &CpuFrame,
     ) -> GpuFrame {
-        
-        
-        
         let output = GpuFrame::new_with_format(
             device,
             frame.width,
@@ -1587,11 +1604,13 @@ impl VideoGpuRuntime {
         if output_size == [input.width, input.height] && nodes.len() == 1 {
             match nodes[0].node_type.as_str() {
                 "builtin.blur" => {
-                    return self
-                        .apply_builtin_gaussian_blur(device, queue, encoder, input, nodes[0], effect);
+                    return self.apply_builtin_gaussian_blur(
+                        device, queue, encoder, input, nodes[0], effect,
+                    );
                 }
                 "builtin.bloom" => {
-                    return self.apply_builtin_bloom(device, queue, encoder, input, nodes[0], effect);
+                    return self
+                        .apply_builtin_bloom(device, queue, encoder, input, nodes[0], effect);
                 }
                 _ => {}
             }
@@ -1693,8 +1712,15 @@ impl VideoGpuRuntime {
         if !enabled || radius <= 0.001 {
             return input;
         }
-        let (horizontal, output) =
-            self.gaussian_blur(device, queue, encoder, &input, radius, None, "kama gaussian blur");
+        let (horizontal, output) = self.gaussian_blur(
+            device,
+            queue,
+            encoder,
+            &input,
+            radius,
+            None,
+            "kama gaussian blur",
+        );
         self.recycle_frame(input);
         self.recycle_frame(horizontal);
         output
@@ -1957,9 +1983,6 @@ impl VideoGpuRuntime {
         );
     }
 
-    
-    
-    
     pub fn export_ayuv64_into(&self, args: ExportPassArgs<'_>, output: &wgpu::TextureView) {
         let ExportPassArgs {
             device,
@@ -2036,8 +2059,6 @@ impl VideoGpuRuntime {
         );
     }
 
-    
-    
     pub fn export_p010_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(2), args.input.height.div_ceil(2)];
         self.export_to_buffer(
@@ -2060,9 +2081,6 @@ impl VideoGpuRuntime {
         );
     }
 
-    
-    
-    
     pub fn export_ayuv64_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width, args.input.height];
         self.export_to_buffer(
@@ -2074,7 +2092,6 @@ impl VideoGpuRuntime {
         );
     }
 
-    
     pub fn export_yuva10_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(2), args.input.height];
         self.export_to_buffer(
@@ -2214,8 +2231,7 @@ fn write_av_plane(
         frame.data(plane),
         wgpu::ImageDataLayout {
             offset: 0,
-            
-            
+
             bytes_per_row: Some(stride),
             rows_per_image: Some(height),
         },
@@ -2227,14 +2243,9 @@ fn write_av_plane(
     );
 }
 
-
-
-
 const CLIP_GRAPH_SHADER_CACHE_VERSION: &str = "kama-clip-graph-wgsl-v3-rgba16f";
 
 fn cached_shader_matches_working_format(source: &str) -> bool {
-    
-    
     source.contains("texture_storage_2d<rgba16float")
         && !source.contains("texture_storage_2d<rgba32float")
 }
@@ -2625,7 +2636,9 @@ fn dispatch_binary_uniform(
         cache,
         device,
         pipeline,
-        inputs.iter().all(|frame| frame.format == wgpu::TextureFormat::Rgba16Float),
+        inputs
+            .iter()
+            .all(|frame| frame.format == wgpu::TextureFormat::Rgba16Float),
         BindGroupCacheKey::BinaryUniform {
             pipeline: pipeline_identity(pipeline),
             first: inputs[0].surface_id,
@@ -2706,7 +2719,9 @@ fn dispatch_binary(
         cache,
         device,
         pipeline,
-        inputs.iter().all(|frame| frame.format == wgpu::TextureFormat::Rgba16Float),
+        inputs
+            .iter()
+            .all(|frame| frame.format == wgpu::TextureFormat::Rgba16Float),
         BindGroupCacheKey::Binary {
             pipeline: pipeline_identity(pipeline),
             first: inputs[0].surface_id,
@@ -2849,7 +2864,6 @@ fn try_compute_pipeline(
     source: &str,
     layout_kind: ComputeLayout,
 ) -> Result<wgpu::ComputePipeline> {
-    
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = compute_pipeline(device, label, source, layout_kind);
     if let Some(error) = pollster::block_on(device.pop_error_scope()) {
@@ -2869,10 +2883,6 @@ fn compute_pipeline(
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
 
-    
-    
-    
-    
     let entries = match layout_kind {
         ComputeLayout::ClearRgba32 => vec![storage_texture_layout_entry(
             0,
@@ -3070,10 +3080,7 @@ fn buffer_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_>
     }
 }
 
-fn dynamic_uniform_entry(
-    binding: u32,
-    allocation: &UniformAllocation,
-) -> wgpu::BindGroupEntry<'_> {
+fn dynamic_uniform_entry(binding: u32, allocation: &UniformAllocation) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -3085,7 +3092,8 @@ fn dynamic_uniform_entry(
 }
 
 fn dynamic_offset(allocation: &UniformAllocation) -> wgpu::DynamicOffset {
-    u32::try_from(allocation.offset).expect("uniform upload offset exceeds WebGPU dynamic offset range")
+    u32::try_from(allocation.offset)
+        .expect("uniform upload offset exceeds WebGPU dynamic offset range")
 }
 
 fn pipeline_identity(pipeline: &wgpu::ComputePipeline) -> usize {
@@ -3228,8 +3236,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(output_texture, vec2<i32>(gid.xy), vec4<u32>(round(encoded * 65535.0)));
 }
 "#;
-
-
 
 const EXPORT_AYUV64_WGSL: &str = r#"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;

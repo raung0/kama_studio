@@ -15,9 +15,7 @@ impl HistorySnapshot {
     pub fn capture(project: &Project, timeline: &TimelineDocument) -> Self {
         let mut project = project.clone();
         project.sync_active_timeline(timeline.clone());
-        
-        
-        
+
         let mut authored = project.clone();
         for composition in &mut authored.compositions {
             composition.timeline.view = Default::default();

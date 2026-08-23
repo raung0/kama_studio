@@ -86,8 +86,6 @@ impl<K: Eq, V> BoundedCache<K, V> {
 }
 
 pub(super) fn default_dock() -> DockState {
-    
-    
     let top = DockLayoutSpec::split(
         Axis::Horizontal,
         0.20,
@@ -161,9 +159,7 @@ pub(super) fn document_view_signature(project: &Project, timeline: &TimelineStat
             } else {
                 composition.timeline.view
             };
-            
-            
-            
+
             view.playhead = 0.0;
             (composition.id, view)
         })

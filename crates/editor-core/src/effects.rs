@@ -264,8 +264,6 @@ pub fn bezier_easing_amount(out: EasingHandle, incoming: EasingHandle, x: f32) -
     let p2y = 1.0 - incoming.y;
     let x = x.clamp(0.0, 1.0);
 
-    
-    
     let mut lo = 0.0;
     let mut hi = 1.0;
     for _ in 0..12 {
@@ -285,9 +283,6 @@ pub fn interpolation_amount(left: Interpolation, right: Interpolation, t: f32) -
         return 0.0;
     }
 
-    
-    
-    
     let ease_out = matches!(
         left,
         Interpolation::Cubic | Interpolation::EaseOut | Interpolation::EaseInOut
@@ -300,8 +295,6 @@ pub fn interpolation_amount(left: Interpolation, right: Interpolation, t: f32) -
         return t;
     }
 
-    
-    
     let t2 = t * t;
     let t3 = t2 * t;
     let start_slope = if ease_out { 0.0 } else { 1.0 };
@@ -329,7 +322,6 @@ pub trait TimedKey {
     fn time(&self) -> f64;
     fn set_time(&mut self, time: f64);
 }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyTrack<K> {
@@ -565,7 +557,7 @@ fn interpolate(a: GpuValue, b: GpuValue, amount: f32) -> GpuValue {
             lerp(a[2], b[2]),
             lerp(a[3], b[3]),
         ]),
-        
+
         (GpuValue::Bool(_), GpuValue::Bool(_)) | (GpuValue::Enum(_), GpuValue::Enum(_)) => a,
         _ => a,
     }
@@ -595,8 +587,6 @@ pub enum Binding {
 }
 
 impl Binding {
-    
-    
     pub fn shift_keyframes(&mut self, delta: f64) {
         if delta.abs() <= f64::EPSILON {
             return;
@@ -996,21 +986,17 @@ pub struct EffectNode {
     pub id: NodeId,
     pub node_type: String,
     pub execution: NodeExecution,
-    
-    
+
     pub ui_position: Option<[f32; 2]>,
-    
+
     pub image_inputs: BTreeMap<String, ImageBinding>,
-    
-    
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_input: Option<String>,
     pub inputs: BTreeMap<String, Binding>,
-    
-    
-    
+
     pub host_inputs: BTreeMap<String, crate::parameters::HostBinding>,
-    
+
     pub dynamic_image_inputs: Option<DynamicImageInputs>,
 }
 

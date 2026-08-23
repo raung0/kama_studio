@@ -36,8 +36,7 @@ pub enum GraphMonitorSelection {
 #[derive(Clone, Copy, Debug)]
 struct GraphDrag {
     target: GraphNodeTarget,
-    
-    
+
     world_offset: [f32; 2],
 }
 
@@ -49,7 +48,6 @@ struct GraphGroupDrag {
 
 #[derive(Clone, Debug)]
 struct GraphBlockSelection {
-    
     start: [f32; 2],
     current: [f32; 2],
     base: HashSet<GraphNodeTarget>,
@@ -111,7 +109,6 @@ enum GraphContextTarget {
 
 #[derive(Clone, Debug)]
 struct GraphContextMenu {
-    
     point: [f32; 2],
     target: GraphContextTarget,
 }
@@ -809,8 +806,7 @@ fn graph_node_inputs(
             }
         }
     }
-    
-    
+
     inputs.extend(
         node.inputs
             .keys()
@@ -1608,7 +1604,6 @@ fn graph_wire_geometry(
 }
 
 fn draw_graph_grid(ctx: &mut kama_ui::BuildCtx, canvas: Rect, pan: [f32; 2], zoom: f32) {
-    
     for (level, world, min_pixels, color) in [
         (
             0usize,
@@ -3670,13 +3665,9 @@ impl PipelineGraphState {
             }
         }
         if let Some(key) = self.controls.angles.target_at(rect, point) {
-            if let Some(GpuValue::F32(default)) = graph_property_definition(
-                key.target,
-                &key.input,
-                graph,
-                plugins,
-            )
-            .and_then(|definition| definition.ty.default_gpu(&definition.default).ok())
+            if let Some(GpuValue::F32(default)) =
+                graph_property_definition(key.target, &key.input, graph, plugins)
+                    .and_then(|definition| definition.ty.default_gpu(&definition.default).ok())
             {
                 return PipelineGraphAction::SetEffectValue {
                     target: key.target,
