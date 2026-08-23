@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-120,0)">
+        <rect id="timeline" x="120" y="0" width="20" height="20" style="fill:none;"/>
+        <g id="timeline1" serif:id="timeline">
+            <path d="M131,3.75L131,5.25C131,5.664 130.664,6 130.25,6L122.75,6C122.336,6 122,5.664 122,5.25L122,3.75C122,3.336 122.336,3 122.75,3L130.25,3C130.664,3 131,3.336 131,3.75Z" style="fill:white;"/>
+            <path d="M138,3.75L138,5.25C138,5.664 137.664,6 137.25,6L134.75,6C134.336,6 134,5.664 134,5.25L134,3.75C134,3.336 134.336,3 134.75,3L137.25,3C137.664,3 138,3.336 138,3.75Z" style="fill:white;"/>
+            <path d="M128,8.75L128,10.25C128,10.664 127.664,11 127.25,11L122.75,11C122.336,11 122,10.664 122,10.25L122,8.75C122,8.336 122.336,8 122.75,8L127.25,8C127.664,8 128,8.336 128,8.75Z" style="fill:white;"/>
+            <path d="M138,8.75L138,10.25C138,10.664 137.664,11 137.25,11L131.75,11C131.336,11 131,10.664 131,10.25L131,8.75C131,8.336 131.336,8 131.75,8L137.25,8C137.664,8 138,8.336 138,8.75Z" style="fill:white;"/>
+            <path d="M129,13.75L129,15.25C129,15.664 128.664,16 128.25,16L122.75,16C122.336,16 122,15.664 122,15.25L122,13.75C122,13.336 122.336,13 122.75,13L128.25,13C128.664,13 129,13.336 129,13.75Z" style="fill:white;"/>
+            <path d="M138,13.75L138,15.25C138,15.664 137.664,16 137.25,16L132.75,16C132.336,16 132,15.664 132,15.25L132,13.75C132,13.336 132.336,13 132.75,13L137.25,13C137.664,13 138,13.336 138,13.75Z" style="fill:white;"/>
+        </g>
+    </g>
+</svg>

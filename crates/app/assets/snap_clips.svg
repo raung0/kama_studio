@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-360,0)">
+        <g id="snap_clips" transform="matrix(1,0,0,1,-48,0)">
+            <rect x="408" y="0" width="20" height="20" style="fill:none;"/>
+            <g transform="matrix(-1,0,0,1,769,4)">
+                <path d="M349,14L347.5,14C345.016,14 343,11.984 343,9.5C343,7.016 345.016,5 347.5,5L349,5L349,8L347.5,8C346.672,8 346,8.672 346,9.5C346,10.328 346.672,11 347.5,11L349,11L349,14ZM350,5L351,5L351,8L350,8L350,5ZM351,14L350,14L350,11L351,11L351,14Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(0.75,0,0,1.166667,138.5,-0.333333)">
+                <path d="M366,2.643L366,7.357C366,7.712 365.552,8 365,8L363,8C362.448,8 362,7.712 362,7.357L362,2.643C362,2.288 362.448,2 363,2L365,2C365.552,2 366,2.288 366,2.643Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(0.75,0,0,1.166667,138.75,-0.333333)">
+                <path d="M371,2.643L371,7.357C371,7.712 370.552,8 370,8L368,8C367.448,8 367,7.712 367,7.357L367,2.643C367,2.288 367.448,2 368,2L370,2C370.552,2 371,2.288 371,2.643Z" style="fill:white;"/>
+            </g>
+        </g>
+    </g>
+</svg>
