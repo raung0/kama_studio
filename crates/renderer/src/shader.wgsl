@@ -334,8 +334,26 @@ fn draw_command(command: DrawCommand, point: vec2<f32>, color: vec4<f32>) -> vec
     );
     var fill_local_uv = local_uv;
     if command.shape_data.x == 0u {
+        if command.shape_data.z == 3u {
+            let texture_size = abs(command.fill_uv.zw - command.fill_uv.xy);
+            let texture_aspect = texture_size.x / max(texture_size.y, 0.000001);
+            let rect_aspect = command.rect.z / max(command.rect.w, 0.000001);
+            if rect_aspect > texture_aspect {
+                let image_height = texture_aspect / rect_aspect;
+                fill_local_uv = vec2<f32>(
+                    local_uv.x,
+                    (local_uv.y - (1.0 - image_height) * 0.5) / image_height,
+                );
+            } else {
+                let image_width = rect_aspect / texture_aspect;
+                fill_local_uv = vec2<f32>(
+                    (local_uv.x - (1.0 - image_width) * 0.5) / image_width,
+                    local_uv.y,
+                );
+            }
+        }
         let rotation = bitcast<f32>(command.shape_data.y);
-        let centered_uv = local_uv - vec2<f32>(0.5);
+        let centered_uv = fill_local_uv - vec2<f32>(0.5);
         let c = cos(rotation);
         let s = sin(rotation);
         fill_local_uv = vec2<f32>(
@@ -345,7 +363,9 @@ fn draw_command(command: DrawCommand, point: vec2<f32>, color: vec4<f32>) -> vec
     }
     var fill_sample = vec4<f32>(0.0);
     if all(fill_local_uv >= vec2<f32>(0.0)) && all(fill_local_uv <= vec2<f32>(1.0)) {
-        if command.shape_data.x != 0u || command.shape_data.z == 0u {
+        if command.shape_data.x != 0u
+            || (command.shape_data.z != 1u && command.shape_data.z != 2u)
+        {
             fill_sample = sample_texture(
                 command.texture_and_id.x,
                 mix(command.fill_uv.xy, command.fill_uv.zw, fill_local_uv),

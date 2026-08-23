@@ -318,6 +318,12 @@ pub struct InputState {
     pub mouse_released: bool,
 }
 
+/// Fill texture sizing modes.
+///
+/// `0` preserves existing stretch behavior. `TEXTURE_MODE_CONTAIN` preserves
+/// texture aspect ratio and centers it inside block bounds.
+pub const TEXTURE_MODE_CONTAIN: u32 = 3;
+
 pub struct Block {
     pub id: BlockId,
     pub width: Size,

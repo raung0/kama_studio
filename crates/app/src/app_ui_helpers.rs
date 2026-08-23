@@ -65,72 +65,123 @@ pub(super) enum ModalButtonRole {
 }
 
 const ABOUT_DIALOG_W: f32 = 400.0;
-const ABOUT_DIALOG_H: f32 = 236.0;
+const ABOUT_LOGO_H: f32 = 124.0;
+const ABOUT_TEXT_H: f32 = 18.0;
+const ABOUT_CONTENT_GAP: f32 = 2.0;
 
-pub(super) fn about_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
-    centered_dialog_rect(
-        viewport_width,
-        viewport_height,
-        ABOUT_DIALOG_W,
-        ABOUT_DIALOG_H,
+fn build_about_column(
+    ctx: &mut ui::BuildCtx,
+    logo: Option<ui::TextureId>,
+    width: ui::Size,
+    centered: bool,
+) -> (ui::BlockId, ui::BlockId) {
+    let mut button_id = ui::BlockId(0);
+    let mut column = ctx
+        .new()
+        .id("about-kama-content")
+        .width(width)
+        .height(ui::Size::Fit)
+        .column()
+        .gap(ABOUT_CONTENT_GAP)
+        .align_items(ui::Align::Center);
+    if centered {
+        column = column.overlay().centered();
+    }
+    let content_id = column
+        .children(|ctx| {
+            ctx.new()
+                .width(ui::Size::Fill)
+                .height(ui::Size::Pixels(30.0))
+                .build();
+
+            let mut logo_block = ctx
+                .new()
+                .width(ui::Size::Pixels(280.0))
+                .height(ui::Size::Pixels(ABOUT_LOGO_H))
+                .texture_mode(ui::TEXTURE_MODE_CONTAIN);
+            if let Some(logo) = logo {
+                logo_block = logo_block.fill_texture(logo);
+            }
+            logo_block.build();
+
+            ctx.new()
+                .width(ui::Size::Fit)
+                .height(ui::Size::Fill)
+                .build();
+
+            ctx.new()
+                .width(ui::Size::Fill)
+                .height(ui::Size::Pixels(ABOUT_TEXT_H))
+                .font_size(11.0)
+                .text_color(theme::popup_text())
+                .text_centered()
+                .text(format!("Version {}", version::VERSION))
+                .build();
+            ctx.new()
+                .width(ui::Size::Fill)
+                .height(ui::Size::Pixels(ABOUT_TEXT_H))
+                .font_size(11.0)
+                .text_color(theme::popup_text())
+                .text_centered()
+                .text("Licensed under the GNU General Public License v3.0")
+                .build();
+
+            ctx.new()
+                .width(ui::Size::Fill)
+                .height(ui::Size::Pixels(24.0))
+                .row()
+                .children(|ctx| {
+                    ctx.new()
+                        .width(ui::Size::Fill)
+                        .height(ui::Size::Fill)
+                        .build();
+                    button_id = ctx
+                        .new()
+                        .id("about-kama-close")
+                        .width(ui::Size::Pixels(70.0))
+                        .height(ui::Size::Pixels(24.0))
+                        .fill(theme::accent())
+                        .border(1)
+                        .border_color(theme::line_soft())
+                        .border_radius(RADIUS_SM)
+                        .font_size(10.0)
+                        .text_color(theme::accent_text())
+                        .text_centered()
+                        .text("OK")
+                        .interactive()
+                        .build();
+                    ctx.new()
+                        .width(ui::Size::Pixels(12.0))
+                        .height(ui::Size::Fill)
+                        .build();
+                })
+                .build();
+
+            ctx.new()
+                .width(ui::Size::Fill)
+                .height(ui::Size::Pixels(12.0))
+                .build();
+        })
+        .build();
+    (content_id, button_id)
+}
+
+fn about_dialog_layout(viewport: Rect) -> (Rect, Rect) {
+    let ((content, button), measured) = ui::measure_layout(viewport, |ctx| {
+        build_about_column(ctx, None, ui::Size::Pixels(ABOUT_DIALOG_W), true)
+    });
+    (
+        measured.rect(content).expect("about content layout"),
+        measured.rect(button).expect("about button layout"),
     )
 }
 
-pub(super) fn about_dialog_layout(dialog: Rect) -> (Rect, Rect, Rect) {
-    let rows = ui_layout::column(
-        dialog,
-        &[
-            ui_layout::Item::height(30.0),
-            ui_layout::Item::height(124.0),
-            ui_layout::Item::height(10.0),
-            ui_layout::Item::height(22.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::height(24.0),
-            ui_layout::Item::height(12.0),
-        ],
-        0.0,
-        0.0,
-        ui::Align::Start,
-        None,
-    );
-    let logo = ui_layout::row(
-        rows[1],
-        &[
-            ui_layout::Item::width(60.0),
-            ui_layout::Item::width(280.0),
-            ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        ui::Align::Start,
-    )[1];
-    let version = ui_layout::row(
-        rows[3],
-        &[
-            ui_layout::Item::width(16.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(16.0),
-        ],
-        0.0,
-        0.0,
-        ui::Align::Start,
-    )[1];
-    let button = ui_layout::row(
-        rows[5],
-        &[
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(70.0),
-            ui_layout::Item::width(12.0),
-        ],
-        0.0,
-        0.0,
-        ui::Align::Start,
-    )[1];
-    (logo, version, button)
+pub(super) fn about_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
+    about_dialog_layout(Rect::new(0.0, 0.0, viewport_width, viewport_height)).0
 }
 
 pub(super) fn about_dialog_button_rect(dialog: Rect) -> Rect {
-    about_dialog_layout(dialog).2
+    about_dialog_layout(dialog).1
 }
 
 pub(super) fn build_about_dialog(
@@ -142,8 +193,6 @@ pub(super) fn build_about_dialog(
 ) {
     let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
     let rect = about_dialog_rect(viewport_width, viewport_height);
-    let local = Rect::new(0.0, 0.0, rect.width, rect.height);
-    let (logo_rect, version_rect, button_rect) = about_dialog_layout(local);
     let logo = match theme::effective_theme() {
         theme::ThemePreset::Light => logos.light,
         theme::ThemePreset::Dark => logos.dark,
@@ -156,22 +205,7 @@ pub(super) fn build_about_dialog(
         (viewport, rect),
         dialog.opacity(Instant::now()),
         |ctx| {
-            ui::ui!(ctx, {
-                Rect("about-kama-logo", logo_rect) {
-                    fill_texture: logo;
-                }
-                Rect("about-kama-version", version_rect) {
-                    font_size: 11.0; text_color: theme::popup_text(); text_centered;
-                    text: format!("Version {}", version::VERSION);
-                }
-            });
-            build_modal_button(
-                ctx,
-                "about-kama-close",
-                button_rect,
-                "OK",
-                ModalButtonRole::Primary,
-            );
+            build_about_column(ctx, Some(logo), Size::Fill, false);
         },
     );
 }
