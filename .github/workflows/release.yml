@@ -50,29 +50,9 @@ jobs:
             exit 1
           }
 
-      - name: Install Rust
-        shell: bash
-        run: |
-          rustup toolchain install "$RUST_VERSION" --profile minimal
-          rustup target add --toolchain "$RUST_VERSION" wasm32-unknown-unknown
-          rustup default "$RUST_VERSION"
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang \
-            cmake \
-            libasound2-dev \
-            libavcodec-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libdbus-1-dev \
-            libswscale-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            pkg-config
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
 
       - name: Build
         shell: bash
@@ -109,53 +89,9 @@ jobs:
             throw "Unexpected release tag: $env:RELEASE_TAG"
           }
 
-      - name: Install Rust
-        shell: pwsh
-        run: |
-          rustup toolchain install $env:RUST_VERSION --profile minimal
-          rustup target add --toolchain $env:RUST_VERSION wasm32-unknown-unknown
-          rustup default $env:RUST_VERSION
-
-      - name: Install pinned prebuilt FFmpeg
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $version = '9.0.1'
-          $expectedSha256 = 'CB4D5E8DB6A3353BFFDB2100D3EB4B76733457FA443215E236F57C99F9FFDCA4'
-          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-full_build-shared.7z"
-          $extract = Join-Path $env:RUNNER_TEMP 'ffmpeg-shared'
-          $url = "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-full_build-shared.7z"
-
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          $actualSha256 = (Get-FileHash -Path $archive -Algorithm SHA256).Hash
-          if ($actualSha256 -ne $expectedSha256) {
-            throw "FFmpeg checksum mismatch. Expected $expectedSha256, got $actualSha256"
-          }
-
-          New-Item -ItemType Directory -Force -Path $extract | Out-Null
-          $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
-          if (-not (Test-Path $sevenZip)) {
-            throw "7-Zip not found at $sevenZip"
-          }
-          & $sevenZip x $archive "-o$extract" -y | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-            throw "7-Zip failed with exit code $LASTEXITCODE"
-          }
-
-          $ffmpegRoot = Join-Path $extract "ffmpeg-$version-full_build-shared"
-          if (-not (Test-Path (Join-Path $ffmpegRoot 'include/libavcodec/avcodec.h'))) {
-            throw "FFmpeg headers not found under $ffmpegRoot"
-          }
-          if (-not (Test-Path (Join-Path $ffmpegRoot 'lib'))) {
-            throw "FFmpeg import libraries not found under $ffmpegRoot"
-          }
-          if (-not (Test-Path (Join-Path $ffmpegRoot 'bin'))) {
-            throw "FFmpeg runtime DLLs not found under $ffmpegRoot"
-          }
-
-          "FFMPEG_DIR=$ffmpegRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "KAMA_FFMPEG_BIN=$(Join-Path $ffmpegRoot 'bin')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using pinned FFmpeg $version from $ffmpegRoot"
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
 
       - name: Build
         shell: pwsh
@@ -190,14 +126,10 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Validate architecture and release tag
+      - name: Validate release tag
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$(uname -m)" == "arm64" ]] || {
-            echo "Expected an arm64 runner, got $(uname -m)" >&2
-            exit 1
-          }
           [[ "${RELEASE_TAG}" =~ ^[0-9]{4}\.[0-9]{2}-(alpha|beta|rc|stable)\.[0-9]+$ ]] || {
             echo "Unexpected release tag: ${RELEASE_TAG}" >&2
             exit 1
@@ -224,22 +156,10 @@ jobs:
           sudo xcode-select -s "$xcode_app/Contents/Developer"
           xcodebuild -version
 
-      - name: Install Rust and FFmpeg
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install "$RUST_VERSION" --profile minimal
-          rustup target add --toolchain "$RUST_VERSION" wasm32-unknown-unknown
-          rustup default "$RUST_VERSION"
-          brew install ffmpeg pkg-config
-          cargo install cargo-bundle --locked
-
-          ffmpeg_prefix="$(brew --prefix ffmpeg)"
-          echo "PKG_CONFIG_PATH=${ffmpeg_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
-          pkg-config --modversion libavutil
-          pkg-config --modversion libavcodec
-          pkg-config --modversion libavformat
-          pkg-config --modversion libswscale
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          macos-cargo-bundle: "true"
 
       - name: Build app bundle
         shell: bash

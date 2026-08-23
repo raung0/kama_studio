@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.89.0"
+
+jobs:
+  build-linux:
+    name: Build / Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+      - name: Build
+        run: cargo build --package kama
+
+  build-windows:
+    name: Build / Windows x86_64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+      - name: Build
+        run: cargo build --package kama
+
+  build-macos:
+    name: Build / macOS arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-build
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+      - name: Build
+        run: cargo build --package kama
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - build-linux
+      - build-windows
+      - build-macos
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify builds passed
+        env:
+          LINUX_RESULT: ${{ needs.build-linux.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$WINDOWS_RESULT" = success
+          test "$MACOS_RESULT" = success
