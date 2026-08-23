@@ -108,9 +108,6 @@ fn embed_builtin_plugin(out_dir: &Path) {
         .join("builtins");
     emit_rerun_if_changed(&source);
 
-    
-    
-    
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let modules = [
         (
@@ -187,9 +184,7 @@ fn emit_rerun_if_changed(path: &Path) {
         fs::read_dir(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
     {
         let path = entry.unwrap().path();
-        
-        
-        
+
         if path.is_dir() && path.file_name().is_some_and(|name| name == "target") {
             continue;
         }

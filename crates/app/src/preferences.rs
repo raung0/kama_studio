@@ -128,14 +128,12 @@ pub(crate) fn load(registry: &mut CommandRegistry) {
     let preferences = read_json::<PreferencesFile>(&path()).unwrap_or_default();
     theme::set_theme_immediate(preferences.theme);
     let dark_accent = if preferences.dark_accent == [0xf0, 0xa2, 0x15, 0xff] {
-        
         default_dark_accent()
     } else {
         preferences.dark_accent
     };
     theme::set_dark_accent_rgba8(dark_accent);
     let light_accent = if preferences.light_accent == [0xd9, 0x7a, 0xff, 0xff] {
-        
         default_light_accent()
     } else {
         preferences.light_accent
@@ -909,8 +907,8 @@ impl SettingsDialog {
                         }
                     }
                 }
-                
-                
+
+
                 if let Some(swatch) = dark_accent_swatch {
                     self.dark_accent.build_in(
                         ctx,
@@ -929,8 +927,8 @@ impl SettingsDialog {
                         component_style(),
                     );
                 }
-                
-                
+
+
                 if let Some(index) = entries.iter().position(|entry| *entry == SettingEntry::Theme) {
                     self.theme_combo.build_popup(
                         ctx,
@@ -1044,8 +1042,7 @@ impl SettingsDialog {
                 self.theme_combo.close();
             }
         }
-        
-        
+
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;

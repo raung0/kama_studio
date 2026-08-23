@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 use anyhow::{bail, Context, Result};
 use naga::{
     back::wgsl::{self, WriterFlags},
@@ -26,9 +19,6 @@ pub fn build_fused_pointwise_shader(
 
     for (index, node_type) in node_types.iter().enumerate() {
         let Some(effect) = plugins.effect(node_type) else {
-            
-            
-            
             continue;
         };
         if effect.kind != EffectKind::Pointwise {
@@ -126,9 +116,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 "#
     )
 }
-
-
-
 
 pub fn build_generator_shader(generator: &GeneratorDefinition) -> Result<String> {
     let source = generator
@@ -242,9 +229,6 @@ pub fn build_standalone_shader(node_type: &str, plugins: &PluginRegistry) -> Res
         "assembled standalone Effect Pipeline WGSL",
     )
 }
-
-
-
 
 pub fn namespace_effect(effect: &EffectDefinition, namespace: &str) -> Result<String> {
     namespace_module(&effect.source, &effect.key, namespace)

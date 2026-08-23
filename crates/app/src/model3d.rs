@@ -247,8 +247,6 @@ impl ModelMesh {
             }
         }
 
-        
-        
         let mut accumulated = vec![[0.0_f32; 3]; vertices.len()];
         for triangle in &triangles {
             let [a, b, c] = triangle
@@ -1055,8 +1053,7 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
         .unwrap_or(ModelMaterial::default().color);
     if let Some(opacity) = material.opacity() {
         let opacity = opacity.clamp(0.0, 1.0);
-        
-        
+
         if (color[3] - opacity).abs() > 1.0e-5 {
             color[3] *= opacity;
         }
@@ -1071,9 +1068,7 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
     let normal_info = material
         .texture(TextureType::Normals, 0)
         .or_else(|| material.texture(TextureType::NormalCamera, 0));
-    
-    
-    
+
     let (normal_info, normal_is_height) = if let Some(normal) = normal_info {
         (Some(normal), false)
     } else {
@@ -1115,9 +1110,6 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
         0.65
     };
 
-    
-    
-    
     let uv_channel = [
         texture_info.as_ref(),
         opacity_info.as_ref(),

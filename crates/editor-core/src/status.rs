@@ -1,5 +1,3 @@
-
-
 pub struct DocumentStatus {
     saved_content: Vec<u8>,
     saved_view: Vec<u8>,
@@ -21,7 +19,6 @@ impl DocumentStatus {
         }
     }
 
-    
     pub fn refresh(
         &mut self,
         revision: u64,

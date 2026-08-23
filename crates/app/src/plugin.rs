@@ -501,8 +501,7 @@ impl AudioEffectDefinition {
         Ok(EffectNode {
             id: node_id,
             node_type: self.key.clone(),
-            
-            
+
             execution: NodeExecution::SpatialGpu,
             ui_position: None,
             image_inputs: BTreeMap::from([("audio".into(), ImageBinding::Disconnected)]),
@@ -562,7 +561,7 @@ pub struct GeneratorDefinition {
     pub name: String,
     pub description: String,
     pub backend: GeneratorBackend,
-    
+
     pub uses_time: bool,
     pub bounds: Option<GeneratorBounds>,
     pub source: Option<String>,
@@ -594,8 +593,6 @@ impl GeneratorDefinition {
     }
 
     pub fn instantiate(&self) -> Result<GeneratorSource> {
-        
-        
         Ok(GeneratorSource::Plugin {
             generator_type: self.key.clone(),
             parameters: self.instantiate_parameters()?,
@@ -703,9 +700,6 @@ impl PluginRegistry {
         Ok(())
     }
 
-    
-    
-    
     pub fn validate_gpu(&mut self, device: &wgpu::Device) {
         let effect_keys = self.effects.keys().cloned().collect::<Vec<_>>();
         for key in effect_keys {

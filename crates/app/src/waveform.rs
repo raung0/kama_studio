@@ -136,7 +136,6 @@ impl WaveformTextures {
         }
     }
 
-    
     pub fn poll(&mut self, project: &mut Project) -> bool {
         let mut changed = false;
         while let Ok(result) = self.result_rx.try_recv() {
@@ -382,8 +381,6 @@ fn receive_video_samples(
     }
     Ok(())
 }
-
-
 
 fn lucas_kanade_flow_score(previous: &[u8], current: &[u8], width: usize, height: usize) -> f32 {
     if previous.len() != current.len() || width < 7 || height < 7 {
@@ -785,7 +782,6 @@ fn waveform_segment_pixels(
     }
     (width as u32, height as u32, pixels)
 }
-
 
 fn encode_linear_byte(value: u8) -> u8 {
     let value = value as f32 / 255.0;

@@ -110,8 +110,6 @@ impl RenderJob {
         })
     }
 
-    
-    
     fn update_live_end(&mut self, requested_end: u64, project: &Project, timeline: &TimelineState) {
         if matches!(
             self.phase,
@@ -146,8 +144,6 @@ impl RenderJob {
                 if chunk.end != new_end {
                     chunk.end = new_end;
                     if chunk.state == ChunkState::Rendered {
-                        
-                        
                         chunk.state = ChunkState::Dirty;
                     }
                 }
@@ -236,8 +232,6 @@ impl RenderJob {
             let _ = fs::remove_file(active.temp_path);
             if let Some(chunk) = self.chunks.get_mut(active.index) {
                 if chunk.state == ChunkState::Rendering {
-                    
-                    
                     chunk.state = if chunk.signature != 0 || active.next_frame > chunk.start {
                         ChunkState::Dirty
                     } else {
@@ -252,8 +246,7 @@ impl RenderJob {
         if matches!(self.phase, RenderPhase::Error | RenderPhase::Idle) {
             return;
         }
-        
-        
+
         let cache_is_frozen = matches!(self.phase, RenderPhase::Transcoding | RenderPhase::Done);
         let active_changed = !cache_is_frozen
             && self.active.as_ref().is_some_and(|active| {
@@ -280,11 +273,6 @@ impl RenderJob {
                 ChunkState::Dirty
             };
         }
-
-        
-        
-        
-        
     }
 
     fn next_chunk(&self) -> Option<usize> {
@@ -424,8 +412,7 @@ impl RenderJob {
         let committed_path = self
             .cache_dir
             .join(format!("chunk-{:06}-g{generation:016}.mov", active.index));
-        
-        
+
         replace_file(&active.temp_path, &committed_path)
             .with_context(|| format!("commit ProRes cache chunk {}", committed_path.display()))?;
 
@@ -447,9 +434,7 @@ impl RenderJob {
         let used_hardware = active.used_hardware;
         let temp_path = active.temp_path.clone();
         active.stdin.take();
-        
-        
-        
+
         let _ = active.child.kill();
         let stderr = active
             .child
@@ -478,8 +463,7 @@ impl RenderJob {
             .chunks
             .get_mut(index)
             .context("cache retry chunk disappeared")?;
-        
-        
+
         chunk.state = if chunk.signature != 0 && chunk.path.exists() {
             ChunkState::Dirty
         } else {
@@ -579,8 +563,6 @@ impl RenderJob {
             .arg("error")
             .arg("-y");
         if use_vt_fast_path {
-            
-            
             command.args([
                 "-hwaccel",
                 "videotoolbox",
@@ -600,8 +582,6 @@ impl RenderJob {
         }
         let needs_scale = target_size != self.canvas_size;
         if use_vt_fast_path {
-            
-            
             command.arg("-vf").arg(format!(
                 "scale_vt=w={}:h={}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709",
                 target_size[0], target_size[1]
@@ -612,9 +592,7 @@ impl RenderJob {
                 target_size[0], target_size[1]
             ));
         }
-        
-        
-        
+
         configure_target_video_encoder(
             &mut command,
             self.settings.preset.video_codec,
@@ -705,8 +683,6 @@ impl RenderJob {
                     .with_context(|| format!("commit render {}", self.settings.output.display()))?;
                 self.phase = RenderPhase::Done;
             } else if self.transcode_used_vt_fast_path {
-                
-                
                 let _ = fs::remove_file(&temporary);
                 self.transcode_used_vt_fast_path = false;
                 self.disable_vt_transcode_fast_path = true;
@@ -835,11 +811,6 @@ impl Drop for RenderJob {
         }
         let _ = fs::remove_file(&self.audio_path);
 
-        
-        
-        
-        
-        
         if let Ok(entries) = fs::read_dir(&self.cache_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -1033,8 +1004,7 @@ impl RenderTask {
         self.last_seen_revision = edit_revision;
         let document = timeline.document();
         let signature = render_content_signature(project, &document);
-        
-        
+
         if signature == self.last_content_signature {
             return;
         }
@@ -1111,8 +1081,7 @@ impl RenderTask {
     fn set_end_frame(&mut self, end_frame: u64) {
         let end_frame = end_frame.max(self.settings.begin_frame);
         self.settings.end_frame = end_frame;
-        
-        
+
         self.live_end_frame.store(end_frame, Ordering::Release);
     }
 
@@ -1124,8 +1093,7 @@ impl RenderTask {
 impl Drop for RenderTask {
     fn drop(&mut self) {
         self.cancel();
-        
-        
+
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1152,8 +1120,7 @@ fn run_render_worker(
 ) {
     let mut last_status_at = Instant::now() - Duration::from_millis(100);
     let mut last_status_phase = job.phase;
-    
-    
+
     let _ = status_tx.try_send(RenderWorkerStatus::from_job(&job, update_revision));
     loop {
         let mut cancelled = false;
@@ -1175,9 +1142,6 @@ fn run_render_worker(
                     project: mut updated_project,
                     video_changed,
                 } => {
-                    
-                    
-                    
                     if updated_project.set_active_composition(target_composition) {
                         let target_document = updated_project.active_composition().timeline.clone();
                         *project = updated_project;
@@ -1223,9 +1187,6 @@ fn run_render_worker(
                         .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
                     job.start_chunk(index, project, timeline, direct_p210_supported)?;
                 } else {
-                    
-                    
-                    
                     if editing {
                         return Ok(());
                     }
@@ -1262,8 +1223,6 @@ fn run_render_worker(
                 .map(|batch_frame| (batch_frame as f64 / job.fps) as f32)
                 .collect::<Vec<_>>();
             let write_result = {
-                
-                
                 let _decode_priority = prioritize_offline_export();
                 let active = job
                     .active
@@ -1319,8 +1278,6 @@ fn run_render_worker(
                     last_status_phase = job.phase;
                 }
                 Err(TrySendError::Full(_)) => {
-                    
-                    
                     last_status_at = Instant::now();
                 }
                 Err(TrySendError::Disconnected(_)) => return,
@@ -1332,9 +1289,6 @@ fn run_render_worker(
             RenderPhase::Paused => thread::sleep(Duration::from_millis(12)),
             RenderPhase::Transcoding => thread::sleep(Duration::from_millis(20)),
             RenderPhase::Rendering if job.settings.background && interactive => {
-                
-                
-                
                 thread::yield_now();
             }
             _ => {}
@@ -1359,10 +1313,7 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
             metadata.len()
         );
     }
-    
-    
-    
-    
+
     if !strict_cache_validation_enabled() {
         return Ok(());
     }
@@ -1383,9 +1334,6 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
     {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            
-            
-            
             return Ok(());
         }
         Err(error) => return Err(error).context("run ffprobe for completed cache chunk"),
@@ -1442,10 +1390,7 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
 
 fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
     let pixels = u64::from(canvas_size[0].max(1)) * u64::from(canvas_size[1].max(1));
-    
-    
-    
-    
+
     if pixels >= 3_840u64 * 2_160 {
         3
     } else if pixels >= 2_560u64 * 1_440 {
@@ -1479,8 +1424,6 @@ fn cache_encoder_input_format(
 fn render_encoder_threads(background: bool) -> usize {
     let cores = thread::available_parallelism().map_or(4, |value| value.get());
     if background {
-        
-        
         cores.saturating_sub(1).max(2)
     } else {
         cores.max(1)
@@ -1519,8 +1462,6 @@ fn configure_prores_encoder(
             command
                 .arg("-threads")
                 .arg(threads.to_string())
-                
-                
                 .args(["-thread_type", "slice+frame"]);
         }
         command.args(["-pix_fmt", "yuva444p10le"]);
@@ -1588,8 +1529,7 @@ fn prores_videotoolbox_p210_usable() -> bool {
 
 fn prores_videotoolbox_usable() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
-    
-    
+
     *USABLE.get_or_init(|| {
         probe_prores_videotoolbox("color=c=black@0.0:s=16x16:r=1:d=1", "ayuv64le", "4444")
     })
@@ -1706,7 +1646,6 @@ fn configure_h26x_encoder(
     if cfg!(all(target_os = "macos", target_arch = "aarch64"))
         && ffmpeg_encoder_available(encoder.videotoolbox)
     {
-        
         let vt_quality = (100i32 - i32::from(quality) * 2).clamp(1, 100);
         command
             .arg("-c:v")
@@ -1732,8 +1671,6 @@ fn configure_h26x_encoder(
         command
             .arg("-c:v")
             .arg(encoder.software)
-            
-            
             .arg("-preset")
             .arg("veryfast")
             .arg("-threads")
@@ -1794,8 +1731,6 @@ fn configure_target_video_encoder(
                 .arg("-threads")
                 .arg(render_encoder_threads(false).to_string())
                 .args([
-                    
-                    
                     "-row-mt",
                     "1",
                     "-tile-columns",
@@ -1812,8 +1747,6 @@ fn configure_target_video_encoder(
             command.arg("-c:v").arg("gif").arg("-pix_fmt").arg("pal8");
         }
         VideoCodec::Ffv1 => {
-            
-            
             command
                 .arg("-c:v")
                 .arg("ffv1")
@@ -1837,8 +1770,7 @@ fn configure_target_video_encoder(
 
 fn render_content_signature(project: &Project, timeline: &TimelineDocument) -> u64 {
     let mut document = timeline.clone();
-    
-    
+
     document.view = Default::default();
     let mut snapshot = render_worker_project_snapshot(project, document);
     for composition in &mut snapshot.compositions {
@@ -1852,8 +1784,6 @@ fn render_content_signature(project: &Project, timeline: &TimelineDocument) -> u
 fn video_content_signature(project: &Project, timeline: &TimelineDocument) -> u64 {
     let mut snapshot = render_worker_project_snapshot(project, timeline.clone());
 
-    
-    
     snapshot.name.clear();
     snapshot.next_media_id = 0;
     snapshot.next_pipeline_id = 0;
@@ -1949,8 +1879,7 @@ fn video_content_signature(project: &Project, timeline: &TimelineDocument) -> u6
 
 fn render_worker_project_snapshot(project: &Project, timeline: TimelineDocument) -> Project {
     let mut snapshot = project.clone();
-    
-    
+
     for asset in &mut snapshot.media {
         asset.waveform = None;
     }
@@ -1973,9 +1902,6 @@ fn range_signature(
     let mut h = DefaultHasher::new();
     hash_json(project.active_settings(), &mut h);
 
-    
-    
-    
     let visual_track_ids = timeline
         .tracks()
         .iter()
@@ -1994,7 +1920,6 @@ fn range_signature(
         .map(|clip| clip.track)
         .collect::<HashSet<_>>();
 
-    
     for track in timeline
         .tracks()
         .iter()
@@ -2017,8 +1942,7 @@ fn range_signature(
         .hash(&mut h);
         track.muted.hash(&mut h);
         track.solo.hash(&mut h);
-        
-        
+
         if track.kind == TrackKind::Video {
             hash_composite(&track.composite, &sample_times, &mut h);
             if let Some(instance) = &track.pipeline {
@@ -2028,13 +1952,9 @@ fn range_signature(
     }
 
     for clip in overlapping {
-        
-        
         clip.track.hash(&mut h);
         clip.start.to_bits().hash(&mut h);
-        
-        
-        
+
         if matches!(
             &clip.source,
             VisualSource::Media(_) | VisualSource::Composition(_)
@@ -2078,8 +1998,6 @@ fn range_signature(
 
     for id in media_ids {
         if let Some(asset) = project.media(id) {
-            
-            
             asset.id.hash(&mut h);
             asset.path.hash(&mut h);
             hash_json(&asset.kind, &mut h);
@@ -2297,9 +2215,6 @@ fn hash_pipeline_instance(
     hash_effect_nodes(&instance.local_nodes, Some(instance), times, h);
     instance.pipeline.hash(h);
 
-    
-    
-
     if let Some(id) = instance.pipeline {
         if let Some(pipeline) = project.pipeline(id) {
             hash_json(&pipeline.kind, h);
@@ -2359,10 +2274,6 @@ fn hash_effect_node(
         hash_binding_samples(binding, times, h);
     }
 }
-
-
-
-
 
 pub(super) struct RenderSession {
     task: Option<RenderTask>,

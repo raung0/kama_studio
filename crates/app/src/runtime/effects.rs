@@ -18,9 +18,8 @@ pub struct CompiledFragment {
 
 #[derive(Clone, Debug)]
 pub struct CompiledStage {
-    
     pub fragment: Arc<CompiledFragment>,
-    
+
     pub node_ids: Vec<NodeId>,
 }
 
@@ -29,8 +28,6 @@ pub struct CompiledPipeline {
     pub revision: u64,
     pub stages: Vec<CompiledStage>,
 }
-
-
 
 #[derive(Default)]
 pub struct EffectRuntime {
@@ -71,9 +68,6 @@ impl EffectRuntime {
     }
 
     fn compile_pipeline(&mut self, pipeline: &EffectPipeline) -> CompiledPipeline {
-        
-        
-        
         let mut stages = Vec::new();
         let mut run = Vec::<&EffectNode>::new();
         for node in pipeline.main_path() {
@@ -134,9 +128,7 @@ fn fragment_key(nodes: &[&EffectNode]) -> u64 {
     for node in nodes {
         node.node_type.hash(&mut hasher);
         node.execution.hash(&mut hasher);
-        
-        
-        
+
         for (name, image) in &node.image_inputs {
             name.hash(&mut hasher);
             match image {
@@ -162,8 +154,6 @@ fn fragment_key(nodes: &[&EffectNode]) -> u64 {
                         index.hash(&mut hasher);
                     }
                     None => {
-                        
-                        
                         1u8.hash(&mut hasher);
                     }
                 }

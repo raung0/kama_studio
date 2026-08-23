@@ -4,8 +4,6 @@ use crate::{BuildCtx, Color, FormatKey, Rect};
 
 use super::Style;
 
-
-
 pub struct ColorButton;
 
 impl ColorButton {

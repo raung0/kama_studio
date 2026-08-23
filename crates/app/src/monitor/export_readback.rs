@@ -22,15 +22,14 @@ pub(super) struct ExportReadbackSurface {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExportPixelFormat {
-    
     Nv12,
-    
+
     P010Le,
-    
+
     P210Le,
-    
+
     Ayuv64Le,
-    
+
     Yuva444p10Le,
 }
 
@@ -69,7 +68,6 @@ impl ExportPixelFormat {
 
     fn texture_format(self) -> wgpu::TextureFormat {
         match self {
-            
             Self::Nv12 | Self::P010Le | Self::P210Le => wgpu::TextureFormat::R16Uint,
             Self::Ayuv64Le => wgpu::TextureFormat::Rgba16Uint,
             Self::Yuva444p10Le => wgpu::TextureFormat::R16Uint,
@@ -78,7 +76,6 @@ impl ExportPixelFormat {
 
     fn plane_count(self) -> usize {
         match self {
-            
             Self::Nv12 | Self::P010Le => 1,
             Self::P210Le => 2,
             Self::Ayuv64Le => 1,
@@ -89,8 +86,6 @@ impl ExportPixelFormat {
     fn row_bytes(self, width: u32) -> u64 {
         let width = u64::from(width);
         match self {
-            
-            
             Self::Nv12 => width * 3 / 2,
             Self::P010Le => width * 3,
             Self::P210Le => width * 2,
@@ -103,9 +98,6 @@ impl ExportPixelFormat {
         matches!(self, Self::Nv12 | Self::P010Le | Self::P210Le)
     }
 }
-
-
-
 
 pub(super) struct EncodeReadbackSurface {
     textures: Vec<wgpu::Texture>,
@@ -423,9 +415,6 @@ impl ExportReadbackSurface {
         self.width == width.max(1) && self.height == height.max(1)
     }
 }
-
-
-
 
 #[derive(Default)]
 pub(super) struct ExportReadbacks {

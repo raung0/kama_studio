@@ -164,7 +164,7 @@ pub struct StackLayout {
     pub stack: Stack,
     pub rect: Rect,
     pub tab_bar: Rect,
-    
+
     pub tab_viewport: Rect,
     pub content: Rect,
     pub plus_rect: Rect,
@@ -204,7 +204,6 @@ impl LayoutSnapshot {
             .find(|stack| stack.rect.contains(point))
     }
 
-    
     pub fn content_at(&self, point: [f32; 2]) -> Option<&StackLayout> {
         self.stacks
             .iter()
@@ -542,8 +541,6 @@ impl DockState {
         node_counts(&self.root).0 == 0
     }
 
-    
-    
     pub fn detach_tab(&mut self, stack_id: StackId, tab_id: TabId) -> Option<DockTransfer> {
         let belongs_to_stack = find_stack(&self.root, stack_id)
             .is_some_and(|stack| stack.tabs.iter().any(|tab| tab.id == tab_id));
@@ -563,7 +560,6 @@ impl DockState {
         })
     }
 
-    
     pub fn detach_stack(&mut self, stack_id: StackId) -> Option<DockTransfer> {
         let stack = take_stack(&mut self.root, stack_id)?;
         if stack.tabs.is_empty() {
@@ -584,8 +580,6 @@ impl DockState {
         Some(transfer)
     }
 
-    
-    
     pub fn drop_external(
         &mut self,
         transfer: DockTransfer,
@@ -606,7 +600,9 @@ impl DockState {
         let focused = if zone == DropZone::Center {
             let target = self.resolve_stack(target_stack);
             let stack = find_stack_mut(&mut self.root, target)?;
-            let index = insert_index.unwrap_or(stack.tabs.len()).min(stack.tabs.len());
+            let index = insert_index
+                .unwrap_or(stack.tabs.len())
+                .min(stack.tabs.len());
             for (offset, tab) in tabs.into_iter().enumerate() {
                 stack.tabs.insert(index + offset, tab);
             }
@@ -1489,10 +1485,17 @@ mod tests {
         let result = target.layout(Rect::new(0.0, 0.0, 400.0, 300.0));
         let stack = &result.stacks[0].stack;
         assert_eq!(
-            stack.tabs.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>(),
+            stack
+                .tabs
+                .iter()
+                .map(|tab| tab.title.as_str())
+                .collect::<Vec<_>>(),
             vec!["Timeline", "Inspector"]
         );
-        assert_eq!(stack.active_tab().map(|tab| tab.title.as_str()), Some("Inspector"));
+        assert_eq!(
+            stack.active_tab().map(|tab| tab.title.as_str()),
+            Some("Inspector")
+        );
     }
 
     #[test]
@@ -1503,7 +1506,9 @@ mod tests {
         });
         let source_snapshot = source.layout(Rect::new(0.0, 0.0, 400.0, 300.0));
         let source_stack = source_snapshot.stacks[0].stack.id;
-        let transfer = source.detach_stack(source_stack).expect("detach source pane");
+        let transfer = source
+            .detach_stack(source_stack)
+            .expect("detach source pane");
         assert!(source.is_empty());
         assert_eq!(transfer.active, 1);
 
@@ -1516,7 +1521,10 @@ mod tests {
         let result = target.layout(Rect::new(0.0, 0.0, 500.0, 300.0));
         let inserted_stack = result.stack(inserted).expect("inserted stack");
         assert_eq!(
-            inserted_stack.stack.active_tab().map(|tab| tab.title.as_str()),
+            inserted_stack
+                .stack
+                .active_tab()
+                .map(|tab| tab.title.as_str()),
             Some("Monitor")
         );
     }

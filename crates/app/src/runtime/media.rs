@@ -36,10 +36,7 @@ const SCRUB_THUMBNAIL_INTERVAL_SECONDS: f64 = 0.50;
 const SCRUB_THUMBNAIL_MAX_EDGE: u32 = 256;
 const SCRUB_THUMBNAIL_CAPACITY: usize = 128;
 
-
-
 const SCRUB_SEQUENTIAL_WINDOW_SECONDS: f64 = 4.0;
-
 
 const FRAME_CACHE_CAPACITY: usize = 48;
 const FRAME_CACHE_MAX_BYTES: usize = 384 * 1024 * 1024;
@@ -48,8 +45,6 @@ const PRELOAD_PREROLL_FRAMES: usize = 6;
 const DECODE_POOL_MAX_THREADS: usize = 4;
 const DECODE_POOL_MIN_THREADS: usize = 2;
 const DECODE_RETRY_INTERVAL: Duration = Duration::from_millis(120);
-
-
 
 struct DecodePolicy {
     active_monitor_decodes: AtomicU64,
@@ -107,8 +102,6 @@ impl Drop for MonitorDecodeGuard {
             .fetch_sub(1, Ordering::AcqRel);
     }
 }
-
-
 
 pub(crate) struct OfflineExportPriorityGuard;
 
@@ -175,9 +168,6 @@ impl HardwareScaleState {
             match session.scale(decoded, width, height) {
                 Ok(frame) => Ok(Some(frame)),
                 Err(_) => {
-                    
-                    
-                    
                     self.disabled = true;
                     Ok(None)
                 }
@@ -214,15 +204,6 @@ extern "C" {
 extern "C" {
     fn CFRelease(value: *const c_void);
 }
-
-
-
-
-
-
-
-
-
 
 #[cfg(target_os = "macos")]
 struct VideoToolboxScaleSession {
@@ -361,10 +342,6 @@ impl Drop for VideoToolboxScaleSession {
 }
 
 fn codec_packets_are_independent(id: codec::Id) -> bool {
-    
-    
-    
-    
     matches!(id, codec::Id::PRORES | codec::Id::UTVIDEO)
 }
 
@@ -561,9 +538,6 @@ impl DecoderState {
         };
 
         let (decoder, hardware_decode) = if let Some(decoder_name) = transparent_vpx_decoder {
-            
-            
-            
             let decoder_codec = codec::decoder::find_by_name(decoder_name).with_context(|| {
                 format!("FFmpeg build is missing {decoder_name}, required for transparent WebM")
             })?;
@@ -591,8 +565,7 @@ impl DecoderState {
 
         if seek_seconds > 0.0 {
             let target = (seek_seconds * ffmpeg::ffi::AV_TIME_BASE as f64).round() as i64;
-            
-            
+
             let _ = input.seek(target, ..target);
         }
 
@@ -641,8 +614,7 @@ impl DecoderState {
         self.input
             .seek(target, ..target)
             .with_context(|| format!("seek decoder to {seconds:.3}s"))?;
-        
-        
+
         self.decoder.flush();
         self.decoded_until = seconds;
         self.last_frame_time = None;
@@ -660,8 +632,7 @@ impl DecoderState {
         self.output_height = height;
         self.fit_width = fit_width;
         self.fit_height = fit_height;
-        
-        
+
         self.scaler = None;
         self.scaler_format = None;
         self.last_output_frame = None;
@@ -693,7 +664,7 @@ impl DecoderState {
             .duration
             .is_some_and(|duration| requested_target_seconds + frame_interval * 2.0 >= duration);
         let eof_tolerance = (frame_interval * 3.0).clamp(0.05, 0.25);
-        
+
         let mut eof_fallback = self
             .last_output_frame
             .as_ref()
@@ -704,9 +675,6 @@ impl DecoderState {
             });
         let mut nearby = Vec::new();
 
-        
-        
-        
         let stream_index = self.stream_index;
         let time_base = self.time_base;
         let output_width = self.output_width;
@@ -748,10 +716,6 @@ impl DecoderState {
             .map(Arc::new)
         };
 
-        
-        
-        
-        
         let mut packets = self.input.packets();
         loop {
             if let Some(cancel) = cancel {
@@ -763,11 +727,7 @@ impl DecoderState {
             if stream.index() != stream_index {
                 continue;
             }
-            
-            
-            
-            
-            
+
             if intra_only && !fast_keyframe_preview {
                 if let Some(packet_pts) = packet.pts().or_else(|| packet.dts()) {
                     let packet_time = packet_pts as f64 * f64::from(time_base);
@@ -811,14 +771,9 @@ impl DecoderState {
                 *decoded_until = (*decoded_until).max(timestamp);
                 *last_frame_time = Some(timestamp);
                 if cancel.is_some_and(|cancel| cancel.cancelled()) {
-                    
-                    
                     continue;
                 }
                 if timestamp + timestamp_slop < target_seconds && !fast_keyframe_preview {
-                    
-                    
-                    
                     let retain_eof_candidate =
                         allow_eof_fallback || target_seconds - timestamp <= eof_tolerance;
                     if (collect_nearby && timestamp + timestamp_slop >= cache_from)
@@ -1284,8 +1239,6 @@ impl HardwareFailure {
     }
 }
 
-
-
 struct BlockingVideoDecoder {
     path: PathBuf,
     state: Option<DecoderState>,
@@ -1302,8 +1255,6 @@ impl BlockingVideoDecoder {
     }
 
     fn new_preview(path: PathBuf) -> Self {
-        
-        
         Self::new_with_native_policy(path, false)
     }
 
@@ -1412,11 +1363,6 @@ impl BlockingVideoDecoder {
         })
     }
 
-    
-    
-    
-    
-    
     fn scrub_preview(
         &mut self,
         time: f64,
@@ -1456,8 +1402,6 @@ impl BlockingVideoDecoder {
             return Ok(Some(ScrubFrame { frame, exact: true }));
         }
 
-        
-        
         if self
             .last_scrub_decode
             .is_some_and(|last| last.elapsed() < SCRUB_DECODE_INTERVAL)
@@ -1926,9 +1870,6 @@ impl ExportVideoDecoder {
         }
         let frame = self.receive_until(key)?;
 
-        
-        
-        
         let compatible_previous =
             self.last_request
                 .is_some_and(|(_, previous_fps, previous_width, previous_height)| {
@@ -1987,9 +1928,7 @@ struct DecodeRequest {
     key: FrameKey,
     time: f64,
     source_fps: f64,
-    
-    
-    
+
     source_step_seconds: f64,
     kind: DecodeRequestKind,
 }
@@ -2109,8 +2048,6 @@ impl SharedPreviewCache {
     }
 }
 
-
-
 static VIDEO_PREVIEW_CACHES: OnceLock<Mutex<HashMap<PathBuf, Arc<SharedPreviewCache>>>> =
     OnceLock::new();
 
@@ -2144,9 +2081,6 @@ fn shared_video_preview_cache(path: &Path) -> Arc<SharedPreviewCache> {
     cache
 }
 
-
-
-
 pub(crate) fn warm_video_preview_cache(
     path: &Path,
     source_fps: f64,
@@ -2159,9 +2093,6 @@ pub(crate) fn warm_video_preview_cache(
         height: source_height.max(1),
     });
 }
-
-
-
 
 pub(crate) fn retain_video_preview_caches<'a>(paths: impl IntoIterator<Item = &'a Path>) {
     let keep = paths
@@ -2204,9 +2135,6 @@ impl DecodeWorkerQueue {
     }
 
     fn worker_loop(&self) {
-        
-        
-        
         let mut decoders: HashMap<u64, BlockingVideoDecoder> = HashMap::new();
         loop {
             let session = {
@@ -2529,10 +2457,7 @@ impl DecodeSession {
                 if self.closed.load(Ordering::Acquire) || self.current_generation() != generation {
                     continue 'requests;
                 }
-                
-                
-                
-                
+
                 let pending = self
                     .pending
                     .lock()
@@ -2575,9 +2500,6 @@ impl DecodeSession {
         self.finish_run();
     }
 }
-
-
-
 
 pub struct VideoDecoder {
     session: Arc<DecodeSession>,
@@ -2632,7 +2554,6 @@ impl VideoDecoder {
         self.scrub_preview = None;
     }
 
-    
     pub fn poll_completed(&mut self) -> bool {
         let mut changed = false;
         let generation = self.session.current_generation();
@@ -2700,9 +2621,6 @@ impl VideoDecoder {
         self.preview_cache.nearest(time, width, height)
     }
 
-    
-    
-    
     pub fn frame(
         &mut self,
         time: f64,
@@ -2765,9 +2683,7 @@ impl VideoDecoder {
             DecodeRequestKind::Playback
         };
         let cached_frame = self.cache.get(key);
-        
-        
-        
+
         let retry_due = decode_retry_due(self.last_failed, key, Instant::now());
         let retry_waiting = self
             .last_failed
@@ -2776,8 +2692,6 @@ impl VideoDecoder {
             && !self.session.has_work()
             && self.last_submitted == Some((key, kind))
         {
-            
-            
             self.last_submitted = None;
         }
         let should_submit = (self.last_failed.is_none() || retry_due)
@@ -2880,7 +2794,6 @@ impl VideoDecoder {
         (presented, self.session.has_work() || retry_waiting)
     }
 
-    
     pub fn preload(
         &mut self,
         time: f64,
@@ -2943,8 +2856,7 @@ fn video_preview_worker(
     cache: Weak<SharedPreviewCache>,
 ) {
     let duration = probe_av_media(&path).ok().and_then(|probe| probe.duration);
-    
-    
+
     let mut decoder = BlockingVideoDecoder::new_preview(path.clone());
     let mut request = match requests.recv() {
         Ok(request) => request,
@@ -2961,9 +2873,6 @@ fn video_preview_worker(
             .unwrap_or(SCRUB_THUMBNAIL_INTERVAL_SECONDS);
         let mut time = 0.0;
         loop {
-            
-            
-            
             if offline_export_has_priority() || monitor_decode_active() {
                 match requests.recv_timeout(Duration::from_millis(12)) {
                     Ok(new_request) => request = new_request,
@@ -3055,14 +2964,10 @@ fn fit_size(
     (width, height)
 }
 
-
-
 struct HardwareDecodeSelection {
     device_name: String,
     pixel_format: ffmpeg::ffi::AVPixelFormat,
-    
-    
-    
+
     rejected: AtomicBool,
 }
 
@@ -3074,8 +2979,6 @@ unsafe extern "C" fn prefer_hardware_format(
         return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
     }
 
-    
-    
     let selection = &*((*context).opaque as *const HardwareDecodeSelection);
     let mut cursor = formats;
     let mut software_fallback = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
@@ -3083,10 +2986,7 @@ unsafe extern "C" fn prefer_hardware_format(
         if *cursor == selection.pixel_format {
             return *cursor;
         }
-        
-        
-        
-        
+
         if (software_fallback as i32) < 0 {
             let descriptor = ffmpeg::ffi::av_pix_fmt_desc_get(*cursor);
             if !descriptor.is_null() && ((*descriptor).flags & (1 << 3)) == 0 {
@@ -3189,8 +3089,6 @@ fn try_enable_hardware_decode(
                 continue;
             };
 
-            
-            
             let explicit_device = if name == "vaapi" {
                 candidate_device
                     .map(str::to_owned)
@@ -3274,20 +3172,18 @@ fn transfer_code(transfer: color::TransferCharacteristic) -> u32 {
 
 fn configure_scaler_color(scaler: &mut ScalingContext, frame: &Video) {
     let coefficients = match frame.color_space() {
-        color::Space::BT709 => 1,                              
-        color::Space::FCC => 4,                                
-        color::Space::SMPTE240M => 7,                          
-        color::Space::BT2020NCL | color::Space::BT2020CL => 9, 
-        
-        
+        color::Space::BT709 => 1,
+        color::Space::FCC => 4,
+        color::Space::SMPTE240M => 7,
+        color::Space::BT2020NCL | color::Space::BT2020CL => 9,
+
         _ if frame.height() > 576 || frame.width() >= 1280 => 1,
-        _ => 5, 
+        _ => 5,
     };
     let source_full_range = i32::from(frame.color_range() == color::Range::JPEG);
     unsafe {
         let table = ffmpeg::ffi::sws_getCoefficients(coefficients);
         if !table.is_null() {
-            
             let _ = ffmpeg::ffi::sws_setColorspaceDetails(
                 scaler.as_mut_ptr(),
                 table,
@@ -3352,8 +3248,6 @@ mod decode_scheduler_tests {
 
     #[test]
     fn mixed_source_and_timeline_rates_use_source_time_step() {
-        
-        
         let request = playback_request(120, 60.0, 1.0 / 24.0);
         let frames = (1..=4)
             .map(|offset| preroll_frame_key(request, offset).frame_index)

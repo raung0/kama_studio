@@ -326,8 +326,6 @@ impl TimelineState {
                     self.selected_track = None;
                     self.select_clip(id, modifiers.shift_key());
                 } else {
-                    
-                    
                     self.primary_selected = Some(id);
                 }
                 self.drag = Some(Drag::ClipEdge {
@@ -354,18 +352,18 @@ impl TimelineState {
                 self.duplicate_selection_for_drag();
             }
             let shift_adjust = modifiers.shift_key() && !modifiers.alt_key();
-            let grabbed_is_audio = self
-                .clips
-                .iter()
-                .find(|clip| clip.id == id)
-                .is_some_and(|clip| {
-                    clip.source.is_audio()
-                        || self
-                            .tracks
-                            .iter()
-                            .find(|track| track.id == clip.track)
-                            .is_some_and(|track| track.kind == TrackKind::Audio)
-                });
+            let grabbed_is_audio =
+                self.clips
+                    .iter()
+                    .find(|clip| clip.id == id)
+                    .is_some_and(|clip| {
+                        clip.source.is_audio()
+                            || self
+                                .tracks
+                                .iter()
+                                .find(|track| track.id == clip.track)
+                                .is_some_and(|track| track.kind == TrackKind::Audio)
+                    });
             if !self.selected.is_empty() {
                 let mut origins = Vec::with_capacity(self.selected.len());
                 let mut snap_points = vec![self.playhead];
@@ -500,9 +498,6 @@ impl TimelineState {
                         ShiftClipAdjustAxis::Horizontal => {
                             let mut offset_delta = -dx / self.pixels_per_second;
 
-                            
-                            
-                            
                             if self.clip_snap {
                                 if let Some(origin) = origins
                                     .iter()
@@ -526,13 +521,13 @@ impl TimelineState {
                                                 source_duration - origin.duration.max(0.0) * speed,
                                             );
                                         }
-                                        if let Some(target) = snap_targets.into_iter().min_by(
-                                            |left, right| {
+                                        if let Some(target) =
+                                            snap_targets.into_iter().min_by(|left, right| {
                                                 (raw_offset - *left)
                                                     .abs()
                                                     .total_cmp(&(raw_offset - *right).abs())
-                                            },
-                                        ) {
+                                            })
+                                        {
                                             if (raw_offset - target).abs() <= snap_distance {
                                                 offset_delta =
                                                     (target - origin.source_offset) / speed;
@@ -550,8 +545,8 @@ impl TimelineState {
                                 else {
                                     continue;
                                 };
-                                clip.source_offset = origin.source_offset
-                                    + offset_delta * clip.speed.max(0.01);
+                                clip.source_offset =
+                                    origin.source_offset + offset_delta * clip.speed.max(0.01);
                             }
                         }
                         ShiftClipAdjustAxis::Vertical => {
@@ -583,8 +578,7 @@ impl TimelineState {
                                 if clip_is_audio {
                                     clip.volume = (origin.volume + level_delta).clamp(0.0, 1.0);
                                 } else {
-                                    clip.opacity =
-                                        (origin.opacity + level_delta).clamp(0.0, 1.0);
+                                    clip.opacity = (origin.opacity + level_delta).clamp(0.0, 1.0);
                                 }
                             }
                         }
@@ -624,10 +618,6 @@ impl TimelineState {
                 let mut dy = point[1] - start[1];
                 let can_move_vertically = points.iter().any(|key| key.vertical);
 
-                
-                
-                
-                
                 if can_move_vertically && dx.abs().max(dy.abs()) >= CLIP_DRAG_THRESHOLD_PX {
                     if dx.abs() >= dy.abs() * KEYFRAME_AXIS_LOCK_RATIO {
                         dy = 0.0;

@@ -8,9 +8,9 @@ impl TimelineState {
     fn target_pipeline_mut(&mut self, owner: KeyframeOwner) -> Option<&mut PipelineInstance> {
         match owner {
             KeyframeOwner::Track(id) => self.edit.track_mut(id)?.pipeline.as_mut(),
-            KeyframeOwner::SourceRow { track, row } => self
-                .source_row_mut(track, row)
-                .map(|row| &mut row.pipeline),
+            KeyframeOwner::SourceRow { track, row } => {
+                self.source_row_mut(track, row).map(|row| &mut row.pipeline)
+            }
         }
     }
 
@@ -61,16 +61,17 @@ impl TimelineState {
                 let KeyframeOwner::SourceRow { track, row } = target.owner else {
                     return None;
                 };
-                let VisualSource::Generator(generator) = &mut self.source_row_mut(track, row)?.source else {
+                let VisualSource::Generator(generator) =
+                    &mut self.source_row_mut(track, row)?.source
+                else {
                     return None;
                 };
                 generator.host_binding_mut(input)?.gpu_mut()
             }
             KeyframeProperty::Model3d(input) => match target.owner {
-                KeyframeOwner::SourceRow { track, row } => self
-                    .source_row_mut(track, row)?
-                    .model3d
-                    .binding_mut(input),
+                KeyframeOwner::SourceRow { track, row } => {
+                    self.source_row_mut(track, row)?.model3d.binding_mut(input)
+                }
                 KeyframeOwner::Track(_) => None,
             },
             KeyframeProperty::LocalHost { .. } | KeyframeProperty::GeneratorHost(_) => None,
@@ -93,7 +94,9 @@ impl TimelineState {
                 let KeyframeOwner::SourceRow { track, row } = target.owner else {
                     return None;
                 };
-                let VisualSource::Generator(generator) = &mut self.source_row_mut(track, row)?.source else {
+                let VisualSource::Generator(generator) =
+                    &mut self.source_row_mut(track, row)?.source
+                else {
                     return None;
                 };
                 generator.host_binding_mut(input)
@@ -330,16 +333,11 @@ impl TimelineState {
                 track_group,
             );
         }
-        for (row_index, row) in track
-            .property_rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| {
-                self.clips
-                    .iter()
-                    .any(|clip| clip.track == track.id && row.matches(clip))
-            })
-        {
+        for (row_index, row) in track.property_rows.iter().enumerate().filter(|(_, row)| {
+            self.clips
+                .iter()
+                .any(|clip| clip.track == track.id && row.matches(clip))
+        }) {
             let owner = KeyframeOwner::SourceRow {
                 track: track.id,
                 row: row_index,
@@ -389,7 +387,6 @@ impl TimelineState {
             }
         }
 
-        
         let mut group_order = HashMap::new();
         for lane in &lanes {
             let next = group_order.len();

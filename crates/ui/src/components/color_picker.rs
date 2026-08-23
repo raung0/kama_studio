@@ -54,8 +54,6 @@ struct Textures {
     signature: Option<u64>,
 }
 
-
-
 pub struct ColorPicker {
     linear: [f32; 4],
     hue: f32,
@@ -111,8 +109,6 @@ impl ColorPicker {
         self.hex.set_focused(false);
     }
 
-    
-    
     pub fn open_and_focus_hex(&mut self) {
         self.open = true;
         self.t = self.t.max(0.05);
@@ -391,9 +387,6 @@ impl ColorPicker {
                 }
             });
         } else {
-            
-            
-            
             crate::ui!(ctx, {
                 Rect(@format("color-picker-wheel {id}"), layout.plane) {
                     overlay; opacity: opacity; fill: Color::WHITE;
@@ -497,8 +490,7 @@ impl ColorPicker {
                 rect.bottom() + 4.0,
             )
         };
-        
-        
+
         let popup = Rect::new(
             x,
             y - (1.0 - self.t) * 5.0,
@@ -682,7 +674,7 @@ impl ColorPicker {
                     }
                     Mode::Rgb => {}
                 }
-                
+
                 self.hue = hue;
                 self.textures.signature = None;
             }
@@ -897,8 +889,6 @@ fn wheel_triangle_pixel(
     geometry: WheelGeometry,
     point: [f32; 2],
 ) -> [f32; 4] {
-    
-    
     const AA_RADIUS: f32 = 0.85;
 
     let dx = point[0] - geometry.center[0];
@@ -914,8 +904,7 @@ fn wheel_triangle_pixel(
         if ring_coverage > 0.0 {
             return color;
         }
-        
-        
+
         if ring_distance > -AA_RADIUS * 1.25 {
             return color;
         }

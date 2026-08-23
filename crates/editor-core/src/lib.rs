@@ -1,9 +1,3 @@
-
-
-
-
-
-
 pub mod document;
 pub mod effects;
 mod history;

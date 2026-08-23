@@ -24,10 +24,6 @@ impl VideoDecoderPool {
             return;
         }
 
-        
-        
-        
-        
         self.slots
             .sort_unstable_by_key(|slot| std::cmp::Reverse(slot.last_used));
         let concurrent = self
@@ -52,10 +48,6 @@ impl VideoDecoderPool {
             return &mut self.slots[index].decoder;
         }
 
-        
-        
-        
-        
         if reserve {
             if let Some(index) = self
                 .slots
@@ -67,11 +59,6 @@ impl VideoDecoderPool {
                 return &mut self.slots[index].decoder;
             }
         } else {
-            
-            
-            
-            
-            
             let previous_generation = generation.wrapping_sub(1);
             if let Some(index) = self.slots.iter().position(|slot| {
                 slot.path.as_path() == path

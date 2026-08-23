@@ -175,7 +175,7 @@ pub enum MediaTrackKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaTrackInfo {
     pub kind: MediaTrackKind,
-    
+
     pub stream_index: usize,
     pub codec: String,
     pub bit_rate: Option<u64>,
@@ -214,7 +214,6 @@ pub struct VideoWaveform {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioWaveform {
-    
     pub bands: [Vec<u8>; 6],
 }
 
@@ -260,8 +259,6 @@ pub struct MediaAsset {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum GeneratorSource {
-    
-    
     Plugin {
         generator_type: String,
         parameters: BTreeMap<String, HostBinding>,
@@ -300,11 +297,10 @@ impl GeneratorSource {
 pub enum VisualSource {
     Media(MediaId),
     Composition(CompositionId),
-    
-    
+
     Audio(MediaId),
     Generator(GeneratorSource),
-    
+
     EffectInput,
     AudioPlaceholder,
 }
