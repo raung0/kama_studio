@@ -165,14 +165,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Keep release CI independent of Xcode's AssetCatalogAgent/actool.
-          # The custom Icon Composer pipeline is useful for local packaging, but
-          # has proven unstable on hosted runners. cargo-bundle already creates
-          # a valid .app; runtime dylibs are added and the bundle is re-signed in
-          # the next step.
-          MACOSX_DEPLOYMENT_TARGET=15.0 \
-            cargo bundle --release --format osx --package kama
-          test -d target/release/bundle/osx/Kama.app
+          cargo install --git https://github.com/viraptor/actool --tag v2.2.4 actool
+          ./scripts/bundle-macos.sh
 
       - name: Bundle Homebrew runtime libraries
         shell: bash
