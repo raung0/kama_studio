@@ -165,7 +165,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo install --git https://github.com/viraptor/actool --tag v2.2.4 actool
+          cargo install --git https://github.com/viraptor/actool --tag 2.2.4 actool
           ./scripts/bundle-macos.sh
 
       - name: Bundle Homebrew runtime libraries
