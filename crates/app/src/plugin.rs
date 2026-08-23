@@ -1240,7 +1240,7 @@ fn validate_wasm_generator(
 }
 
 fn validate_wgpu_shader(device: &wgpu::Device, key: &str, source: &str) -> Result<()> {
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(key),
         source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -1249,10 +1249,11 @@ fn validate_wgpu_shader(device: &wgpu::Device, key: &str, source: &str) -> Resul
         label: Some(key),
         layout: None,
         module: &module,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
     });
-    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+    if let Some(error) = pollster::block_on(error_scope.pop()) {
         bail!("GPU effect {key} failed wgpu validation: {error}");
     }
     Ok(())

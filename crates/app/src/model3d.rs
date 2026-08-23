@@ -387,14 +387,14 @@ fn upload_texture(
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         pixels,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(width * 4),
             rows_per_image: Some(height),
@@ -457,7 +457,7 @@ impl GpuModel {
             address_mode_w: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let mut gpu_materials = Vec::with_capacity(mesh.materials.len());
@@ -762,8 +762,8 @@ impl ModelRenderer {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("kama 3D pipeline layout"),
-            bind_group_layouts: &[&scene_layout, &material_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&scene_layout), Some(&material_layout)],
+            immediate_size: 0,
         });
         let premultiplied = wgpu::BlendState {
             color: wgpu::BlendComponent {
@@ -784,8 +784,8 @@ impl ModelRenderer {
                     layout: Some(&layout),
                     vertex: wgpu::VertexState {
                         module: &shader,
-                        entry_point: "vs_main",
-                        buffers: &[wgpu::VertexBufferLayout {
+                        entry_point: Some("vs_main"),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
                             array_stride: mem::size_of::<GpuModelVertex>() as wgpu::BufferAddress,
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &[
@@ -810,12 +810,12 @@ impl ModelRenderer {
                                     shader_location: 3,
                                 },
                             ],
-                        }],
+                        })],
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: "fs_main",
+                        entry_point: Some("fs_main"),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: wgpu::TextureFormat::Rgba16Float,
                             blend,
@@ -834,13 +834,14 @@ impl ModelRenderer {
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth32Float,
-                        depth_write_enabled,
-                        depth_compare: wgpu::CompareFunction::Less,
+                        depth_write_enabled: Some(depth_write_enabled),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
+                    multiview_mask: None,
+                    cache: None,
                 })
             };
         let opaque_pipeline = make_pipeline("kama realtime 3D opaque pipeline", None, true);
@@ -922,6 +923,7 @@ impl ModelRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output.view(),
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.0,
@@ -942,6 +944,7 @@ impl ModelRenderer {
                 }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             pass.set_bind_group(0, &scene_group, &[]);
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));

@@ -1026,14 +1026,14 @@ impl VideoGpuRuntime {
             return false;
         }
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &output.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             bytemuck::cast_slice(&frame.pixels),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(frame.width * 16),
                 rows_per_image: Some(frame.height),
@@ -1218,14 +1218,14 @@ impl VideoGpuRuntime {
                     bytemuck::bytes_of(&video_color_uniform(frame)),
                 );
                 queue.write_texture(
-                    wgpu::ImageCopyTexture {
+                    wgpu::TexelCopyTextureInfo {
                         texture: &surface.source,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
                     },
                     pixels,
-                    wgpu::ImageDataLayout {
+                    wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(frame.source_width * 8),
                         rows_per_image: Some(frame.source_height),
@@ -2222,14 +2222,14 @@ fn write_av_plane(
     let stride = frame.stride(plane) as u32;
     debug_assert!(stride >= width.saturating_mul(bytes_per_pixel));
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         frame.data(plane),
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
 
             bytes_per_row: Some(stride),
@@ -2864,9 +2864,9 @@ fn try_compute_pipeline(
     source: &str,
     layout_kind: ComputeLayout,
 ) -> Result<wgpu::ComputePipeline> {
-    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let pipeline = compute_pipeline(device, label, source, layout_kind);
-    if let Some(error) = pollster::block_on(device.pop_error_scope()) {
+    if let Some(error) = pollster::block_on(error_scope.pop()) {
         bail!("{label} validation failed: {error}");
     }
     Ok(pipeline)
@@ -2970,16 +2970,17 @@ fn compute_pipeline(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
-        bind_group_layouts: &[&bind_group_layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
     });
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
         layout: Some(&pipeline_layout),
         module: &module,
-        entry_point: "main",
+        entry_point: Some("main"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
     })
 }
 

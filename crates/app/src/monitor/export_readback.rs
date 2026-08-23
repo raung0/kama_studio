@@ -322,15 +322,15 @@ impl EncodeReadbackSurface {
         }
         for (plane, texture) in self.textures.iter().enumerate() {
             encoder.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyBuffer {
+                wgpu::TexelCopyBufferInfo {
                     buffer: &self.buffer,
-                    layout: wgpu::ImageDataLayout {
+                    layout: wgpu::TexelCopyBufferLayout {
                         offset: self.plane_stride * plane as u64,
                         bytes_per_row: Some(self.padded_row_bytes as u32),
                         rows_per_image: Some(self.height),

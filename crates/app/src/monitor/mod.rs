@@ -1740,15 +1740,15 @@ impl MonitorState {
                 &surface.view,
             );
             encoder.copy_texture_to_buffer(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &surface.texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyBuffer {
+                wgpu::TexelCopyBufferInfo {
                     buffer: &surface.buffer,
-                    layout: wgpu::ImageDataLayout {
+                    layout: wgpu::TexelCopyBufferLayout {
                         offset: 0,
                         bytes_per_row: Some(surface.padded_row_bytes as u32),
                         rows_per_image: Some(height),
@@ -1772,7 +1772,7 @@ impl MonitorState {
                 match rx.try_recv() {
                     Ok(result) => break result,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        device.poll(wgpu::Maintain::Poll);
+                        let _ = device.poll(wgpu::PollType::Poll);
                         std::thread::sleep(std::time::Duration::from_micros(250));
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1781,7 +1781,9 @@ impl MonitorState {
                 }
             };
             map_result.map_err(|error| anyhow::anyhow!("map export frame: {error}"))?;
-            let mapped = slice.get_mapped_range();
+            let mapped = slice
+                .get_mapped_range()
+                .map_err(|error| anyhow::anyhow!("get mapped export frame: {error}"))?;
             let consumed = consume(
                 &mapped,
                 surface.row_bytes as usize,
@@ -1887,7 +1889,10 @@ impl MonitorState {
                         false
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        let _ = device.poll(wgpu::Maintain::WaitForSubmissionIndex(submission));
+                        let _ = device.poll(wgpu::PollType::Wait {
+                            submission_index: Some(submission),
+                            timeout: None,
+                        });
                         match rx.recv() {
                             Ok(Ok(())) => true,
                             Ok(Err(error)) => {
@@ -1906,7 +1911,14 @@ impl MonitorState {
                 let surface = self.export_readbacks.encode(index);
                 if mapped_ok {
                     let slice = surface.buffer.slice(..);
-                    let mapped = slice.get_mapped_range();
+                    let mapped = match slice.get_mapped_range() {
+                        Ok(mapped) => mapped,
+                        Err(error) => {
+                            map_error.get_or_insert_with(|| error.to_string());
+                            surface.buffer.unmap();
+                            continue;
+                        }
+                    };
                     if write_error.is_none() {
                         if let Err(error) = surface.write_mapped(&mapped, writer) {
                             write_error = Some(error);

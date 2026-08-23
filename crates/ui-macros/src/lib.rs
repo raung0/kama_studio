@@ -8,7 +8,8 @@ use syn::{
     ext::IdentExt,
     parenthesized,
     parse::{Parse, ParseStream},
-    parse_macro_input, Error, Expr, FnArg, Ident, ItemImpl, LitStr, Pat, Path, Result, Token, Type,
+    parse_macro_input, Error, Expr, FnArg, Ident, ItemImpl, LitStr, Pat, Path, ReceiverKind,
+    Result, Token, Type,
 };
 
 #[proc_macro]
@@ -539,7 +540,7 @@ fn expand_component_impl(args: ComponentArgs, item: ItemImpl) -> Result<TokenStr
             "generic component impls are not supported yet",
         ));
     }
-    let Some((_, trait_path, _)) = &item.trait_ else {
+    let Some((trait_path, _)) = &item.trait_ else {
         return Err(Error::new_spanned(
             &item.self_ty,
             "ui_component must annotate `impl Component for Type`",
@@ -589,7 +590,7 @@ fn expand_component_impl(args: ComponentArgs, item: ItemImpl) -> Result<TokenStr
             "ui method requires `&mut self`",
         ));
     };
-    if receiver.reference.is_none() || receiver.mutability.is_none() {
+    if !matches!(receiver.kind, ReceiverKind::Reference(_, _, Some(_))) {
         return Err(Error::new_spanned(
             receiver,
             "ui method requires `&mut self`",

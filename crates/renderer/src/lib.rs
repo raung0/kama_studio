@@ -326,7 +326,7 @@ impl Renderer {
     pub async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
             .create_surface(window)
             .context("create wgpu surface")?;
@@ -335,22 +335,31 @@ impl Renderer {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .context("no suitable graphics adapter")?;
-        let mut required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
-        if !adapter.features().contains(required_features) {
+        let adapter_features = adapter.features();
+        let mut required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        if !adapter_features.contains(required_features) {
             anyhow::bail!(
-                "graphics adapter does not support TEXTURE_FORMAT_16BIT_NORM, required for native high-bit-depth video upload"
+                "graphics adapter does not support the texture-format features required for native high-bit-depth video"
             );
         }
-        let _ =
-            format_args!("gpu: enabled TEXTURE_FORMAT_16BIT_NORM for native high-bit-depth video");
+        let r16uint_features = adapter.get_texture_format_features(wgpu::TextureFormat::R16Uint);
+        if !r16uint_features
+            .allowed_usages
+            .contains(wgpu::TextureUsages::STORAGE_BINDING)
+        {
+            anyhow::bail!("graphics adapter does not support R16Uint storage textures");
+        }
+        let _ = format_args!(
+            "gpu: enabled native adapter texture-format features for high-bit-depth video"
+        );
 
         if cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            && adapter
-                .features()
-                .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+            && adapter_features.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
         {
             required_features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
             let _ =
@@ -358,14 +367,14 @@ impl Renderer {
         }
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("block-ui device"),
-                    required_features,
-                    required_limits: wgpu::Limits::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("block-ui device"),
+                required_features,
+                required_limits: wgpu::Limits::default(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .context("request wgpu device")?;
         let device = Arc::new(device);
@@ -386,6 +395,7 @@ impl Renderer {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
@@ -420,13 +430,13 @@ impl Renderer {
             layout: None,
             vertex: wgpu::VertexState {
                 module: &present_shader,
-                entry_point: "vs_present",
+                entry_point: Some("vs_present"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &present_shader,
-                entry_point: "fs_present",
+                entry_point: Some("fs_present"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: None,
@@ -437,7 +447,8 @@ impl Renderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         let frame_buffer = gpu_buffer(
@@ -459,7 +470,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -505,14 +516,14 @@ impl Renderer {
             view_formats: &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &dummy_external_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &[255, 255, 255, 255],
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
@@ -739,15 +750,27 @@ impl Renderer {
             .any(|command| command.shape_data[0] == 2);
 
         let output = match self.surface.get_current_texture() {
-            Ok(output) => output,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(output)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+            wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
-                self.surface
-                    .get_current_texture()
-                    .context("reacquire surface texture")?
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(output)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+                    wgpu::CurrentSurfaceTexture::Outdated
+                    | wgpu::CurrentSurfaceTexture::Lost
+                    | wgpu::CurrentSurfaceTexture::Validation => {
+                        bail!("failed to reacquire surface texture")
+                    }
+                }
             }
-            Err(wgpu::SurfaceError::Timeout) => return Ok(()),
-            Err(wgpu::SurfaceError::OutOfMemory) => bail!("surface out of memory"),
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(())
+            }
+            wgpu::CurrentSurfaceTexture::Lost => bail!("surface lost"),
+            wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),
         };
         let output_view = output
             .texture
@@ -881,6 +904,7 @@ impl Renderer {
                 label: Some("Present"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &output_view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -890,6 +914,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.present_pipeline);
             pass.set_bind_group(
@@ -903,7 +928,7 @@ impl Renderer {
         }
 
         self.queue.submit(Some(encoder.finish()));
-        output.present();
+        self.queue.present(output);
         Ok(())
     }
 
@@ -1109,8 +1134,8 @@ fn write_bytes(queue: &wgpu::Queue, buffer: &wgpu::Buffer, bytes: &[u8]) {
     }
 }
 
-fn image_copy(texture: &wgpu::Texture) -> wgpu::ImageCopyTexture<'_> {
-    wgpu::ImageCopyTexture {
+fn image_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
+    wgpu::TexelCopyTextureInfo {
         texture,
         mip_level: 0,
         origin: wgpu::Origin3d::ZERO,
@@ -1134,8 +1159,9 @@ fn compute_pipeline(
         label: Some(entry_point),
         layout: None,
         module,
-        entry_point,
+        entry_point: Some(entry_point),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
     })
 }
 
@@ -1368,6 +1394,7 @@ fn mip_view(texture: &wgpu::Texture, label: &str, base_mip_level: u32) -> wgpu::
         mip_level_count: Some(1),
         base_array_layer: 0,
         array_layer_count: Some(1),
+        usage: None,
     })
 }
 

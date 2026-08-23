@@ -20,28 +20,28 @@ rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-pat
 vfs = { version = "0.13", features = ["embedded-fs"] }
 kama-ui = { path = "../ui" }
 kama-editor-core = { path = "../editor-core" }
-pollster = "0.3"
+pollster = "1.0.1"
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1.4"
 image = "0.25.10"
 ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "format", "software-scaling"] }
 flate2 = "1"
-naga = { version = "0.20", features = ["wgsl-in", "wgsl-out"] }
+naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out"] }
 open = "5"
 cosmic-text = "0.19"
 rfd = "0.17.2"
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
-wgpu = "0.20"
+wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
-wasmtime = "24.0.10"
+wasmtime = "40.0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.19.3"
 
 [build-dependencies]
-resvg = "0.47"
+resvg = "0.48.1"
 winresource = "0.1"
 
 [package.metadata.bundle]

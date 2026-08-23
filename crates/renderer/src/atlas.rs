@@ -176,14 +176,14 @@ impl TextureAtlas {
 
     fn write(&self, queue: &wgpu::Queue, x: u32, y: u32, width: u32, height: u32, pixels: &[u8]) {
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x, y, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             pixels,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width * self.bytes_per_pixel),
                 rows_per_image: Some(height),
