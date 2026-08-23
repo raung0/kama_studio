@@ -103,7 +103,9 @@ impl WasmRuntime {
         let mut config = Config::new();
         config.strategy(Strategy::Cranelift);
         config.consume_fuel(true);
-        let engine = Engine::new(&config).context("create Wasmtime engine")?;
+        let engine = Engine::new(&config)
+            .map_err(anyhow::Error::from)
+            .context("create Wasmtime engine")?;
         Ok(Self {
             engine,
             modules: HashMap::new(),
@@ -189,27 +191,32 @@ impl WasmRuntime {
         store.limiter(|state| &mut state.limits);
         store
             .set_fuel(render_fuel_budget(width, height))
+            .map_err(anyhow::Error::from)
             .context("set WASM render fuel budget")?;
 
         let mut linker = Linker::new(&self.engine);
         install_host_abi(&mut linker)?;
         let instance = linker
             .instantiate(&mut store, &module)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("instantiate {}", module_path.display()))?;
         let memory = instance
             .get_memory(&mut store, "memory")
             .context("CPU plugin must export memory as `memory`")?;
         let alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "kama_alloc")
+            .map_err(anyhow::Error::from)
             .context("CPU plugin must export kama_alloc(i32) -> i32")?;
         let render = instance
             .get_typed_func::<(i32, i32, i32, i32, f64), i32>(&mut store, entry)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("CPU plugin missing render export `{entry}`"))?;
 
         let params_len =
             i32::try_from(params.len()).context("CPU plugin parameter block too large")?;
         let params_ptr = alloc
             .call(&mut store, params_len)
+            .map_err(anyhow::Error::from)
             .context("CPU plugin kama_alloc failed")?;
         if params_ptr < 0 {
             bail!("CPU plugin kama_alloc returned a negative pointer");
@@ -223,6 +230,7 @@ impl WasmRuntime {
                 &mut store,
                 (params_ptr, params_len, width_i32, height_i32, local_time),
             )
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("CPU plugin `{entry}` trapped"))?;
         if output_ptr < 0 {
             bail!("CPU plugin returned a negative frame pointer");
@@ -279,20 +287,24 @@ impl WasmRuntime {
         store.limiter(|state| &mut state.limits);
         store
             .set_fuel(BASE_FUEL_PER_RENDER)
+            .map_err(anyhow::Error::from)
             .context("set WASM monitor fuel budget")?;
         let mut linker = Linker::new(&self.engine);
         install_host_abi(&mut linker)?;
         let instance = linker
             .instantiate(&mut store, &module)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("instantiate monitor module {}", module_path.display()))?;
         let memory = instance
             .get_memory(&mut store, "memory")
             .context("monitor plugin must export memory")?;
         let overlay = instance
             .get_typed_func::<(f32, f32, f64), i64>(&mut store, entry)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("monitor plugin missing export `{entry}`"))?;
         let descriptor = overlay
             .call(&mut store, (size[0], size[1], time))
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("monitor plugin `{entry}` trapped"))?
             as u64;
         let pointer = descriptor as u32 as usize;
@@ -373,6 +385,7 @@ impl WasmRuntime {
             } else {
                 Module::from_file(&self.engine, path)
             }
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("compile CPU plugin {}", path.display()))?,
         );
         self.modules.insert(path.to_path_buf(), module.clone());
@@ -409,7 +422,9 @@ impl AudioWasmRuntime {
         config.strategy(Strategy::Cranelift);
         config.consume_fuel(true);
         Ok(Self {
-            engine: Engine::new(&config).context("create audio Wasmtime engine")?,
+            engine: Engine::new(&config)
+                .map_err(anyhow::Error::from)
+                .context("create audio Wasmtime engine")?,
             modules: HashMap::new(),
         })
     }
@@ -433,6 +448,7 @@ impl AudioWasmRuntime {
                 } else {
                     Module::from_file(&self.engine, module_path)
                 }
+                .map_err(anyhow::Error::from)
                 .with_context(|| format!("compile audio plugin {}", module_path.display()))?,
             );
             self.modules
@@ -455,20 +471,24 @@ impl AudioWasmRuntime {
         store.limiter(|state| &mut state.limits);
         store
             .set_fuel(AUDIO_INIT_FUEL)
+            .map_err(anyhow::Error::from)
             .context("set audio WASM initialization fuel budget")?;
         let mut linker = Linker::new(&self.engine);
         install_audio_host_abi(&mut linker)?;
         let instance = linker
             .instantiate(&mut store, &module)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("instantiate audio plugin {}", module_path.display()))?;
         let memory = instance
             .get_memory(&mut store, "memory")
             .context("audio plugin must export memory as `memory`")?;
         let alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "kama_alloc")
+            .map_err(anyhow::Error::from)
             .context("audio plugin must export kama_alloc(i32) -> i32")?;
         let process = instance
             .get_typed_func::<(i32, i32, i32, i32, i32), i32>(&mut store, entry)
+            .map_err(anyhow::Error::from)
             .with_context(|| format!("audio plugin missing process export `{entry}`"))?;
         let byte_capacity = sample_capacity
             .checked_mul(std::mem::size_of::<f32>())
@@ -477,6 +497,7 @@ impl AudioWasmRuntime {
             i32::try_from(byte_capacity).context("audio plugin block exceeds i32")?;
         let buffer_ptr = alloc
             .call(&mut store, byte_capacity)
+            .map_err(anyhow::Error::from)
             .context("audio plugin kama_alloc failed")?;
         if buffer_ptr <= 0 {
             bail!("audio plugin kama_alloc returned an invalid pointer");
@@ -512,6 +533,7 @@ impl AudioWasmProcessor {
                 AUDIO_BASE_FUEL
                     .saturating_add((samples.len() as u64).saturating_mul(AUDIO_FUEL_PER_SAMPLE)),
             )
+            .map_err(anyhow::Error::from)
             .context("set audio WASM fuel budget")?;
         if !samples.is_empty() {
             self.memory
@@ -535,6 +557,7 @@ impl AudioWasmProcessor {
                     if reset { 1 } else { 0 },
                 ),
             )
+            .map_err(anyhow::Error::from)
             .context("audio plugin trapped")?;
         if status != 0 {
             bail!("audio plugin returned status {status}");
