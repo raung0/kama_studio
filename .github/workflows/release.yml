@@ -64,6 +64,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/package
           cp target/release/kama dist/package/kama
+          cp LICENSE dist/package/LICENSE
           tar -C dist/package -czf "dist/kama-${RELEASE_TAG}-linux-x86_64.tar.gz" .
           rm -rf dist/package
 
@@ -104,6 +105,7 @@ jobs:
           $package = 'dist/package'
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item 'target/release/kama.exe' "$package/kama.exe"
+          Copy-Item 'LICENSE' "$package/LICENSE"
 
           Get-ChildItem -Path $env:KAMA_FFMPEG_BIN -Filter '*.dll' | Copy-Item -Destination $package
 
@@ -178,10 +180,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
-            target/release/bundle/osx/Kama.app \
+          mkdir -p dist/package
+          /usr/bin/ditto target/release/bundle/osx/Kama.app dist/package/Kama.app
+          cp LICENSE dist/package/LICENSE
+          /usr/bin/ditto -c -k --sequesterRsrc \
+            dist/package \
             "dist/kama-${RELEASE_TAG}-macos-arm64.zip"
+          rm -rf dist/package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
