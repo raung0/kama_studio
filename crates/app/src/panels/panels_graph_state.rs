@@ -1847,7 +1847,6 @@ impl PipelineGraphState {
         self.block_selection = None;
     }
 
-
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         let toolbar = graph_toolbar_layout(rect);
         let pipeline_count = self.last_pipeline_count.saturating_add(1);

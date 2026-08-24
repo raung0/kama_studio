@@ -572,7 +572,13 @@ pub fn measure_layout<R>(
     let mut rects = HashMap::new();
     let mut scroll_ranges = HashMap::new();
     collect(&blocks, &mut rects, &mut scroll_ranges);
-    (result, LayoutRects { rects, scroll_ranges })
+    (
+        result,
+        LayoutRects {
+            rects,
+            scroll_ranges,
+        },
+    )
 }
 
 impl BuildCtx {
@@ -1064,7 +1070,7 @@ impl Ui<'_> {
                 None => {
                     overlay_commands.extend(popup_commands);
                     break (base_commands, overlay_commands, vertices);
-                },
+                }
                 Some(err) if !retried_glyph_atlas && err.downcast_ref::<AtlasFull>().is_some() => {
                     self.gui.glyphs.clear();
                     self.renderer.reset_glyph_atlas();

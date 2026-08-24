@@ -467,9 +467,7 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
     }
 
     fn is_cursor_lock_dragging(&self) -> bool {
-        self.numbers.is_dragging()
-            || self.angles.is_number_dragging()
-            || self.sliders.is_dragging()
+        self.numbers.is_dragging() || self.angles.is_number_dragging() || self.sliders.is_dragging()
     }
 
     fn pointer_released(&mut self) -> bool {
@@ -489,7 +487,6 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
             [point[0] - rect.x, point[1] - rect.y],
         )
     }
-
 
     fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool
     where
@@ -895,7 +892,6 @@ impl InspectorState {
         self.context_menu = None;
         self.clear_editor_focus();
     }
-
 
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         let context_menu = self.context_menu.as_ref().is_some_and(|menu| {

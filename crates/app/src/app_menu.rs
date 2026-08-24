@@ -870,8 +870,7 @@ impl EditorApp {
             AppMenuState::View => {
                 self.app_menu = AppMenuState::Closed;
                 self.app_menu_keyboard.active = false;
-                if let Some(command) = self.command_registry.command(VIEW_MENU_COMMAND.id)
-                {
+                if let Some(command) = self.command_registry.command(VIEW_MENU_COMMAND.id) {
                     self.command_queue.push(command);
                 }
             }
@@ -1116,9 +1115,8 @@ impl EditorApp {
                 }
             }
             AppMenuState::Help => {
-                if let Some(index) =
-                    (0..HELP_MENU_COMMANDS.len() + 1)
-                        .find(|index| help_menu_item_rect(*index).contains(self.cursor))
+                if let Some(index) = (0..HELP_MENU_COMMANDS.len() + 1)
+                    .find(|index| help_menu_item_rect(*index).contains(self.cursor))
                 {
                     self.app_menu_keyboard.item = index;
                     self.app_menu_keyboard.active = false;
@@ -1202,9 +1200,7 @@ impl EditorApp {
             AppMenuState::View => {
                 if view_menu_item_rect().contains(self.cursor) {
                     self.app_menu = AppMenuState::Closed;
-                    if let Some(command) =
-                        self.command_registry.command(VIEW_MENU_COMMAND.id)
-                    {
+                    if let Some(command) = self.command_registry.command(VIEW_MENU_COMMAND.id) {
                         self.command_queue.push(command);
                     }
                     return true;
@@ -1247,7 +1243,8 @@ impl EditorApp {
                     self.handle_layout_command(LayoutCommand::RestoreDefault);
                     return true;
                 }
-                if count > 0 && saved_layout_menu_item_rect(count + 2, count).contains(self.cursor) {
+                if count > 0 && saved_layout_menu_item_rect(count + 2, count).contains(self.cursor)
+                {
                     self.app_menu = AppMenuState::Layout { delete: !delete };
                     return true;
                 }
@@ -1334,9 +1331,19 @@ pub(super) fn build_app_menu(
         build_popup(ctx, "app-file-menu-popup", popup);
 
         let mut items = vec![
-            (FILE_NEW_PROJECT.label.to_string(), Some(FILE_NEW_PROJECT.id), true, None),
+            (
+                FILE_NEW_PROJECT.label.to_string(),
+                Some(FILE_NEW_PROJECT.id),
+                true,
+                None,
+            ),
             (FILE_SAVE.label.to_string(), Some(FILE_SAVE.id), true, None),
-            (FILE_SAVE_AS.label.to_string(), Some(FILE_SAVE_AS.id), true, None),
+            (
+                FILE_SAVE_AS.label.to_string(),
+                Some(FILE_SAVE_AS.id),
+                true,
+                None,
+            ),
             (
                 FILE_OPEN_PROJECT.label.to_string(),
                 Some(FILE_OPEN_PROJECT.id),
@@ -1577,7 +1584,10 @@ pub(super) fn app_menu_height() -> f32 {
 pub(super) fn dock_tab_close_rect(tab: Rect) -> Rect {
     kama_ui::layout::row(
         tab,
-        &[kama_ui::layout::Item::width(18.0), kama_ui::layout::Item::fill()],
+        &[
+            kama_ui::layout::Item::width(18.0),
+            kama_ui::layout::Item::fill(),
+        ],
         2.0,
         2.0,
         ui::Align::Start,

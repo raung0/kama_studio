@@ -12,8 +12,8 @@ use winit::{
 };
 
 use crate::{
-    command::{fuzzy_score, CommandRegistry, KeyBinding},
     app_modal::PopupAnimation,
+    command::{fuzzy_score, CommandRegistry, KeyBinding},
     dialog,
     file_io::{app_data_dir, atomic_write_json, read_json},
     runtime::media::{hardware_decoding_enabled, set_hardware_decoding_enabled},
@@ -530,7 +530,8 @@ impl SettingsDialog {
         self.plugin_paths.tick(dt);
     }
     pub(crate) fn is_animating(&self) -> bool {
-        self.animation.is_animating() || self.search.query.is_animating()
+        self.animation.is_animating()
+            || self.search.query.is_animating()
             || self.dark_accent.is_animating()
             || self.light_accent.is_animating()
             || self.theme_combo.is_animating()
@@ -740,23 +741,26 @@ impl SettingsDialog {
 
                 if let Some(swatch) = dark_accent_swatch {
                     self.dark_accent.build_in(
-                            ctx,
-                            "settings-dark-accent",
-                            swatch,
-                            rect,
-                            component_style(),
-                        );
-                    }
-                    if let Some(swatch) = light_accent_swatch {
-                        self.light_accent.build_in(
-                            ctx,
-                            "settings-light-accent",
-                            swatch,
-                            rect,
-                            component_style(),
-                        );
-                    }
-                if let Some(index) = entries.iter().position(|entry| *entry == SettingEntry::Theme) {
+                        ctx,
+                        "settings-dark-accent",
+                        swatch,
+                        rect,
+                        component_style(),
+                    );
+                }
+                if let Some(swatch) = light_accent_swatch {
+                    self.light_accent.build_in(
+                        ctx,
+                        "settings-light-accent",
+                        swatch,
+                        rect,
+                        component_style(),
+                    );
+                }
+                if let Some(index) = entries
+                    .iter()
+                    .position(|entry| *entry == SettingEntry::Theme)
+                {
                     self.theme_combo.build_popup(
                         ctx,
                         "settings-theme-value",
@@ -959,7 +963,10 @@ impl SettingsDialog {
                 return true;
             }
         }
-        if self.search.close_if_outside(rect, layout.shell.close, point) {
+        if self
+            .search
+            .close_if_outside(rect, layout.shell.close, point)
+        {
             self.animation.close();
             return true;
         }
@@ -1163,10 +1170,7 @@ impl SettingsDialog {
             .position(|entry| *entry == SettingEntry::PluginPaths)
         {
             if self.plugin_paths.is_focused() {
-                return Some(
-                    self.plugin_paths
-                        .caret_rect(layout.items[index].value),
-                );
+                return Some(self.plugin_paths.caret_rect(layout.items[index].value));
             }
         }
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
@@ -1365,7 +1369,10 @@ impl KeybindsDialog {
         let rect = keybinds_rect(width, height);
         let indices = filtered_keybind_indices(registry, self.search.query.text());
         let layout = self.search.rects(rect, indices.len(), 0.62);
-        if self.search.close_if_outside(rect, layout.shell.close, point) {
+        if self
+            .search
+            .close_if_outside(rect, layout.shell.close, point)
+        {
             self.animation.close();
             return true;
         }
@@ -1379,7 +1386,8 @@ impl KeybindsDialog {
         if !layout.shell.rows.contains(point) {
             return true;
         }
-        let Some(visible_index) = layout.items.iter().position(|row| row.row.contains(point)) else {
+        let Some(visible_index) = layout.items.iter().position(|row| row.row.contains(point))
+        else {
             return true;
         };
         let definition_index = indices[visible_index];

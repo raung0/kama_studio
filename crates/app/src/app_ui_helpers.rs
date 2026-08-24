@@ -856,12 +856,20 @@ pub(super) fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
             } else {
                 360.0
             },
-            title_h: if replacement { dialog::SEARCH_DIALOG_TITLE_HEIGHT } else { 0.0 },
+            title_h: if replacement {
+                dialog::SEARCH_DIALOG_TITLE_HEIGHT
+            } else {
+                0.0
+            },
             input_h: dialog::SEARCH_DIALOG_INPUT_HEIGHT,
             row_h: dialog::SEARCH_DIALOG_ROW_HEIGHT,
             row_gap: dialog::SEARCH_DIALOG_GAP,
             breadcrumb_h: 0.0,
-            footer_h: if replacement { 0.0 } else { dialog::SEARCH_DIALOG_FOOTER_HEIGHT },
+            footer_h: if replacement {
+                0.0
+            } else {
+                dialog::SEARCH_DIALOG_FOOTER_HEIGHT
+            },
         }
     }
 }
@@ -1007,12 +1015,8 @@ pub(super) fn palette_rects(
     visible_rows: usize,
 ) -> PaletteRects {
     if matches!(state.kind, Some(PaletteKind::Commands)) && state.anchor.is_none() {
-        let layout = dialog::measure_search_dialog(
-            popup,
-            false,
-            visible_rows,
-            ScrollState::default(),
-        );
+        let layout =
+            dialog::measure_search_dialog(popup, false, visible_rows, ScrollState::default());
         return PaletteRects {
             title: None,
             input: layout.search,
@@ -1023,7 +1027,6 @@ pub(super) fn palette_rects(
     }
     measure_palette_rects(popup, state, visible_rows, true).0
 }
-
 
 pub(super) fn palette_rect(
     viewport_width: f32,
@@ -1089,7 +1092,10 @@ pub(super) fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Op
     Some(
         kama_ui::layout::row(
             title,
-            &[kama_ui::layout::Item::fill(), kama_ui::layout::Item::width(27.0)],
+            &[
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(27.0),
+            ],
             0.0,
             0.0,
             ui::Align::Start,
@@ -1104,13 +1110,7 @@ pub(super) fn palette_footer_close_rect(
 ) -> Option<Rect> {
     if matches!(state.kind, Some(PaletteKind::Commands)) && state.anchor.is_none() {
         return Some(
-            dialog::measure_search_dialog(
-                popup,
-                false,
-                visible_rows,
-                ScrollState::default(),
-            )
-            .close,
+            dialog::measure_search_dialog(popup, false, visible_rows, ScrollState::default()).close,
         );
     }
     let footer = palette_rects(popup, state, visible_rows).footer?;

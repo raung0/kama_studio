@@ -274,7 +274,6 @@ impl ProjectOptionsState {
         self.background_color.close();
     }
 
-
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         let local = Rect::new(0.0, 0.0, rect.width, rect.height);
         let preset = offset_rect(

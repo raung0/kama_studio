@@ -480,7 +480,6 @@ impl WidgetGallery {
         self.number.caret_rect(layout.number.control)
     }
 
-
     pub fn popup_contains(&self, bounds: Rect, point: [f32; 2]) -> bool {
         let layout = self.rects(bounds);
         self.color.popup_contains(layout.color.control, point)

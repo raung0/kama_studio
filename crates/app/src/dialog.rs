@@ -30,7 +30,11 @@ impl SearchSurfaceMetrics {
         Self {
             padding: SEARCH_DIALOG_PADDING,
             gap: SEARCH_DIALOG_GAP,
-            title_height: if has_title { SEARCH_DIALOG_TITLE_HEIGHT } else { 0.0 },
+            title_height: if has_title {
+                SEARCH_DIALOG_TITLE_HEIGHT
+            } else {
+                0.0
+            },
             search_height: SEARCH_DIALOG_INPUT_HEIGHT,
             auxiliary_height: 0.0,
             row_height: SEARCH_DIALOG_ROW_HEIGHT,
@@ -149,7 +153,8 @@ pub(crate) fn measure_search_surface(
                             .width(Size::Fill)
                             .height(Size::Pixels(metrics.footer_height))
                             .children(|ctx| {
-                                ids.help = Some(ctx.new().width(Size::Fill).height(Size::Fill).build());
+                                ids.help =
+                                    Some(ctx.new().width(Size::Fill).height(Size::Fill).build());
                                 if metrics.close_width > 0.0 {
                                     ids.close = Some(
                                         ctx.new()
