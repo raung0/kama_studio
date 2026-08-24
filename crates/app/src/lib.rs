@@ -222,6 +222,12 @@ panel_info! {
     Meters => ("Meters", "panel-meters", "panel-meters-description", AppIcon::Meters),
 }
 
+fn dock_tab_title(title: &str) -> String {
+    PanelKind::from_title(title)
+        .map(PanelKind::display_title)
+        .unwrap_or_else(|| title.to_owned())
+}
+
 impl PanelKind {
     #[cfg(debug_assertions)]
     const ALL: [Self; 10] = [
@@ -1411,7 +1417,7 @@ impl EditorApp {
         self.snapshot = {
             let (dock, gui) = (&mut self.dock, &mut self.gui);
             dock.layout_with_tab_measure(workspace, |title| {
-                gui.measure_text_ink_width(title, 10.5, text_scale)
+                gui.measure_text_ink_width(&dock_tab_title(title), 10.5, text_scale)
             })
         };
         let focused_panel = self.focused_panel();
@@ -5263,9 +5269,7 @@ fn build_stack(
                             height: Size::Fill;
                             font_size: 10.5;
                             text_color: if selected { theme::text() } else { theme::muted() };
-                            text: PanelKind::from_title(&tab.title)
-                                .map(|panel| panel.display_title())
-                                .unwrap_or_else(|| tab.title.clone());
+                            text: dock_tab_title(&tab.title);
                         }
                     }
                 }

@@ -13,6 +13,7 @@ pub const TAB_BAR_HEIGHT: f32 = 26.0;
 pub const TAB_SEPARATOR_HEIGHT: f32 = 1.0;
 const TAB_BAR_LEFT_PADDING: f32 = 6.0;
 const TAB_BAR_TOP_PADDING: f32 = 3.0;
+const TAB_CONTENT_CHROME_WIDTH: f32 = 27.0;
 pub const SPLITTER_SIZE: f32 = 5.0;
 pub const MIN_PANEL_SIZE: f32 = 96.0;
 
@@ -1144,7 +1145,7 @@ fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
 
     let mut widths = Vec::with_capacity(stack.tabs.len());
     for tab in &stack.tabs {
-        let target = ((context.measure_tab)(&tab.title) + 27.0).min(148.0);
+        let target = (context.measure_tab)(&tab.title) + TAB_CONTENT_CHROME_WIDTH;
         let width = context.tab_widths.entry(tab.id).or_insert(target);
         *width += (target - *width) * 0.24;
         *context.animating |= (*width - target).abs() > 0.1;
@@ -1445,6 +1446,25 @@ pub fn insertion_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_handles_follow_measured_title_width_without_a_cap() {
+        let mut dock =
+            DockState::from_spec(DockLayoutSpec::Stack(vec!["Short".into(), "Long".into()]));
+        let snapshot =
+            dock.layout_with_tab_measure(Rect::new(0.0, 0.0, 500.0, 300.0), |title| match title {
+                "Short" => 42.0,
+                "Long" => 180.0,
+                _ => unreachable!(),
+            });
+
+        assert_eq!(snapshot.tabs[0].rect.width, 42.0 + TAB_CONTENT_CHROME_WIDTH);
+        assert_eq!(
+            snapshot.tabs[1].rect.width,
+            180.0 + TAB_CONTENT_CHROME_WIDTH
+        );
+        assert!(snapshot.tabs[1].rect.width > 148.0);
+    }
 
     #[test]
     fn content_hit_testing_never_claims_tab_bar() {
