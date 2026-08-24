@@ -3,3 +3,5 @@ Cargo.lock
 .direnv
 builtins/generators/target
 builtins/audio/target
+.pre-commit-config.yaml
+.devenv

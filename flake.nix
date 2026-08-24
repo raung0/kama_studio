@@ -3,7 +3,22 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     fenix = {
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -11,15 +26,16 @@
   };
 
   outputs =
-    {
+    inputs@{
       nixpkgs,
-      flake-utils,
+      flake-parts,
+      devenv,
       fenix,
       ...
     }:
     let
       overlay =
-        final: prev:
+        final: _prev:
         let
           fenixPkgs = fenix.packages.${final.stdenv.hostPlatform.system};
         in
@@ -31,76 +47,101 @@
               cargo
               rustfmt
               rust-src
-            ]) ++ [ fenixPkgs.targets.wasm32-unknown-unknown.stable.rust-std ]
+            ])
+            ++ [
+              fenixPkgs.targets.wasm32-unknown-unknown.stable.rust-std
+            ]
           );
         };
     in
-    {
-      overlays.default = overlay;
-    }
-    // flake-utils.lib.eachDefaultSystem (
-      system:
-      let
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [
+        devenv.flakeModule
+      ];
 
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ overlay ];
-          config = {
-            android_sdk.accept_license = true;
-            allowUnfree = true;
+      systems = nixpkgs.lib.systems.flakeExposed;
+
+      flake.overlays.default = overlay;
+
+      perSystem =
+        {
+          system,
+          ...
+        }:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ overlay ];
+            config = {
+              android_sdk.accept_license = true;
+              allowUnfree = true;
+            };
           };
-        };
-        
-      in
-      {
-        devShells.default = pkgs.mkShell {
-          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.rustPlatform.bindgenHook
-          ];
+        in
+        {
+          _module.args.pkgs = pkgs;
 
-          packages =
-            (with pkgs; [
-              rustToolchain
-              openssl
-              pkg-config
-              ffmpeg-full
-              cargo-bundle
-              cargo-deny
-              cargo-edit
-              cargo-watch
-              cmake
-              git
-              ninja
-              rust-analyzer
-              zlib
-            ])
-            ++ (with pkgs; lib.optionals stdenv.isDarwin [
-              actool
-            ])
-            ++ (with pkgs; lib.optionals stdenv.isLinux [
-              alsa-lib
-              dbus
-              libxkbcommon
-              vulkan-loader
-              wayland
-              wayland-protocols
-              zenity
-            ]);
-
-          shellHook = ''
-            export RUST_SRC_PATH="${pkgs.rustToolchain}/lib/rustlib/src/rust/library"
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+          devenv.shells.default = {
+            packages =
+              (with pkgs; [
+                rustToolchain
+                openssl
+                pkg-config
+                ffmpeg-full
+                cargo-bundle
+                cargo-deny
+                cargo-edit
+                cargo-watch
+                cmake
+                git
+                ninja
+                rust-analyzer
+                zlib
+              ])
+              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+                pkgs.rustPlatform.bindgenHook
                 pkgs.alsa-lib
                 pkgs.dbus
                 pkgs.libxkbcommon
                 pkgs.vulkan-loader
                 pkgs.wayland
-                pkgs.ffmpeg-full
-              ]}:''${LD_LIBRARY_PATH:-}"
-            ''}
-          '';
+                pkgs.wayland-protocols
+                pkgs.zenity
+              ]
+              ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+                pkgs.actool
+              ];
+
+            env = {
+              RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+
+              LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.isLinux (
+                pkgs.lib.makeLibraryPath [
+                  pkgs.alsa-lib
+                  pkgs.dbus
+                  pkgs.libxkbcommon
+                  pkgs.vulkan-loader
+                  pkgs.wayland
+                  pkgs.ffmpeg-full
+                ]
+              );
+            };
+
+            git-hooks.hooks = {
+              rustfmt = {
+                enable = true;
+                package = pkgs.rustToolchain;
+              };
+
+              clippy = {
+                enable = true;
+                packageOverrides = {
+                  cargo = pkgs.rustToolchain;
+                  clippy = pkgs.rustToolchain;
+                };
+              };
+            };
+          };
         };
-      }
-    );
+    };
 }
