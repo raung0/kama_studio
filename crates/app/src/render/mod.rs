@@ -12,7 +12,7 @@ use winit::{
 use crate::{
     assets::{AppIcon, Icons},
     file_io::{app_data_dir, atomic_write_json, read_json},
-    monitor::RenderCachePreview,
+    playback::RenderCachePreview,
     plugin::PluginRegistry,
     project::{CompositionId, Project},
     theme,

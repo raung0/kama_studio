@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use super::VIDEO_DECODER_POOL_CAPACITY;
 use crate::runtime::media::VideoDecoder;
+
+const VIDEO_DECODER_POOL_CAPACITY: usize = 8;
 
 struct VideoDecoderSlot {
     owner: u64,

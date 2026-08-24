@@ -924,8 +924,8 @@ impl RenderTask {
                 let mut worker_timeline = TimelineState::from_document(worker_document);
                 let mut effects = EffectRuntime::default();
                 effects.rebuild(&worker_project.pipelines);
-                let mut monitor =
-                    MonitorState::new_export_worker(&device, &effects, &worker_plugins);
+                let mut frame_renderer =
+                    FrameRenderer::new_export_worker(&device, &effects, &worker_plugins);
                 run_render_worker(
                     job,
                     edit_revision,
@@ -939,7 +939,7 @@ impl RenderTask {
                     &worker_plugins,
                     command_rx,
                     status_tx,
-                    &mut monitor,
+                    &mut frame_renderer,
                     composition,
                     worker_live_end_frame,
                 );
@@ -1114,7 +1114,7 @@ fn run_render_worker(
     plugins: &PluginRegistry,
     command_rx: Receiver<RenderWorkerCommand>,
     status_tx: SyncSender<RenderWorkerStatus>,
-    monitor: &mut MonitorState,
+    frame_renderer: &mut FrameRenderer,
     target_composition: CompositionId,
     live_end_frame: Arc<AtomicU64>,
 ) {
@@ -1232,7 +1232,7 @@ fn run_render_worker(
                     .stdin
                     .as_mut()
                     .context("ProRes cache encoder stdin closed")?;
-                monitor.render_export_yuv_batch_to_writer_on(ExportYuvBatchArgs {
+                frame_renderer.render_export_yuv_batch_to_writer_on(ExportYuvBatchArgs {
                     device: &device,
                     queue: &queue,
                     project,
@@ -2521,7 +2521,7 @@ use crate::{
     audio::render_audio_wav,
     effects::{Binding, EffectRuntime, PipelineInstance},
     file_io::replace_file,
-    monitor::{ExportPixelFormat, ExportYuvBatchArgs, MonitorState, RenderCachePreview},
+    playback::{ExportPixelFormat, ExportYuvBatchArgs, FrameRenderer, RenderCachePreview},
     plugin::PluginRegistry,
     project::{CompositionId, GeneratorSource, HostBinding, LayerComposite, Project, VisualSource},
     runtime::media::prioritize_offline_export,

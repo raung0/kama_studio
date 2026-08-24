@@ -152,7 +152,7 @@ impl EditorApp {
             }
             action => {
                 if self.editor.timeline.apply_action(action, &self.snapshot) {
-                    self.monitor.invalidate();
+                    self.playback.invalidate();
                 }
             }
         }
@@ -484,7 +484,7 @@ impl EditorApp {
                     .reconcile_pipeline_overrides(&self.editor.project);
                 self.media.clear_selection();
                 self.audio.clear();
-                self.monitor.invalidate();
+                self.playback.invalidate();
                 self.render_panel.sync_timeline_ranges(
                     &mut self.editor.timeline,
                     self.editor.project.active_composition,
@@ -508,7 +508,7 @@ impl EditorApp {
                     .is_some_and(|(track, time)| self.insert_media_drag_items(&items, track, time))
                 {
                     self.media.clear_selection();
-                    self.monitor.invalidate();
+                    self.playback.invalidate();
                 }
             }
             MediaAction::ReplaceSelectedMedia { media } => {
@@ -531,13 +531,13 @@ impl EditorApp {
                         self.waveform_textures.clear();
                         self.waveform_textures.queue_missing(&self.editor.project);
                         self.warm_project_scrub_thumbnails();
-                        self.monitor.clear_media_caches();
+                        self.playback.clear_media_caches();
                         if path
                             .extension()
                             .and_then(|extension| extension.to_str())
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
                         {
-                            if let Err(error) = self.monitor.precompile_wasm(&path) {
+                            if let Err(error) = self.playback.precompile_wasm(&path) {
                                 messages::warning(
                                     "Replace media",
                                     format!("CPU/WASM plugin precompile failed: {error:#}"),
@@ -545,7 +545,7 @@ impl EditorApp {
                             }
                         }
                         self.audio.clear();
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                     Err(error) => messages::warning("Replace media", format!("{error:#}")),
                 }
@@ -568,7 +568,7 @@ impl EditorApp {
                     .reconcile_pipeline_overrides(&self.editor.project);
                 self.media.clear_selection();
                 self.audio.clear();
-                self.monitor.invalidate();
+                self.playback.invalidate();
                 self.render_panel.sync_timeline_ranges(
                     &mut self.editor.timeline,
                     self.editor.project.active_composition,
@@ -628,8 +628,9 @@ impl EditorApp {
         self.waveform_textures.clear();
         self.waveform_textures.queue_missing(&self.editor.project);
         self.warm_project_scrub_thumbnails();
-        self.monitor.clear_caches();
-        self.monitor.invalidate();
+        self.playback.clear_caches();
+        self.monitor.clear_captured_frame();
+        self.playback.invalidate();
         self.render_panel.sync_timeline_ranges(
             &mut self.editor.timeline,
             self.editor.project.active_composition,
@@ -655,7 +656,7 @@ impl EditorApp {
         self.editor.timeline.clear_selection();
         self.media.clear_selection();
         self.pipeline_graph.clear_selection();
-        self.monitor.invalidate();
+        self.playback.invalidate();
     }
 
     pub(super) fn switch_composition(&mut self, composition: CompositionId) {
@@ -681,7 +682,7 @@ impl EditorApp {
             .timeline
             .reconcile_pipeline_overrides(&self.editor.project);
         self.audio.clear();
-        self.monitor.invalidate();
+        self.playback.invalidate();
         self.render_panel.sync_timeline_ranges(
             &mut self.editor.timeline,
             self.editor.project.active_composition,
@@ -761,7 +762,7 @@ impl EditorApp {
                     &extraction,
                     visual_pipeline,
                 );
-                self.monitor.invalidate();
+                self.playback.invalidate();
                 self.audio.clear();
             }
             NewCompositionMode::Rename(_) => unreachable!(),
@@ -787,7 +788,7 @@ impl EditorApp {
         self.editor
             .timeline
             .apply_speed_duration(&self.editor.project, dialog.mode, value);
-        self.monitor.invalidate();
+        self.playback.invalidate();
         self.editor.history.record_after(
             "Speed / Duration",
             before,
@@ -827,7 +828,7 @@ impl EditorApp {
 
     pub(super) fn sync_effect_runtime(&mut self) {
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.monitor
+        self.playback
             .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
     }
 
@@ -859,7 +860,7 @@ impl EditorApp {
             if structural {
                 self.sync_effect_runtime();
             }
-            self.monitor.invalidate();
+            self.playback.invalidate();
         }
     }
 
@@ -956,7 +957,7 @@ impl EditorApp {
                         .remap_pipeline_selector_overrides(&remaps);
                     self.pipeline_graph.follow_selection();
                     graph_changed = true;
-                    self.monitor.invalidate();
+                    self.playback.invalidate();
                 }
             }
             PipelineGraphAction::InsertNode => {
@@ -1135,7 +1136,7 @@ impl EditorApp {
                         .project
                         .set_value_node_component(pipeline, node, component, value, linked)
                     {
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                 }
                 return;
@@ -1152,7 +1153,7 @@ impl EditorApp {
                         if self.editor.timeline.set_selected_local_node_component(
                             node, &input, component, value, linked,
                         ) {
-                            self.monitor.invalidate();
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
@@ -1176,7 +1177,7 @@ impl EditorApp {
                             if self.editor.project.set_value_node_input_component(
                                 pipeline, node, &input, component, value, linked,
                             ) {
-                                self.monitor.invalidate();
+                                self.playback.invalidate();
                             }
                         }
                     }
@@ -1184,7 +1185,7 @@ impl EditorApp {
                         if let Some(current) = self.editor.timeline.generator_value(&input) {
                             if let Some(next) = current.with_component(component, value, linked) {
                                 self.editor.timeline.set_generator_value(&input, next);
-                                self.monitor.invalidate();
+                                self.playback.invalidate();
                             }
                         }
                     }
@@ -1204,7 +1205,7 @@ impl EditorApp {
                             .timeline
                             .set_selected_local_node_value(node, &input, value)
                         {
-                            self.monitor.invalidate();
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
@@ -1226,13 +1227,13 @@ impl EditorApp {
                                 .project
                                 .set_value_node_input_value(pipeline, node, &input, value)
                             {
-                                self.monitor.invalidate();
+                                self.playback.invalidate();
                             }
                         }
                     }
                     GraphNodeTarget::Input => {
                         self.editor.timeline.set_generator_value(&input, value);
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                     GraphNodeTarget::Output => {}
                 }
@@ -1250,7 +1251,7 @@ impl EditorApp {
                             .timeline
                             .set_selected_local_node_host_value(node, &input, value)
                         {
-                            self.monitor.invalidate();
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
@@ -1262,13 +1263,13 @@ impl EditorApp {
                                 self.editor.timeline.selected_keyframe_time(),
                                 value,
                             ) {
-                                self.monitor.invalidate();
+                                self.playback.invalidate();
                             }
                         }
                     }
                     GraphNodeTarget::Input => {
                         self.editor.timeline.set_generator_host_value(&input, value);
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                     GraphNodeTarget::Value(_) | GraphNodeTarget::Output => {}
                 }
@@ -1282,7 +1283,7 @@ impl EditorApp {
                             .timeline
                             .toggle_selected_local_node_host_keyframe(node, &input)
                         {
-                            self.monitor.invalidate();
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
@@ -1293,13 +1294,13 @@ impl EditorApp {
                                 &input,
                                 self.editor.timeline.selected_keyframe_time(),
                             ) {
-                                self.monitor.invalidate();
+                                self.playback.invalidate();
                             }
                         }
                     }
                     GraphNodeTarget::Input => {
                         self.editor.timeline.toggle_generator_keyframe(&input);
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                     GraphNodeTarget::Value(_) | GraphNodeTarget::Output => {}
                 }
@@ -1312,7 +1313,7 @@ impl EditorApp {
                         .project
                         .set_value_node_value(pipeline, node, value)
                     {
-                        self.monitor.invalidate();
+                        self.playback.invalidate();
                     }
                 }
                 return;
@@ -1323,13 +1324,13 @@ impl EditorApp {
                     node,
                     &input,
                 ) {
-                    self.monitor.invalidate();
+                    self.playback.invalidate();
                 }
                 return;
             }
             PipelineGraphAction::UseSharedInput { node, input } => {
                 if self.editor.timeline.use_shared_pipeline_input(node, &input) {
-                    self.monitor.invalidate();
+                    self.playback.invalidate();
                 }
                 return;
             }
@@ -1357,7 +1358,7 @@ impl EditorApp {
             self.sync_effect_runtime();
         }
         if graph_changed || local_changed {
-            self.monitor.invalidate();
+            self.playback.invalidate();
         }
     }
 }

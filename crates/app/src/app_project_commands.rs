@@ -40,8 +40,9 @@ impl EditorApp {
             .reset(&self.editor.project, &self.editor.timeline, history_label);
         self.editor.history_gesture = None;
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.monitor.clear_caches();
-        self.monitor
+        self.playback.clear_caches();
+        self.monitor.clear_captured_frame();
+        self.playback
             .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
         self.sync_inactive_windows_after_project_reset();
         self.request_redraw_all();
@@ -106,7 +107,7 @@ impl EditorApp {
         self.next_media_presence_check = Instant::now() + MEDIA_PRESENCE_CHECK_INTERVAL;
         for asset in &self.editor.project.media {
             if matches!(asset.kind, MediaKind::WasmPlugin) {
-                let _ = self.monitor.precompile_wasm(&asset.path);
+                let _ = self.playback.precompile_wasm(&asset.path);
             }
         }
         self.mark_document_saved();
