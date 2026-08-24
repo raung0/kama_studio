@@ -66,7 +66,7 @@ fn default_brightness() -> f32 {
 }
 
 fn default_accent_mixing() -> f32 {
-    0.03
+    0.15
 }
 
 fn default_reveal_strength() -> f32 {
