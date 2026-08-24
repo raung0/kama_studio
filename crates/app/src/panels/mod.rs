@@ -3967,14 +3967,13 @@ impl InspectorState {
             self.controls.color_rect,
             self.last_rect,
         ) {
-            let bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
             let local_point = [point[0] - rect.x, point[1] - rect.y];
             let before = self.controls.color_picker.linear();
-            if self
-                .controls
-                .color_picker
-                .pointer_moved_in(swatch, bounds, local_point)
-            {
+            if self.controls.color_picker.pointer_moved_in(
+                swatch,
+                self.controls.popup_bounds,
+                local_point,
+            ) {
                 if self.controls.color_picker.linear() != before {
                     return apply_color_target(
                         target,

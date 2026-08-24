@@ -2981,6 +2981,31 @@ impl PipelineGraphState {
             }
             self.context_menu = None;
         }
+        let local_point = [point[0] - rect.x, point[1] - rect.y];
+        let local_bounds = self.controls.popup_bounds;
+        if let (Some(target), Some(swatch)) =
+            (self.controls.color_target.clone(), self.controls.color_rect)
+        {
+            if self
+                .controls
+                .color_picker
+                .popup_contains_in(swatch, local_bounds, local_point)
+            {
+                let before = self.controls.color_picker.linear();
+                let _ = self.controls.color_picker.pointer_pressed_in(
+                    swatch,
+                    local_bounds,
+                    local_point,
+                    modifiers,
+                );
+                let after = self.controls.color_picker.linear();
+                return if after != before {
+                    self.graph_color_action(&target, after)
+                } else {
+                    PipelineGraphAction::None
+                };
+            }
+        }
         let toolbar = graph_toolbar_layout(rect);
         let option_count = project.pipelines.len() + 1;
         if !self.renaming {
@@ -2998,6 +3023,12 @@ impl PipelineGraphState {
                     )
                 };
             }
+            if self
+                .pipeline_combo
+                .popup_contains(toolbar.combo, point, option_count)
+            {
+                return PipelineGraphAction::None;
+            }
         }
         if !rect.contains(point) {
             self.pipeline_combo.close();
@@ -3013,9 +3044,6 @@ impl PipelineGraphState {
             return PipelineGraphAction::None;
         }
         self.pipeline_combo.close();
-
-        let local_point = [point[0] - rect.x, point[1] - rect.y];
-        let local_bounds = self.controls.popup_bounds;
 
         if let (Some(target), Some(swatch)) =
             (self.controls.color_target.clone(), self.controls.color_rect)
@@ -3052,6 +3080,9 @@ impl PipelineGraphState {
                     GpuValue::Enum(index as u32)
                 },
             };
+        }
+        if self.controls.enums.popup_contains(rect, point) {
+            return PipelineGraphAction::None;
         }
         if let Some(key) = self.controls.enums.toggle_at(rect, point) {
             self.pipeline_name.set_focused(false);
@@ -3386,13 +3417,12 @@ impl PipelineGraphState {
             self.last_rect,
         ) {
             let local = [point[0] - panel.x, point[1] - panel.y];
-            let bounds = Rect::new(0.0, 0.0, panel.width, panel.height);
             let before = self.controls.color_picker.linear();
-            if self
-                .controls
-                .color_picker
-                .pointer_moved_in(swatch, bounds, local)
-            {
+            if self.controls.color_picker.pointer_moved_in(
+                swatch,
+                self.controls.popup_bounds,
+                local,
+            ) {
                 let after = self.controls.color_picker.linear();
                 if after != before {
                     return self.graph_color_action(&target, after);

@@ -561,7 +561,7 @@ impl ProjectOptionsState {
             ProjectBackground::Solid { .. }
         ) && self.background_color.pointer_moved_in(
             project_background_color_rect(local),
-            local,
+            self.popup_bounds,
             local_point,
         ) {
             self.apply_background_color(project, composition);
