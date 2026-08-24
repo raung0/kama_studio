@@ -6,17 +6,11 @@ pub extern "C" fn kama_alloc(len: i32) -> i32 {
     if len <= 0 {
         return 0;
     }
-    
+
     let words = ((len as usize).saturating_add(3) / 4).max(1);
     let samples = vec![0.0f32; words].into_boxed_slice();
     Box::into_raw(samples) as *mut f32 as i32
 }
-
-
-
-
-
-
 
 #[no_mangle]
 pub unsafe extern "C" fn kama_dealloc(pointer: i32, len: i32) {
@@ -81,7 +75,13 @@ struct Biquad {
 
 impl Default for Biquad {
     fn default() -> Self {
-        Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0 }
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+        }
     }
 }
 
@@ -130,9 +130,17 @@ impl EqState {
             _ => 4.3,
         };
         for index in 0..self.bands {
-            let t = if self.bands <= 1 { 0.5 } else { index as f32 / denom };
+            let t = if self.bands <= 1 {
+                0.5
+            } else {
+                index as f32 / denom
+            };
             let frequency = low * (high / low).powf(t);
-            let gain = band_values.get(index).copied().unwrap_or(0.0).clamp(-24.0, 24.0);
+            let gain = band_values
+                .get(index)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(-24.0, 24.0);
             self.filters[index] = peaking_eq(rate, frequency, q, gain);
         }
     }
@@ -267,10 +275,11 @@ impl ReverbState {
         self.channels = channels;
         self.sample_rate = sample_rate;
         self.delay_ms = delay_ms;
-        let frames = ((sample_rate.max(1) as f32 * delay_ms.max(1.0) / 1000.0).round() as usize)
-            .max(1);
+        let frames =
+            ((sample_rate.max(1) as f32 * delay_ms.max(1.0) / 1000.0).round() as usize).max(1);
         self.buffer.clear();
-        self.buffer.resize(frames.saturating_mul(channels.max(1)), 0.0);
+        self.buffer
+            .resize(frames.saturating_mul(channels.max(1)), 0.0);
         self.cursor = 0;
     }
 
@@ -296,7 +305,11 @@ pub extern "C" fn process_reverb(
     unsafe {
         REVERB_STATE.with_mut(|slot| {
             let state = slot.get_or_insert_with(ReverbState::default);
-            state.configure(channels.max(1) as usize, sample_rate.max(1) as u32, delay_ms);
+            state.configure(
+                channels.max(1) as usize,
+                sample_rate.max(1) as u32,
+                delay_ms,
+            );
             if audio::reset_requested(flags) {
                 state.reset();
             }

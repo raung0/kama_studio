@@ -10,11 +10,6 @@ pub extern "C" fn kama_alloc(len: i32) -> i32 {
     Box::into_raw(bytes) as *mut u8 as i32
 }
 
-
-
-
-
-
 #[no_mangle]
 pub unsafe extern "C" fn kama_dealloc(pointer: i32, len: i32) {
     if pointer > 0 && len > 0 {
@@ -37,10 +32,7 @@ fn export_frame(pixels: Vec<f32>, pointer: usize) -> i32 {
     pointer as i32
 }
 
-fn export_monitor_overlay(
-    handles: &[(u32, i32, [f32; 2], [f32; 2])],
-    lines: &[[u32; 2]],
-) -> i64 {
+fn export_monitor_overlay(handles: &[(u32, i32, [f32; 2], [f32; 2])], lines: &[[u32; 2]]) -> i64 {
     let mut bytes = Vec::with_capacity(12 + handles.len() * 24 + lines.len() * 8);
     bytes.extend_from_slice(&1u32.to_le_bytes());
     bytes.extend_from_slice(&(handles.len() as u32).to_le_bytes());
@@ -89,7 +81,16 @@ pub extern "C" fn monitor_mesh_warp(width: f32, height: f32, _time: f64) -> i64 
         .collect::<Vec<_>>();
     export_monitor_overlay(
         &handles,
-        &[[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 0]],
+        &[
+            [0, 1],
+            [1, 2],
+            [2, 3],
+            [3, 4],
+            [4, 5],
+            [5, 6],
+            [6, 7],
+            [7, 0],
+        ],
     )
 }
 
@@ -114,11 +115,7 @@ fn monitor_point_path(input: &str, fallback: Vec<[f32; 2]>, closed: bool) -> i64
 
 #[no_mangle]
 pub extern "C" fn monitor_gradient(_width: f32, _height: f32, _time: f64) -> i64 {
-    monitor_point_path(
-        "points",
-        vec![[320.0, 540.0], [1600.0, 540.0]],
-        false,
-    )
+    monitor_point_path("points", vec![[320.0, 540.0], [1600.0, 540.0]], false)
 }
 
 #[no_mangle]
@@ -381,11 +378,7 @@ fn gradient_midpoint_bias(t: f32, midpoint: f32) -> f32 {
     t.powf(exponent)
 }
 
-fn build_gradient_lut(
-    positions: &[f32],
-    midpoints: &[f32],
-    colors: &[[f32; 4]],
-) -> Vec<[f32; 4]> {
+fn build_gradient_lut(positions: &[f32], midpoints: &[f32], colors: &[[f32; 4]]) -> Vec<[f32; 4]> {
     if colors.is_empty() {
         return vec![[0.0; 4]; GRADIENT_LUT_SIZE];
     }
@@ -615,8 +608,7 @@ pub extern "C" fn generate_text(
     _time: f64,
 ) -> i32 {
     let (mut pixels, pointer) = frame(width, height);
-    
-    
+
     let _ = generator::render_text_rgba32f(&mut pixels, width, height);
     export_frame(pixels, pointer)
 }
@@ -648,13 +640,20 @@ pub extern "C" fn generate_polygon(
     };
     let coordinate_scale = if tight {
         let feather = get_parameter("feather", 1.0f32).max(0.0);
-        
-        
+
         let padding = (feather + border_width_project).ceil().max(1.0) + 1.0;
         let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min) - padding;
         let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min) - padding;
-        let max_x = points.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max) + padding;
-        let max_y = points.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max) + padding;
+        let max_x = points
+            .iter()
+            .map(|p| p[0])
+            .fold(f32::NEG_INFINITY, f32::max)
+            + padding;
+        let max_y = points
+            .iter()
+            .map(|p| p[1])
+            .fold(f32::NEG_INFINITY, f32::max)
+            + padding;
         [
             width as f32 / (max_x - min_x).max(1.0),
             height as f32 / (max_y - min_y).max(1.0),
@@ -672,9 +671,8 @@ pub extern "C" fn generate_polygon(
     let border = color_parameter("border_color", [0.05, 0.05, 0.05, 1.0]);
     let border_width = border_width_project * coordinate_scale[0].min(coordinate_scale[1]);
     let (border_inner, border_outer) = border_extents(border_width, border_alignment);
-    let feather = get_parameter("feather", 1.0f32)
-        .max(0.5)
-        * coordinate_scale[0].min(coordinate_scale[1]);
+    let feather =
+        get_parameter("feather", 1.0f32).max(0.5) * coordinate_scale[0].min(coordinate_scale[1]);
     let min_x = points
         .iter()
         .map(|point| point[0])
@@ -702,7 +700,13 @@ pub extern "C" fn generate_polygon(
         width as usize,
         &edges,
         [x0, y0, x1, y1],
-        PolygonRasterStyle { feather, border_inner, border_outer, fill, border },
+        PolygonRasterStyle {
+            feather,
+            border_inner,
+            border_outer,
+            fill,
+            border,
+        },
     );
     export_frame(pixels, pointer)
 }
@@ -748,11 +752,15 @@ fn rasterize_polygon(
     style: PolygonRasterStyle,
 ) {
     let [x0, y0, x1, y1] = bounds;
-    let PolygonRasterStyle { feather, border_inner, border_outer, fill: fill_color, border: border_color } = style;
+    let PolygonRasterStyle {
+        feather,
+        border_inner,
+        border_outer,
+        fill: fill_color,
+        border: border_color,
+    } = style;
     let mut intersections = Vec::with_capacity(edges.len());
 
-    
-    
     for y in y0..y1 {
         let sample_y = y as f32 + 0.5;
         intersections.clear();
@@ -773,8 +781,6 @@ fn rasterize_polygon(
         }
     }
 
-    
-    
     let band = border_inner.max(border_outer) + feather + 1.0;
     for &edge in edges {
         let edge_x0 = (edge.start[0].min(edge.end[0]) - band)
@@ -792,10 +798,7 @@ fn rasterize_polygon(
         for y in edge_y0..edge_y1 {
             for x in edge_x0..edge_x1 {
                 let index = (y * stride + x) * 4;
-                let encoded = distance_sq_to_segment(
-                    [x as f32 + 0.5, y as f32 + 0.5],
-                    edge,
-                ) + 1.0;
+                let encoded = distance_sq_to_segment([x as f32 + 0.5, y as f32 + 0.5], edge) + 1.0;
                 if pixels[index] == 0.0 || encoded < pixels[index] {
                     pixels[index] = encoded;
                 }
@@ -808,10 +811,18 @@ fn rasterize_polygon(
             let index = (y * stride + x) * 4;
             let inside = pixels[index + 3] > 0.5;
             let signed = if pixels[index] == 0.0 {
-                if inside { f32::NEG_INFINITY } else { f32::INFINITY }
+                if inside {
+                    f32::NEG_INFINITY
+                } else {
+                    f32::INFINITY
+                }
             } else {
                 let distance = (pixels[index] - 1.0).max(0.0).sqrt();
-                if inside { -distance } else { distance }
+                if inside {
+                    -distance
+                } else {
+                    distance
+                }
             };
             let outer = if signed.is_infinite() {
                 inside as u8 as f32
