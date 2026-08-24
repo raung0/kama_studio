@@ -4485,7 +4485,7 @@ fn quantize_composition_time(time: f32, frame_rate: f64) -> f32 {
 }
 
 #[derive(Clone, Copy)]
-struct MonitorChromeLayout {
+struct MonitorChromeRects {
     fit_stage: Rect,
     combo: Rect,
     frame_snap: Rect,
@@ -4495,15 +4495,15 @@ struct MonitorChromeLayout {
     capture: [Rect; 3],
 }
 
-fn monitor_chrome_layout(rect: Rect) -> MonitorChromeLayout {
-    let vertical = crate::ui_layout::column(
+fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
+    let vertical = kama_ui::layout::column(
         rect,
         &[
-            crate::ui_layout::Item::height(0.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::height(6.0),
-            crate::ui_layout::Item::height(32.0),
-            crate::ui_layout::Item::height(0.0),
+            kama_ui::layout::Item::height(0.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::height(6.0),
+            kama_ui::layout::Item::height(32.0),
+            kama_ui::layout::Item::height(0.0),
         ],
         0.0,
         0.0,
@@ -4513,32 +4513,32 @@ fn monitor_chrome_layout(rect: Rect) -> MonitorChromeLayout {
     let fit_stage = vertical[1];
     let status = vertical[3];
     let combo_w = 172.0_f32.min((status.width - 8.0).max(1.0));
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         status,
         &[
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(combo_w), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            crate::ui_layout::Item::fill(),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(combo_w), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
+            kama_ui::layout::Item::fill(),
         ],
         0.0,
         0.0,
         kama_ui::Align::Center,
     );
-    MonitorChromeLayout {
+    MonitorChromeRects {
         fit_stage,
         combo: parts[1],
         frame_snap: parts[3],
@@ -4550,7 +4550,7 @@ fn monitor_chrome_layout(rect: Rect) -> MonitorChromeLayout {
 }
 
 fn monitor_resolution_combo_rect(rect: Rect) -> Rect {
-    monitor_chrome_layout(rect).combo
+    monitor_chrome_rects(rect).combo
 }
 
 fn monitor_icon_toggle(
@@ -4599,7 +4599,7 @@ fn monitor_icon_toggle(
 }
 
 fn monitor_snap_button_rect(rect: Rect, clip: bool) -> Rect {
-    let layout = monitor_chrome_layout(rect);
+    let layout = monitor_chrome_rects(rect);
     if clip {
         layout.clip_snap
     } else {
@@ -4608,15 +4608,15 @@ fn monitor_snap_button_rect(rect: Rect, clip: bool) -> Rect {
 }
 
 fn monitor_pen_button_rect(rect: Rect) -> Rect {
-    monitor_chrome_layout(rect).pen
+    monitor_chrome_rects(rect).pen
 }
 
 fn monitor_mute_button_rect(rect: Rect) -> Rect {
-    monitor_chrome_layout(rect).mute
+    monitor_chrome_rects(rect).mute
 }
 
 fn monitor_capture_button_rect(rect: Rect, index: usize) -> Rect {
-    monitor_chrome_layout(rect).capture[index]
+    monitor_chrome_rects(rect).capture[index]
 }
 
 const MONITOR_MIN_ZOOM: f32 = 0.05;
@@ -4629,7 +4629,7 @@ fn monitor_stage_rect(rect: Rect) -> Rect {
 fn monitor_fit_preview_rect(rect: Rect, canvas_width: u32, canvas_height: u32) -> Rect {
     const FIT_PADDING: f32 = 8.0;
 
-    let stage = monitor_chrome_layout(rect).fit_stage;
+    let stage = monitor_chrome_rects(rect).fit_stage;
     let fit_area = Rect::new(
         stage.x + FIT_PADDING,
         stage.y + FIT_PADDING,

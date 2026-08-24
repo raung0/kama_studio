@@ -13,7 +13,7 @@ use kama_ui::{
         ComboControl, ControlRegistry, EnumControlsExt, KnobControlsExt, NumberControlsExt,
         SliderControlsExt,
     },
-    Color, CursorShape, FormatKey, IconId, Rect, Renderer, Size,
+    BlockId, Color, CursorShape, FormatKey, IconId, Rect, Renderer, Size,
 };
 use winit::{
     event::{Ime, KeyEvent},
@@ -1428,22 +1428,21 @@ impl InspectorState {
         mut component: impl FnMut(usize) -> (InspectorNumberTarget, f64),
     ) {
         let row = row_hit(rect, y);
-        let label_width = (row.width * 0.26).max(44.0);
-        let parts = crate::ui_layout::row(
+        let parts = kama_ui::layout::row(
             row,
             &[
-                crate::ui_layout::Item::width(6.0),
-                crate::ui_layout::Item::width(label_width),
-                crate::ui_layout::Item::width(3.0),
-                crate::ui_layout::Item::fill(),
-                crate::ui_layout::Item::width(4.0),
-                crate::ui_layout::Item::new(
+                kama_ui::layout::Item::width(6.0),
+                kama_ui::layout::Item::fill_portion(0.26),
+                kama_ui::layout::Item::width(3.0),
+                kama_ui::layout::Item::fill_portion(0.74),
+                kama_ui::layout::Item::width(4.0),
+                kama_ui::layout::Item::new(
                     Size::Pixels(19.0),
                     Size::Pixels((row.height - 6.0).max(1.0)),
                 ),
-                crate::ui_layout::Item::width(4.0),
-                crate::ui_layout::Item::new(Size::Pixels(18.0), Size::Pixels(18.0)),
-                crate::ui_layout::Item::width(4.0),
+                kama_ui::layout::Item::width(4.0),
+                kama_ui::layout::Item::new(Size::Pixels(18.0), Size::Pixels(18.0)),
+                kama_ui::layout::Item::width(4.0),
             ],
             0.0,
             0.0,
@@ -1474,15 +1473,15 @@ impl InspectorState {
         let mut component_items = Vec::with_capacity(count.saturating_mul(2).saturating_sub(1));
         for index in 0..count {
             if index > 0 {
-                component_items.push(crate::ui_layout::Item::width(3.0));
+                component_items.push(kama_ui::layout::Item::width(3.0));
             }
-            component_items.push(crate::ui_layout::Item::new(
+            component_items.push(kama_ui::layout::Item::new(
                 Size::Fill,
                 Size::Pixels((row.height - 4.0).max(1.0)),
             ));
         }
         let component_rects =
-            crate::ui_layout::row(controls, &component_items, 0.0, 0.0, kama_ui::Align::Center);
+            kama_ui::layout::row(controls, &component_items, 0.0, 0.0, kama_ui::Align::Center);
         for index in 0..count {
             let (target, value) = component(index);
             self.controls.numbers.build(
@@ -2071,62 +2070,71 @@ impl InspectorState {
         self.apply_reset_target(target, input.project, input.timeline)
     }
 
-    fn layout(
+    fn rects(
         &self,
         rect: Rect,
         project: &Project,
         timeline: &TimelineState,
         plugins: &PluginRegistry,
-    ) -> InspectorLayout {
-        let content = crate::ui_layout::scrolled_content(rect, self.scroll_y);
+    ) -> InspectorRects {
+        let content = kama_ui::layout::scrolled_content(rect, self.scroll_y);
         let start = rect.y + PANEL_HEADER_H - self.scroll_y;
-        let effect_height = timeline
+        let effect_rows = timeline
             .selected_pipeline()
             .and_then(|instance| instance.pipeline)
             .and_then(|id| project.pipeline(id))
             .map(|pipeline| {
-                effect_control_rows(pipeline, plugins, project, timeline, &self.effect_sections).1
-                    + INSPECTOR_SECTION_PAD * 2.0
+                vec![
+                    effect_control_rows(
+                        rect.width,
+                        pipeline,
+                        plugins,
+                        project,
+                        timeline,
+                        &self.effect_sections,
+                    )
+                    .1,
+                ]
             });
         let specs = [
             (
                 (timeline.selected_generator().is_some()
                     || timeline.selected_speed(project).is_some()
                     || timeline.selected_clip_volume().is_some())
-                .then(|| source_section_height(project, timeline, plugins)),
+                .then(|| source_section_rows(project, timeline, plugins)),
                 self.source_section.open_amount(),
             ),
             (
                 timeline
                     .can_assign_pipeline()
-                    .then(|| pipeline_section_height(timeline)),
+                    .then(|| pipeline_section_rows(timeline)),
                 self.pipeline_section.open_amount(),
             ),
-            (effect_height, self.controls_section.open_amount()),
+            (effect_rows, self.controls_section.open_amount()),
             (
                 timeline
                     .selected_model3d_value(project, "position")
                     .is_some()
-                    .then(model3d_clip_section_height),
+                    .then(model3d_clip_section_rows),
                 self.model3d_clip_section.open_amount(),
             ),
             (
                 timeline
                     .selected_pipeline()
                     .is_some_and(|pipeline| pipeline.transform().is_some())
-                    .then(transform_section_height),
+                    .then(transform_section_rows),
                 self.transform_section.open_amount(),
             ),
             (
                 (timeline.selected_pipeline_kind() != PipelineKind::Audio)
-                    .then(compositing_section_height),
+                    .then(compositing_section_rows),
                 self.compositing_section.open_amount(),
             ),
         ];
-        let summary_height = selection_summary_height(timeline);
-        let (sections, end) = inspector_layout_sections(rect, start + summary_height, &specs);
+        let summary = selection_summary_rects(content, start, timeline).0;
+        let (sections, end) = measure_inspector_sections(rect, summary.bottom(), &specs);
         let mut sections = sections.into_iter();
-        InspectorLayout {
+        InspectorRects {
             content,
             content_height: (end + self.scroll_y - rect.y + INSPECTOR_SECTION_PAD).max(0.0),
             source: sections.next().expect("source section"),
@@ -2189,8 +2197,8 @@ impl InspectorState {
                 chevron,
                 self.scroll_y,
             );
-            let content = crate::ui_layout::scrolled_content(rect, self.scroll_y);
-            let _media_layout = media_inspector_layout(
+            let content = kama_ui::layout::scrolled_content(rect, self.scroll_y);
+            let _media_layout = media_inspector_rects(
                 content,
                 asset,
                 media_stream,
@@ -2210,23 +2218,23 @@ impl InspectorState {
         let Some(title) = inspector_title(timeline) else {
             self.scroll_y = 0.0;
             self.content_height = 0.0;
-            let empty_slot = crate::ui_layout::column(
+            let empty_slot = kama_ui::layout::column(
                 rect,
                 &[
-                    crate::ui_layout::Item::height(40.0),
-                    crate::ui_layout::Item::fill(),
+                    kama_ui::layout::Item::height(40.0),
+                    kama_ui::layout::Item::fill(),
                 ],
                 0.0,
                 0.0,
                 kama_ui::Align::Start,
                 None,
             )[0];
-            let empty = crate::ui_layout::row(
+            let empty = kama_ui::layout::row(
                 empty_slot,
                 &[
-                    crate::ui_layout::Item::width(12.0),
-                    crate::ui_layout::Item::fill(),
-                    crate::ui_layout::Item::width(12.0),
+                    kama_ui::layout::Item::width(12.0),
+                    kama_ui::layout::Item::fill(),
+                    kama_ui::layout::Item::width(12.0),
                 ],
                 0.0,
                 0.0,
@@ -2241,7 +2249,7 @@ impl InspectorState {
         };
         panel_title(ctx, "inspector-title", rect, &title, self.scroll_y);
 
-        let layout = self.layout(rect, project, timeline, plugins);
+        let layout = self.rects(rect, project, timeline, plugins);
         let content_rect = layout.content;
         self.build_selection_summary(
             ctx,
@@ -2254,7 +2262,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.source_section,
-                content_rect,
                 section,
                 "Source",
                 "source",
@@ -2276,7 +2283,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.pipeline_section,
-                content_rect,
                 section,
                 "Effect Pipeline",
                 "pipeline",
@@ -2328,7 +2334,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.controls_section,
-                content_rect,
                 section,
                 "Effects",
                 "effects",
@@ -2343,6 +2348,7 @@ impl InspectorState {
                 {
                     let properties = effect_property_rect(body);
                     for (offset, row) in effect_control_rows(
+                        body.width,
                         shared,
                         plugins,
                         project,
@@ -2353,14 +2359,17 @@ impl InspectorState {
                     {
                         let y = body.y + offset;
                         match row {
-                            EffectControlRow::Header { node, body_height } => {
+                            EffectControlRow::Header {
+                                node,
+                                body: node_body,
+                            } => {
                                 if let Some(node_section) = self.effect_sections.get(&node.id) {
                                     draw_effect_header(
                                         ctx,
                                         (body, y),
                                         node,
                                         node_section,
-                                        body_height,
+                                        node_body,
                                         (icons, plugins),
                                         (
                                             timeline
@@ -2475,7 +2484,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.model3d_clip_section,
-                content_rect,
                 section,
                 "3D Model",
                 "model3d-clip",
@@ -2484,7 +2492,7 @@ impl InspectorState {
         }) {
             ctx.with_clip(body, |ctx| {
                 let rows =
-                    crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
+                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
                 for ((label, input, settings, default), row) in [
                     (
                         "Size",
@@ -2552,7 +2560,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.transform_section,
-                content_rect,
                 section,
                 "Transform",
                 "transform",
@@ -2561,7 +2568,7 @@ impl InspectorState {
         }) {
             ctx.with_clip(body, |ctx| {
                 let rows =
-                    crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
+                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
                 let size = project
                     .active_settings()
                     .canvas_size
@@ -2610,7 +2617,6 @@ impl InspectorState {
             build_inspector_section(
                 ctx,
                 &self.compositing_section,
-                content_rect,
                 section,
                 "Compositing",
                 "compositing",
@@ -2618,7 +2624,7 @@ impl InspectorState {
             )
         }) {
             ctx.with_clip(body, |ctx| {
-                let rows = crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
+                let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
                 self.build_number_property(
                     ctx,
                     (body, rows[0].y, "Opacity"),
@@ -2911,13 +2917,13 @@ impl InspectorState {
             keyframe,
         );
 
-        let eq_rows = crate::ui_layout::stack(rect, y, &[ROW_H, 5.0, GRAPHIC_EQ_H - 10.0]);
-        let graph = crate::ui_layout::row(
+        let eq_rows = kama_ui::layout::stack(rect, y, &[ROW_H, 5.0, GRAPHIC_EQ_H - 10.0]);
+        let graph = kama_ui::layout::row(
             eq_rows[2],
             &[
-                crate::ui_layout::Item::width(5.0),
-                crate::ui_layout::Item::fill(),
-                crate::ui_layout::Item::width(5.0),
+                kama_ui::layout::Item::width(5.0),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(5.0),
             ],
             0.0,
             0.0,
@@ -2950,11 +2956,11 @@ impl InspectorState {
                 ui_text!(
                     ctx,
                     ("graphic-eq-frequency", node.id, index),
-                    crate::ui_layout::fit_column_at(
+                    kama_ui::layout::fit_column_at(
                         slider,
                         [slider.x, layout.slider_bottom + 4.0],
                         slider.width,
-                        &[crate::ui_layout::Item::height(16.0)],
+                        &[kama_ui::layout::Item::height(16.0)],
                         0.0,
                         0.0,
                     )
@@ -3006,7 +3012,7 @@ impl InspectorState {
             Some(GeneratorSource::Wasm { .. }) => heights.extend([ROW_H; 3]),
             None => {}
         }
-        let rows = crate::ui_layout::stack(rect, start_y, &heights);
+        let rows = kama_ui::layout::stack(rect, start_y, &heights);
         let mut row_index = 0;
 
         if let Some(speed) = speed {
@@ -3086,7 +3092,7 @@ impl InspectorState {
                                 if generator_type == BUILTIN_GRADIENT_GENERATOR =>
                             {
                                 let colors = selected_gradient_stop_colors(timeline);
-                                let stop_rows = crate::ui_layout::stack(
+                                let stop_rows = kama_ui::layout::stack(
                                     slot,
                                     slot.y,
                                     &vec![ROW_H; colors.len() + 1],
@@ -3245,7 +3251,7 @@ impl InspectorState {
         }
 
         if target.is_none() {
-            let layout = self.layout(rect, project, timeline, plugins);
+            let layout = self.rects(rect, project, timeline, plugins);
             target = [
                 (layout.source, InspectorSectionTarget::Source),
                 (layout.effects, InspectorSectionTarget::Effects),
@@ -3255,7 +3261,7 @@ impl InspectorState {
             .into_iter()
             .find_map(|(section, kind)| {
                 section
-                    .filter(|section| accordion_hit(layout.content, section.header).contains(point))
+                    .filter(|section| section.header.contains(point))
                     .map(|_| InspectorContextTarget::Section(kind))
             });
         }
@@ -3344,8 +3350,8 @@ impl InspectorState {
             };
             let local = Rect::new(0.0, 0.0, rect.width, rect.height);
             let point = [point[0] - rect.x, point[1] - rect.y];
-            let content = crate::ui_layout::scrolled_content(local, self.scroll_y);
-            let layout = media_inspector_layout(
+            let content = kama_ui::layout::scrolled_content(local, self.scroll_y);
+            let layout = media_inspector_rects(
                 content,
                 &asset,
                 media_stream,
@@ -3363,9 +3369,7 @@ impl InspectorState {
                 (layout.audio, &mut self.media_audio_section),
                 (layout.model, &mut self.media_model_section),
             ] {
-                if section
-                    .is_some_and(|section| accordion_hit(content, section.header).contains(point))
-                {
+                if section.is_some_and(|section| section.header.contains(point)) {
                     accordion.toggle();
                     break;
                 }
@@ -3387,9 +3391,9 @@ impl InspectorState {
 
         let summary_y = rect.y + PANEL_HEADER_H - self.scroll_y;
         if timeline.selected_clip().is_some() {
-            let content = self.layout(rect, project, timeline, plugins).content;
+            let content = self.rects(rect, project, timeline, plugins).content;
             let hit = (0usize..2).find_map(|index| {
-                let field = selection_summary_value_rect(content, summary_y, index);
+                let field = selection_summary_value_rect(content, summary_y, timeline, index);
                 field.contains(point).then_some((index, field))
             });
             if let Some((index, field)) = hit {
@@ -3468,8 +3472,7 @@ impl InspectorState {
                 return true;
             }
         }
-        let layout = self.layout(rect, project, timeline, plugins);
-        let content_rect = layout.content;
+        let layout = self.rects(rect, project, timeline, plugins);
         for (section, accordion) in [
             (layout.source, &mut self.source_section),
             (layout.pipeline, &mut self.pipeline_section),
@@ -3478,9 +3481,7 @@ impl InspectorState {
             (layout.transform, &mut self.transform_section),
             (layout.compositing, &mut self.compositing_section),
         ] {
-            if section
-                .is_some_and(|section| accordion_hit(content_rect, section.header).contains(point))
-            {
+            if section.is_some_and(|section| section.header.contains(point)) {
                 accordion.toggle();
                 return true;
             }
@@ -3488,7 +3489,7 @@ impl InspectorState {
 
         if let Some(section) = layout.source {
             if self.source_section.open_amount() > 0.98 {
-                let body = inspector_section_content(&self.source_section, content_rect, section);
+                let body = inspector_section_content(section);
                 if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
                     let has_speed = timeline.selected_speed(project).is_some();
                     let input_offset = if has_speed { 1 } else { 0 };
@@ -3501,7 +3502,7 @@ impl InspectorState {
                             .iter()
                             .map(|input| generator_input_height(timeline, input)),
                     );
-                    let rows = crate::ui_layout::stack(body, body.y, &heights);
+                    let rows = kama_ui::layout::stack(body, body.y, &heights);
                     for (input, slot) in inputs.into_iter().zip(rows.into_iter().skip(input_offset))
                     {
                         let y = slot.y;
@@ -3533,7 +3534,7 @@ impl InspectorState {
                             && input.ty == InputType::F32List
                         {
                             let colors = selected_gradient_stop_colors(timeline);
-                            let stop_rows = crate::ui_layout::stack(
+                            let stop_rows = kama_ui::layout::stack(
                                 slot,
                                 slot.y,
                                 &vec![ROW_H; colors.len() + 1],
@@ -3591,7 +3592,7 @@ impl InspectorState {
 
         if let Some(section) = layout.pipeline {
             if self.pipeline_section.open_amount() > 0.98 {
-                let body = inspector_section_content(&self.pipeline_section, content_rect, section);
+                let body = inspector_section_content(section);
                 let y = body.y;
                 if row_hit(body, y).contains(point) {
                     if !timeline.can_assign_pipeline() {
@@ -3641,7 +3642,7 @@ impl InspectorState {
                     Consumed,
                 }
 
-                let body = inspector_section_content(&self.controls_section, content_rect, section);
+                let body = inspector_section_content(section);
                 let properties = effect_property_rect(body);
                 let hit = timeline
                     .selected_pipeline()
@@ -3649,6 +3650,7 @@ impl InspectorState {
                     .and_then(|id| project.pipeline(id))
                     .and_then(|shared| {
                         effect_control_rows(
+                            body.width,
                             shared,
                             plugins,
                             project,
@@ -3760,10 +3762,9 @@ impl InspectorState {
 
         if let Some(section) = layout.model3d {
             if self.model3d_clip_section.open_amount() > 0.98 {
-                let body =
-                    inspector_section_content(&self.model3d_clip_section, content_rect, section);
+                let body = inspector_section_content(section);
                 let rows =
-                    crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
+                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
                 for (input, row) in ["size", "position", "rotation", "scale"]
                     .into_iter()
                     .zip(rows.into_iter().take(4))
@@ -3780,10 +3781,9 @@ impl InspectorState {
 
         if let Some(section) = layout.transform {
             if self.transform_section.open_amount() > 0.98 {
-                let body =
-                    inspector_section_content(&self.transform_section, content_rect, section);
+                let body = inspector_section_content(section);
                 let rows =
-                    crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
+                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
                 for ((_, input, _), row) in
                     TRANSFORM_VECTOR_ROWS.into_iter().zip(rows.iter().copied())
                 {
@@ -3804,9 +3804,8 @@ impl InspectorState {
 
         if let Some(section) = layout.compositing {
             if self.compositing_section.open_amount() > 0.98 {
-                let body =
-                    inspector_section_content(&self.compositing_section, content_rect, section);
-                let rows = crate::ui_layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
+                let body = inspector_section_content(section);
+                let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
                 if row_hit(body, rows[0].y).contains(point) {
                     if keyframe_rect(body, rows[0].y).contains(point) {
                         timeline.toggle_selected_opacity_keyframe();
@@ -4125,7 +4124,7 @@ impl InspectorState {
                 return Some(offset_rect(caret, rect.x, rect.y));
             }
         }
-        let layout = self.layout(rect, project, timeline, plugins);
+        let layout = self.rects(rect, project, timeline, plugins);
         if timeline.selected_clip().is_some() {
             let summary_y = rect.y + PANEL_HEADER_H - self.scroll_y;
             for (editor, index) in [(&self.clip_start, 0usize), (&self.clip_end, 1usize)] {
@@ -4133,6 +4132,7 @@ impl InspectorState {
                     return Some(editor.caret_rect(selection_summary_value_rect(
                         layout.content,
                         summary_y,
+                        timeline,
                         index,
                     )));
                 }
@@ -4140,7 +4140,7 @@ impl InspectorState {
         }
         if self.source_section.is_open() {
             if let Some(section) = layout.source {
-                let body = inspector_section_content(&self.source_section, layout.content, section);
+                let body = inspector_section_content(section);
                 if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
                     let has_speed = timeline.selected_speed(project).is_some();
                     let input_offset = if has_speed { 1 } else { 0 };
@@ -4153,7 +4153,7 @@ impl InspectorState {
                             .iter()
                             .map(|input| generator_input_height(timeline, input)),
                     );
-                    let rows = crate::ui_layout::stack(body, body.y, &heights);
+                    let rows = kama_ui::layout::stack(body, body.y, &heights);
                     for (input, row) in inputs.into_iter().zip(rows.into_iter().skip(input_offset))
                     {
                         if input.ty == InputType::Text
@@ -4169,8 +4169,7 @@ impl InspectorState {
 
         if self.pipeline_section.is_open() && self.pipeline_name.is_focused() {
             if let Some(section) = layout.pipeline {
-                let body =
-                    inspector_section_content(&self.pipeline_section, layout.content, section);
+                let body = inspector_section_content(section);
                 let (_, name, _, _) = pipeline_selector_parts(body, body.y);
                 return Some(self.pipeline_name.caret_rect(name));
             }
@@ -4180,167 +4179,187 @@ impl InspectorState {
 }
 
 #[derive(Clone, Copy)]
-struct InspectorSectionLayout {
-    header: f32,
-    body: f32,
-    height: f32,
-}
-
-impl InspectorSectionLayout {
-    fn from_slot(slot: Rect, height: f32, open: f32) -> Self {
-        let parts = crate::ui_layout::column(
-            slot,
-            &[
-                crate::ui_layout::Item::height(ACCORDION_H),
-                crate::ui_layout::Item::height(height * open),
-                crate::ui_layout::Item::height(INSPECTOR_SECTION_GAP),
-            ],
-            0.0,
-            0.0,
-            kama_ui::Align::Start,
-            None,
-        );
-        Self {
-            header: parts[0].y,
-            body: parts[1].y,
-            height,
-        }
-    }
+struct InspectorSectionRects {
+    header: Rect,
+    body: Rect,
+    content: Rect,
 }
 
 #[derive(Clone, Copy)]
-struct InspectorLayout {
+struct InspectorRects {
     content: Rect,
     content_height: f32,
-    source: Option<InspectorSectionLayout>,
-    pipeline: Option<InspectorSectionLayout>,
-    effects: Option<InspectorSectionLayout>,
-    model3d: Option<InspectorSectionLayout>,
-    transform: Option<InspectorSectionLayout>,
-    compositing: Option<InspectorSectionLayout>,
+    source: Option<InspectorSectionRects>,
+    pipeline: Option<InspectorSectionRects>,
+    effects: Option<InspectorSectionRects>,
+    model3d: Option<InspectorSectionRects>,
+    transform: Option<InspectorSectionRects>,
+    compositing: Option<InspectorSectionRects>,
 }
 
-fn accordion_hit(rect: Rect, y: f32) -> Rect {
-    let (_, rows) = crate::ui_layout::fit_column_at(
-        rect,
-        [rect.x, y],
-        rect.width,
-        &[crate::ui_layout::Item::height(ACCORDION_H)],
-        0.0,
-        0.0,
-    );
-    crate::ui_layout::row(
-        rows[0],
-        &[
-            crate::ui_layout::Item::width(7.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels(ACCORDION_H - 4.0)),
-            crate::ui_layout::Item::width(7.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1]
+fn measure_inspector_sections(
+    rect: Rect,
+    start: f32,
+    specs: &[(Option<Vec<f32>>, f32)],
+) -> (Vec<Option<InspectorSectionRects>>, f32) {
+    #[derive(Clone, Copy)]
+    struct SectionIds {
+        header: BlockId,
+        body: BlockId,
+        content: BlockId,
+    }
+
+    if specs.iter().all(|(rows, _)| rows.is_none()) {
+        return (vec![None; specs.len()], start);
+    }
+
+    let ((root, ids), measured) = kama_ui::measure_layout(rect, |ctx| {
+        let mut ids = Vec::with_capacity(specs.len());
+        let root = ctx
+            .new()
+            .overlay()
+            .position((0.0, start - rect.y))
+            .width(Size::Fill)
+            .height(Size::Fit)
+            .column()
+            .children(|ctx| {
+                for (rows, open) in specs {
+                    let Some(rows) = rows else {
+                        ids.push(None);
+                        continue;
+                    };
+                    let mut header = BlockId::default();
+                    let mut body = BlockId::default();
+                    let mut content = BlockId::default();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Fit)
+                        .column()
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(ACCORDION_H))
+                                .row()
+                                .children(|ctx| {
+                                    ctx.new()
+                                        .width(Size::Pixels(7.0))
+                                        .height(Size::Fill)
+                                        .build();
+                                    header = ctx
+                                        .new()
+                                        .width(Size::Fill)
+                                        .height(Size::Pixels(ACCORDION_H - 4.0))
+                                        .build();
+                                    ctx.new()
+                                        .width(Size::Pixels(7.0))
+                                        .height(Size::Fill)
+                                        .build();
+                                })
+                                .build();
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::FitScale(*open))
+                                .row()
+                                .children(|ctx| {
+                                    ctx.new()
+                                        .width(Size::Pixels(7.0))
+                                        .height(Size::Fill)
+                                        .build();
+                                    body = ctx
+                                        .new()
+                                        .width(Size::Fill)
+                                        .height(Size::Fill)
+                                        .padding(INSPECTOR_SECTION_PAD)
+                                        .column()
+                                        .children(|ctx| {
+                                            content = ctx
+                                                .new()
+                                                .width(Size::Fill)
+                                                .height(Size::Fill)
+                                                .children(|ctx| {
+                                                    ctx.new()
+                                                        .width(Size::Fill)
+                                                        .height(Size::Fit)
+                                                        .column()
+                                                        .children(|ctx| {
+                                                            for height in rows {
+                                                                ctx.new()
+                                                                    .width(Size::Fill)
+                                                                    .height(Size::Pixels(*height))
+                                                                    .build();
+                                                            }
+                                                        })
+                                                        .build();
+                                                })
+                                                .build();
+                                        })
+                                        .build();
+                                    ctx.new()
+                                        .width(Size::Pixels(7.0))
+                                        .height(Size::Fill)
+                                        .build();
+                                })
+                                .build();
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(INSPECTOR_SECTION_GAP))
+                                .build();
+                        })
+                        .build();
+                    ids.push(Some(SectionIds {
+                        header,
+                        body,
+                        content,
+                    }));
+                }
+            })
+            .build();
+        (root, ids)
+    });
+
+    let rect_for = |id: BlockId| measured.rect(id).expect("inspector rect");
+    let sections = ids
+        .into_iter()
+        .map(|ids| {
+            ids.map(|ids| InspectorSectionRects {
+                header: rect_for(ids.header),
+                body: rect_for(ids.body),
+                content: rect_for(ids.content),
+            })
+        })
+        .collect();
+    (sections, rect_for(root).bottom())
 }
 
 fn inspector_accordion_body(
     ctx: &mut kama_ui::BuildCtx,
     section: &Accordion,
-    rect: Rect,
-    header_y: f32,
-    body_height: f32,
+    body: Rect,
     label: &str,
 ) {
-    let _ = section.build_body(
+    section.build_body_rect(
         ctx,
         FormatKey::new(format_args!("inspector-section-{label}")),
-        accordion_hit(rect, header_y),
-        body_height,
+        body,
         crate::widgets::component_style(),
     );
 }
 
-fn inspector_layout_sections(
-    rect: Rect,
-    start: f32,
-    specs: &[(Option<f32>, f32)],
-) -> (Vec<Option<InspectorSectionLayout>>, f32) {
-    let heights = specs
-        .iter()
-        .filter_map(|(height, open)| {
-            height.map(|height| ACCORDION_H + height * open + INSPECTOR_SECTION_GAP)
-        })
-        .map(crate::ui_layout::Item::height)
-        .collect::<Vec<_>>();
-    if heights.is_empty() {
-        return (vec![None; specs.len()], start);
-    }
-    let (root, slots) =
-        crate::ui_layout::fit_column_at(rect, [rect.x, start], rect.width, &heights, 0.0, 0.0);
-    let mut slots = slots.into_iter();
-    let sections = specs
-        .iter()
-        .map(|(height, open)| {
-            height.map(|height| {
-                InspectorSectionLayout::from_slot(
-                    slots.next().expect("inspector section slot"),
-                    height,
-                    *open,
-                )
-            })
-        })
-        .collect();
-    (sections, root.bottom())
-}
-
-fn inspector_section_content(
-    section: &Accordion,
-    rect: Rect,
-    layout: InspectorSectionLayout,
-) -> Rect {
-    section
-        .content_rect(
-            accordion_hit(rect, layout.header),
-            layout.height,
-            INSPECTOR_SECTION_PAD,
-        )
-        .unwrap_or_else(|| {
-            let (_, rows) = crate::ui_layout::fit_column_at(
-                rect,
-                [rect.x, layout.body],
-                rect.width,
-                &[crate::ui_layout::Item::height(layout.height)],
-                0.0,
-                0.0,
-            );
-            let body = crate::ui_layout::row(
-                rows[0],
-                &[
-                    crate::ui_layout::Item::width(7.0),
-                    crate::ui_layout::Item::fill(),
-                    crate::ui_layout::Item::width(7.0),
-                ],
-                0.0,
-                0.0,
-                kama_ui::Align::Start,
-            )[1];
-            crate::ui_layout::inset(body, INSPECTOR_SECTION_PAD)
-        })
+fn inspector_section_content(layout: InspectorSectionRects) -> Rect {
+    layout.content
 }
 
 fn build_inspector_section(
     ctx: &mut kama_ui::BuildCtx,
     section: &Accordion,
-    rect: Rect,
-    layout: InspectorSectionLayout,
+    layout: InspectorSectionRects,
     title: &str,
     id: &str,
     chevron: IconId,
 ) -> Option<Rect> {
-    accordion_header(ctx, section, rect, layout.header, title, chevron);
-    inspector_accordion_body(ctx, section, rect, layout.header, layout.height, id);
-    section
-        .is_visible()
-        .then(|| inspector_section_content(section, rect, layout))
+    accordion_header(ctx, section, layout.header, title, chevron);
+    inspector_accordion_body(ctx, section, layout.body, id);
+    section.is_visible().then_some(layout.content)
 }
 
 fn visible_generator_inputs<'a>(
@@ -4359,44 +4378,38 @@ fn visible_generator_inputs<'a>(
     })
 }
 
-fn source_section_height(
+fn source_section_rows(
     project: &Project,
     timeline: &TimelineState,
     plugins: &PluginRegistry,
-) -> f32 {
-    let generator_height = match timeline.selected_generator() {
-        Some(GeneratorSource::Plugin { .. }) => {
-            visible_generator_inputs(timeline, plugins).map_or(ROW_H, |inputs| {
+) -> Vec<f32> {
+    let mut rows = match timeline.selected_generator() {
+        Some(GeneratorSource::Plugin { .. }) => visible_generator_inputs(timeline, plugins)
+            .map(|inputs| {
                 inputs
                     .iter()
                     .map(|input| generator_input_height(timeline, input))
-                    .sum()
+                    .collect()
             })
-        }
-        Some(GeneratorSource::Wasm { .. }) => 3.0 * ROW_H,
-        None => 0.0,
+            .unwrap_or_else(|| vec![ROW_H]),
+        Some(GeneratorSource::Wasm { .. }) => vec![ROW_H; 3],
+        None => Vec::new(),
     };
-    let speed_height = if timeline.selected_speed(project).is_some() {
-        ROW_H
-    } else {
-        0.0
-    };
-    let volume_height = if timeline.selected_clip_volume().is_some() {
-        ROW_H
-    } else {
-        0.0
-    };
-    generator_height + speed_height + volume_height + INSPECTOR_SECTION_PAD * 2.0
+    if timeline.selected_speed(project).is_some() {
+        rows.push(ROW_H);
+    }
+    if timeline.selected_clip_volume().is_some() {
+        rows.push(ROW_H);
+    }
+    rows
 }
 
-fn pipeline_section_height(timeline: &TimelineState) -> f32 {
-    ROW_H
-        + if timeline.can_assign_pipeline() {
-            30.0
-        } else {
-            0.0
-        }
-        + INSPECTOR_SECTION_PAD * 2.0
+fn pipeline_section_rows(timeline: &TimelineState) -> Vec<f32> {
+    let mut rows = vec![ROW_H];
+    if timeline.can_assign_pipeline() {
+        rows.push(30.0);
+    }
+    rows
 }
 
 const INSPECTOR_SECTION_PAD: f32 = 8.0;
@@ -4408,7 +4421,7 @@ const EFFECT_NODE_CONTENT_PAD: f32 = 10.0;
 enum EffectControlRow<'a> {
     Header {
         node: &'a crate::effects::EffectNode,
-        body_height: f32,
+        body: Rect,
     },
     Input {
         node: &'a crate::effects::EffectNode,
@@ -4511,14 +4524,14 @@ fn effect_body_rows<'a>(
         }
     }
 
-    let (body, row_rects) = crate::ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, 1.0, 1_000_000.0),
+    let (body, row_rects) = kama_ui::layout::fit_column_at(
+        Rect::new(0.0, 0.0, 1.0, 1.0),
         [0.0, 0.0],
         1.0,
         &heights
             .iter()
             .copied()
-            .map(crate::ui_layout::Item::height)
+            .map(kama_ui::layout::Item::height)
             .collect::<Vec<_>>(),
         0.0,
         EFFECT_NODE_CONTENT_PAD,
@@ -4532,6 +4545,7 @@ fn effect_body_rows<'a>(
 }
 
 fn effect_control_rows<'a>(
+    width: f32,
     shared: &'a crate::effects::EffectPipeline,
     plugins: &'a PluginRegistry,
     project: &Project,
@@ -4540,11 +4554,11 @@ fn effect_control_rows<'a>(
 ) -> (Vec<(f32, EffectControlRow<'a>)>, f32) {
     let nodes = shared.main_path();
     if nodes.is_empty() {
-        let (root, rows) = crate::ui_layout::fit_column_at(
-            Rect::new(0.0, 0.0, 1.0, ROW_H),
+        let (root, rows) = kama_ui::layout::fit_column_at(
+            Rect::new(0.0, 0.0, width.max(1.0), ROW_H),
             [0.0, 0.0],
-            1.0,
-            &[crate::ui_layout::Item::height(ROW_H)],
+            width.max(1.0),
+            &[kama_ui::layout::Item::height(ROW_H)],
             0.0,
             0.0,
         );
@@ -4554,83 +4568,110 @@ fn effect_control_rows<'a>(
         );
     }
 
-    let node_layout = nodes
+    struct NodeRects {
+        header: BlockId,
+        body: BlockId,
+    }
+
+    let nodes = nodes
         .iter()
         .map(|&node| {
-            let (body_rows, body_height) = effect_body_rows(node, plugins, project, timeline);
+            let (rows, extent) = effect_body_rows(node, plugins, project, timeline);
             let open = sections.get(&node.id).map_or(1.0, Accordion::open_amount);
-            (node, body_rows, body_height, open)
+            (node, rows, extent, open)
         })
         .collect::<Vec<_>>();
-    let (root, slots) = crate::ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, 1.0, 1_000_000.0),
-        [0.0, 0.0],
-        1.0,
-        &node_layout
-            .iter()
-            .map(|(_, _, body_height, open)| {
-                crate::ui_layout::Item::height(
-                    EFFECT_NODE_HEADER_H + 4.0 + body_height * open + EFFECT_NODE_GAP,
-                )
+    let viewport = Rect::new(0.0, 0.0, width.max(1.0), 1.0);
+    let ((root, ids), measured) = kama_ui::measure_layout(viewport, |ctx| {
+        let mut ids = Vec::with_capacity(nodes.len());
+        let root = ctx
+            .new()
+            .width(Size::Fill)
+            .height(Size::Fit)
+            .column()
+            .children(|ctx| {
+                for (_, _, extent, open) in &nodes {
+                    let mut header = BlockId::default();
+                    let mut body = BlockId::default();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Fit)
+                        .column()
+                        .children(|ctx| {
+                            header = ctx
+                                .new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(EFFECT_NODE_HEADER_H))
+                                .build();
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(4.0))
+                                .build();
+                            body = ctx
+                                .new()
+                                .width(Size::Fill)
+                                .height(Size::FitScale(*open))
+                                .children(|ctx| {
+                                    ctx.new()
+                                        .width(Size::Fill)
+                                        .height(Size::Pixels(*extent))
+                                        .build();
+                                })
+                                .build();
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(EFFECT_NODE_GAP))
+                                .build();
+                        })
+                        .build();
+                    ids.push(NodeRects { header, body });
+                }
             })
-            .collect::<Vec<_>>(),
-        0.0,
-        0.0,
-    );
+            .build();
+        (root, ids)
+    });
 
     let mut rows = Vec::new();
-    for ((node, body_rows, body_height, open), slot) in node_layout.into_iter().zip(slots) {
-        let parts = crate::ui_layout::column(
-            slot,
-            &[
-                crate::ui_layout::Item::height(EFFECT_NODE_HEADER_H),
-                crate::ui_layout::Item::height(4.0),
-                crate::ui_layout::Item::height(body_height * open),
-                crate::ui_layout::Item::height(EFFECT_NODE_GAP),
-            ],
-            0.0,
-            0.0,
-            kama_ui::Align::Start,
-            None,
-        );
-        rows.push((parts[0].y, EffectControlRow::Header { node, body_height }));
+    for ((node, body_rows, _, open), ids) in nodes.into_iter().zip(ids) {
+        let header = measured.rect(ids.header).expect("effect header rect");
+        let body = measured.rect(ids.body).expect("effect body rect");
+        rows.push((header.y, EffectControlRow::Header { node, body }));
         if open > 0.98 {
             rows.extend(
                 body_rows
                     .into_iter()
-                    .map(|(offset, row)| (parts[2].y + offset, row)),
+                    .map(|(offset, row)| (body.y + offset, row)),
             );
         }
     }
-    (rows, root.height)
+    (rows, measured.rect(root).expect("effect stack rect").height)
 }
 
 const ANGLE_ROW_H: f32 = 78.0;
 
-fn model3d_clip_section_height() -> f32 {
-    ROW_H * 5.0 + INSPECTOR_SECTION_PAD * 2.0
+fn model3d_clip_section_rows() -> Vec<f32> {
+    vec![ROW_H; 5]
 }
 
-fn transform_section_height() -> f32 {
-    ROW_H * 3.0 + ANGLE_ROW_H + INSPECTOR_SECTION_PAD * 2.0
+fn transform_section_rows() -> Vec<f32> {
+    vec![ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]
 }
 
-fn compositing_section_height() -> f32 {
-    ROW_H * 3.0 + INSPECTOR_SECTION_PAD * 2.0
+fn compositing_section_rows() -> Vec<f32> {
+    vec![ROW_H; 3]
 }
 
 fn accordion_header(
     ctx: &mut kama_ui::BuildCtx,
     section: &Accordion,
-    rect: Rect,
-    y: f32,
+    header: Rect,
     label: &str,
     chevron: IconId,
 ) {
     section.build_header(
         ctx,
         FormatKey::new(format_args!("inspector-section-{label}")),
-        accordion_hit(rect, y),
+        header,
         label,
         chevron,
         crate::widgets::component_style(),
@@ -4639,24 +4680,24 @@ fn accordion_header(
 
 fn inspector_pipeline_buttons(rect: Rect, y: f32) -> [Rect; 3] {
     let row = row_hit(rect, y);
-    let vertical = crate::ui_layout::column(
+    let vertical = kama_ui::layout::column(
         row,
         &[
-            crate::ui_layout::Item::height(2.0),
-            crate::ui_layout::Item::height(24.0),
-            crate::ui_layout::Item::fill(),
+            kama_ui::layout::Item::height(2.0),
+            kama_ui::layout::Item::height(24.0),
+            kama_ui::layout::Item::fill(),
         ],
         0.0,
         0.0,
         kama_ui::Align::Start,
         None,
     );
-    let buttons = crate::ui_layout::row(
+    let buttons = kama_ui::layout::row(
         vertical[1],
         &[
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::fill(),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::fill(),
         ],
         4.0,
         0.0,
@@ -4667,25 +4708,27 @@ fn inspector_pipeline_buttons(rect: Rect, y: f32) -> [Rect; 3] {
 
 fn pipeline_selector_parts(rect: Rect, y: f32) -> (Rect, Rect, Rect, Rect) {
     let row = row_hit(rect, y);
-    let label_width = (row.width * 0.30).max(52.0);
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::width(label_width),
-            crate::ui_layout::Item::width(2.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(3.0),
-            crate::ui_layout::Item::new(
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::fill_portion(0.30),
+            kama_ui::layout::Item::width(2.0),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.70),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(3.0),
+            kama_ui::layout::Item::new(
                 Size::Pixels(22.0),
                 Size::Pixels((row.height - 4.0).max(1.0)),
             ),
-            crate::ui_layout::Item::width(3.0),
-            crate::ui_layout::Item::new(
+            kama_ui::layout::Item::width(3.0),
+            kama_ui::layout::Item::new(
                 Size::Pixels(22.0),
                 Size::Pixels((row.height - 4.0).max(1.0)),
             ),
-            crate::ui_layout::Item::width(2.0),
+            kama_ui::layout::Item::width(2.0),
         ],
         0.0,
         0.0,
@@ -4940,23 +4983,23 @@ fn panel_title<K: Hash>(
     title: &str,
     scroll_y: f32,
 ) {
-    let (_, rows) = crate::ui_layout::fit_column_at(
+    let (_, rows) = kama_ui::layout::fit_column_at(
         rect,
         [rect.x, rect.y - scroll_y],
         rect.width,
         &[
-            crate::ui_layout::Item::height(7.0),
-            crate::ui_layout::Item::height(20.0),
+            kama_ui::layout::Item::height(7.0),
+            kama_ui::layout::Item::height(20.0),
         ],
         0.0,
         0.0,
     );
-    let title_rect = crate::ui_layout::row(
+    let title_rect = kama_ui::layout::row(
         rows[1],
         &[
-            crate::ui_layout::Item::width(10.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(10.0),
+            kama_ui::layout::Item::width(10.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(10.0),
         ],
         0.0,
         0.0,
@@ -5003,11 +5046,11 @@ fn hit_local<K: Clone>(
 }
 
 fn row_hit(rect: Rect, y: f32) -> Rect {
-    crate::ui_layout::fit_column_at(
+    kama_ui::layout::fit_column_at(
         rect,
         [rect.x, y],
         rect.width,
-        &[crate::ui_layout::Item::height(ROW_H - 3.0)],
+        &[kama_ui::layout::Item::height(ROW_H - 3.0)],
         0.0,
         0.0,
     )
@@ -5015,20 +5058,20 @@ fn row_hit(rect: Rect, y: f32) -> Rect {
 }
 
 fn project_row_hit(rect: Rect, y: f32) -> Rect {
-    let (_, rows) = crate::ui_layout::fit_column_at(
+    let (_, rows) = kama_ui::layout::fit_column_at(
         rect,
         [rect.x, y],
         rect.width,
-        &[crate::ui_layout::Item::height(ROW_H)],
+        &[kama_ui::layout::Item::height(ROW_H)],
         0.0,
         0.0,
     );
-    crate::ui_layout::row(
+    kama_ui::layout::row(
         rows[0],
         &[
-            crate::ui_layout::Item::width(8.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels(ROW_H - 3.0)),
-            crate::ui_layout::Item::width(8.0),
+            kama_ui::layout::Item::width(8.0),
+            kama_ui::layout::Item::new(Size::Fill, Size::Pixels(ROW_H - 3.0)),
+            kama_ui::layout::Item::width(8.0),
         ],
         0.0,
         0.0,

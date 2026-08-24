@@ -118,11 +118,11 @@ pub(super) fn app_menu_button_rects() -> [Rect; 5] {
 
 #[cfg(not(target_os = "macos"))]
 fn measured_menu_popup(x: f32, y: f32, width: f32, item_count: usize) -> (Rect, Vec<Rect>) {
-    ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, 4096.0, 4096.0),
+    kama_ui::layout::fit_column_at(
+        Rect::new(x, y, width.max(1.0), 1.0),
         [x, y],
         width,
-        &vec![ui_layout::Item::height(APP_MENU_ITEM_HEIGHT); item_count],
+        &vec![kama_ui::layout::Item::height(APP_MENU_ITEM_HEIGHT); item_count],
         0.0,
         5.0,
     )
@@ -145,7 +145,7 @@ pub(super) fn view_menu_button_rect() -> Rect {
     menu_button_rect(2)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn layout_menu_button_rect() -> Rect {
+pub(super) fn saved_layout_menu_button_rect() -> Rect {
     menu_button_rect(3)
 }
 #[cfg(not(target_os = "macos"))]
@@ -181,13 +181,13 @@ pub(super) fn view_menu_popup_rect() -> Rect {
     measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 224.0, 1).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn layout_menu_popup_rect(layout_count: usize) -> Rect {
-    let anchor = layout_menu_button_rect();
+pub(super) fn saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
+    let anchor = saved_layout_menu_button_rect();
     measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 206.0, layout_count + 3).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn delete_layout_menu_popup_rect(layout_count: usize) -> Rect {
-    let parent = layout_menu_popup_rect(layout_count);
+pub(super) fn delete_saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
+    let parent = saved_layout_menu_popup_rect(layout_count);
     let anchor = menu_item_rect(parent, layout_count + 2);
     measured_menu_popup(parent.right() - 2.0, anchor.y, 190.0, layout_count).0
 }
@@ -221,12 +221,12 @@ pub(super) fn file_menu_item_rect(index: usize, has_latest: bool) -> Rect {
     menu_item_rect(file_menu_popup_rect(has_latest), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
-    menu_item_rect(layout_menu_popup_rect(layout_count), index)
+pub(super) fn saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
+    menu_item_rect(saved_layout_menu_popup_rect(layout_count), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn delete_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
-    menu_item_rect(delete_layout_menu_popup_rect(layout_count), index)
+pub(super) fn delete_saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
+    menu_item_rect(delete_saved_layout_menu_popup_rect(layout_count), index)
 }
 
 pub(super) const EDIT_MENU_COMMANDS: &[&str] = &[
@@ -972,7 +972,7 @@ impl EditorApp {
                 let count = saved_layouts().len();
                 if delete {
                     if let Some(index) = (0..count).find(|index| {
-                        delete_layout_menu_item_rect(*index, count).contains(self.cursor)
+                        delete_saved_layout_menu_item_rect(*index, count).contains(self.cursor)
                     }) {
                         self.app_menu_keyboard.submenu_item = index;
                         self.app_menu_keyboard.active = false;
@@ -980,7 +980,7 @@ impl EditorApp {
                     }
                 }
                 if let Some(index) = (0..count + 3)
-                    .find(|index| layout_menu_item_rect(*index, count).contains(self.cursor))
+                    .find(|index| saved_layout_menu_item_rect(*index, count).contains(self.cursor))
                 {
                     self.app_menu_keyboard.item = index;
                     self.app_menu_keyboard.active = false;
@@ -1030,7 +1030,7 @@ impl EditorApp {
             (edit_menu_button_rect(), AppMenuState::Edit),
             (view_menu_button_rect(), AppMenuState::View),
             (
-                layout_menu_button_rect(),
+                saved_layout_menu_button_rect(),
                 AppMenuState::Layout { delete: false },
             ),
             (help_menu_button_rect(), AppMenuState::Help),
@@ -1120,7 +1120,7 @@ impl EditorApp {
                 let count = layouts.len();
                 if delete {
                     if let Some(layout) = layouts.iter().enumerate().find_map(|(index, layout)| {
-                        delete_layout_menu_item_rect(index, count)
+                        delete_saved_layout_menu_item_rect(index, count)
                             .contains(self.cursor)
                             .then(|| layout.clone())
                     }) {
@@ -1129,13 +1129,13 @@ impl EditorApp {
                         return true;
                     }
                 }
-                if layout_menu_item_rect(0, count).contains(self.cursor) {
+                if saved_layout_menu_item_rect(0, count).contains(self.cursor) {
                     self.app_menu = AppMenuState::Closed;
                     self.handle_layout_command(LayoutCommand::Save);
                     return true;
                 }
                 if let Some(layout) = layouts.iter().enumerate().find_map(|(index, layout)| {
-                    layout_menu_item_rect(index + 1, count)
+                    saved_layout_menu_item_rect(index + 1, count)
                         .contains(self.cursor)
                         .then(|| layout.clone())
                 }) {
@@ -1143,17 +1143,18 @@ impl EditorApp {
                     self.handle_layout_command(LayoutCommand::Load(layout.path));
                     return true;
                 }
-                if layout_menu_item_rect(count + 1, count).contains(self.cursor) {
+                if saved_layout_menu_item_rect(count + 1, count).contains(self.cursor) {
                     self.app_menu = AppMenuState::Closed;
                     self.handle_layout_command(LayoutCommand::RestoreDefault);
                     return true;
                 }
-                if count > 0 && layout_menu_item_rect(count + 2, count).contains(self.cursor) {
+                if count > 0 && saved_layout_menu_item_rect(count + 2, count).contains(self.cursor)
+                {
                     self.app_menu = AppMenuState::Layout { delete: !delete };
                     return true;
                 }
-                if layout_menu_popup_rect(count).contains(self.cursor)
-                    || (delete && delete_layout_menu_popup_rect(count).contains(self.cursor))
+                if saved_layout_menu_popup_rect(count).contains(self.cursor)
+                    || (delete && delete_saved_layout_menu_popup_rect(count).contains(self.cursor))
                 {
                     return true;
                 }
@@ -1241,7 +1242,7 @@ pub(super) fn build_app_menu(
     build_button(
         ctx,
         "app-menu-layout-button",
-        layout_menu_button_rect(),
+        saved_layout_menu_button_rect(),
         "Layout",
         layout_open,
         cursor,
@@ -1396,7 +1397,7 @@ pub(super) fn build_app_menu(
     if layout_open {
         let layouts = saved_layouts();
         let count = layouts.len();
-        let popup = layout_menu_popup_rect(count);
+        let popup = saved_layout_menu_popup_rect(count);
         build_popup(ctx, "app-layout-menu-popup", popup);
         let mut items = vec![("Save Layout…".to_string(), None, true)];
         items.extend(
@@ -1416,7 +1417,7 @@ pub(super) fn build_app_menu(
             count > 0,
         ));
         for (index, (label, icon, enabled)) in items.into_iter().enumerate() {
-            let item = layout_menu_item_rect(index, count);
+            let item = saved_layout_menu_item_rect(index, count);
             build_item(
                 ctx,
                 ("app-layout-menu-item", index),
@@ -1433,10 +1434,10 @@ pub(super) fn build_app_menu(
             );
         }
         if delete_layout_open && count > 0 {
-            let delete_popup = delete_layout_menu_popup_rect(count);
+            let delete_popup = delete_saved_layout_menu_popup_rect(count);
             build_popup(ctx, "app-delete-layout-menu-popup", delete_popup);
             for (index, layout) in layouts.iter().enumerate() {
-                let item = delete_layout_menu_item_rect(index, count);
+                let item = delete_saved_layout_menu_item_rect(index, count);
                 build_item(
                     ctx,
                     ("app-delete-layout-menu-item", index),
@@ -1512,9 +1513,12 @@ pub(super) fn app_menu_height() -> f32 {
 }
 
 pub(super) fn dock_tab_close_rect(tab: Rect) -> Rect {
-    ui_layout::row(
+    kama_ui::layout::row(
         tab,
-        &[ui_layout::Item::width(18.0), ui_layout::Item::fill()],
+        &[
+            kama_ui::layout::Item::width(18.0),
+            kama_ui::layout::Item::fill(),
+        ],
         2.0,
         2.0,
         ui::Align::Start,

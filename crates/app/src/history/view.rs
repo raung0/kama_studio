@@ -29,7 +29,7 @@ impl HistoryPanelState {
         let row = history_row_rects(rect, history.len(), self.scroll)
             .iter()
             .position(|row| row.contains(point))?;
-        let index = history.layout_rows().get(row)?.index;
+        let index = history.graph_rows().get(row)?.index;
         history.select(index)
     }
 
@@ -50,7 +50,7 @@ impl HistoryPanelState {
 
     pub(crate) fn build(&self, history: &HistoryState, ctx: &mut BuildCtx, rect: Rect) {
         let rect = Rect::new(0.0, 0.0, rect.width, rect.height);
-        let rows = history.layout_rows();
+        let rows = history.graph_rows();
         let row_rects = history_row_rects(rect, rows.len(), self.scroll);
         let max_lane = rows.iter().map(|row| row.lane).max().unwrap_or(0);
         let label_offset = (max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + 5.0;
@@ -145,7 +145,7 @@ impl HistoryPanelState {
 }
 
 impl HistoryState {
-    fn layout_rows(&self) -> Vec<HistoryRow> {
+    fn graph_rows(&self) -> Vec<HistoryRow> {
         if self.graph.is_empty() {
             return Vec::new();
         }

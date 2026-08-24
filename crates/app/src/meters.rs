@@ -56,14 +56,14 @@ impl MetersState {
         let gap = 10.0;
         let meter_h = (local.height - padding * 2.0).max(1.0);
         let meter_w = (((local.width - padding * 2.0 - gap).max(2.0)) * 0.5).min(96.0);
-        let meter_parts = crate::ui_layout::row(
+        let meter_parts = kama_ui::layout::row(
             local,
             &[
-                crate::ui_layout::Item::fill(),
-                crate::ui_layout::Item::new(Size::Pixels(meter_w), Size::Pixels(meter_h)),
-                crate::ui_layout::Item::width(gap),
-                crate::ui_layout::Item::new(Size::Pixels(meter_w), Size::Pixels(meter_h)),
-                crate::ui_layout::Item::fill(),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::new(Size::Pixels(meter_w), Size::Pixels(meter_h)),
+                kama_ui::layout::Item::width(gap),
+                kama_ui::layout::Item::new(Size::Pixels(meter_w), Size::Pixels(meter_h)),
+                kama_ui::layout::Item::fill(),
             ],
             0.0,
             0.0,

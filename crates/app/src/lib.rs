@@ -1322,9 +1322,12 @@ impl EditorApp {
         let width = self.renderer.logical_width();
         let height = self.renderer.logical_height();
         let top = app_menu_height();
-        ui_layout::column(
+        kama_ui::layout::column(
             Rect::new(0.0, 0.0, width, height.max(top + 1.0)),
-            &[ui_layout::Item::height(top), ui_layout::Item::fill()],
+            &[
+                kama_ui::layout::Item::height(top),
+                kama_ui::layout::Item::fill(),
+            ],
             0.0,
             0.0,
             ui::Align::Start,
@@ -4466,15 +4469,21 @@ impl EditorApp {
             return;
         }
         self.palette.selected = self.palette.selected.min(entries - 1);
-        let body_height = palette_body_height(&self.palette, visible);
+        let popup = palette_rect(
+            self.renderer.logical_width(),
+            self.renderer.logical_height(),
+            &self.palette,
+            visible,
+        );
+        let viewport_extent = palette_body_rect(popup, &self.palette, visible).height;
         let row = palette_unscrolled_rows(&self.palette, entries)[self.palette.selected];
         let top = row.y;
         let bottom = row.bottom();
         let max_scroll = palette_max_scroll(&self.palette, entries, visible);
         let offset = if top < self.palette.scroll.offset {
             top
-        } else if bottom > self.palette.scroll.offset + body_height {
-            bottom - body_height
+        } else if bottom > self.palette.scroll.offset + viewport_extent {
+            bottom - viewport_extent
         } else {
             self.palette.scroll.offset
         };

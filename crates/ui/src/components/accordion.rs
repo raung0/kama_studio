@@ -90,45 +90,16 @@ impl Accordion {
         });
     }
 
-    pub fn body_rect(&self, header: Rect, height: f32) -> Option<Rect> {
-        if self.t <= 0.001 {
-            return None;
+    pub fn build_body_rect(&self, ctx: &mut BuildCtx, id: impl Display, rect: Rect, style: Style) {
+        if self.t <= 0.001 || rect.height <= 0.001 {
+            return;
         }
-        Some(Rect {
-            x: header.x,
-            y: header.bottom() + 4.0,
-            width: header.width,
-            height: (height * self.t).max(0.0),
-        })
-    }
-
-    pub fn build_body(
-        &self,
-        ctx: &mut BuildCtx,
-        id: impl Display,
-        header: Rect,
-        height: f32,
-        style: Style,
-    ) -> Option<Rect> {
-        let rect = self.body_rect(header, height)?;
         crate::ui!(ctx, {
             Rect(FormatKey::new(format_args!("accordion-body {id}")), rect) {
                 fill: style.control; border: 1; border_color: style.border; border_radius: style.radius_sm;
                 opacity: self.t;
             }
         });
-        Some(rect)
-    }
-
-    pub fn content_rect(&self, header: Rect, height: f32, padding: f32) -> Option<Rect> {
-        let body = self.body_rect(header, height)?;
-        let padding = padding.max(0.0);
-        Some(Rect {
-            x: body.x + padding,
-            y: body.y + padding,
-            width: (body.width - padding * 2.0).max(0.0),
-            height: (body.height - padding * 2.0).max(0.0),
-        })
     }
 
     pub fn build(
@@ -136,7 +107,7 @@ impl Accordion {
         ctx: &mut BuildCtx,
         id: impl Display,
         header: Rect,
-        body_height: f32,
+        body_rect: Rect,
         content: AccordionContent<'_>,
         style: Style,
     ) {
@@ -146,10 +117,10 @@ impl Accordion {
             chevron,
         } = content;
         self.build_header(ctx, &id, header, title, chevron, style);
-
-        if let Some(rect) = self.build_body(ctx, &id, header, body_height, style) {
+        self.build_body_rect(ctx, &id, body_rect, style);
+        if self.t > 0.001 && body_rect.height > 0.001 {
             crate::ui!(ctx, {
-                Rect(FormatKey::new(format_args!("accordion-content {id}")), rect) {
+                Rect(FormatKey::new(format_args!("accordion-content {id}")), body_rect) {
                     padding: 9.0; font_size: 10.5; text_color: style.muted; opacity: self.t; text: body;
                 }
             });

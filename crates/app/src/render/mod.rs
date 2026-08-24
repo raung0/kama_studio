@@ -619,7 +619,7 @@ impl RenderPanelState {
                 (timeline.render_end_seconds() as f64 * fps).ceil().max(1.0) as u64 - 1;
         }
         self.sync_controls();
-        let unscrolled = render_layout(
+        let unscrolled = measure_render_rects(
             rect.width,
             0.0,
             &self.settings.preset,
@@ -630,7 +630,7 @@ impl RenderPanelState {
             .scroll
             .offset
             .min((self.content_height - rect.height).max(0.0));
-        let layout = render_layout(
+        let layout = measure_render_rects(
             rect.width,
             self.scroll.offset,
             &self.settings.preset,
@@ -649,24 +649,24 @@ impl RenderPanelState {
             if body.height <= 0.001 {
                 continue;
             }
-            let surface = crate::ui_layout::row(
-                body,
-                &[
-                    crate::ui_layout::Item::width(PAD),
-                    crate::ui_layout::Item::fill(),
-                    crate::ui_layout::Item::width(PAD),
-                ],
-                0.0,
-                0.0,
-                Align::Start,
-            )[1];
             kama_ui::ui!(ctx, {
-                Rect(("render-section-body", index), surface) {
-                    fill: style.control;
-                    border: 1;
-                    border_color: style.border;
-                    border_radius: style.radius_sm;
-                    opacity: self.sections[index].open_amount();
+                Row {
+                    id: @format("render-section-body-row-{index}");
+                    bounds: (body.x, body.y, body.width, body.height);
+                    padding: 0.0;
+
+                    HSpacer { width: Size::Pixels(PAD); }
+                    Block {
+                        id: @format("render-section-body-{index}");
+                        width: Size::Fill;
+                        height: Size::Fill;
+                        fill: style.control;
+                        border: 1;
+                        border_color: style.border;
+                        border_radius: style.radius_sm;
+                        opacity: self.sections[index].open_amount();
+                    }
+                    HSpacer { width: Size::Pixels(PAD); }
                 }
             });
         }
@@ -973,7 +973,7 @@ impl RenderPanelState {
 
     pub(crate) fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         let p = [point[0] - rect.x, point[1] - rect.y];
-        let layout = render_layout(
+        let layout = measure_render_rects(
             rect.width,
             self.scroll.offset,
             &self.settings.preset,
@@ -990,7 +990,7 @@ impl RenderPanelState {
 
     pub(crate) fn scroll(&mut self, rect: Rect, point: [f32; 2], delta: [f32; 2]) -> bool {
         let p = [point[0] - rect.x, point[1] - rect.y];
-        let layout = render_layout(
+        let layout = measure_render_rects(
             rect.width,
             self.scroll.offset,
             &self.settings.preset,
@@ -1026,7 +1026,7 @@ impl RenderPanelState {
             return false;
         }
         let p = [point[0] - rect.x, point[1] - rect.y];
-        let layout = render_layout(
+        let layout = measure_render_rects(
             rect.width,
             self.scroll.offset,
             &self.settings.preset,
@@ -1247,7 +1247,7 @@ impl RenderPanelState {
     }
 
     pub(crate) fn ime_area(&self, rect: Rect) -> Option<Rect> {
-        let layout = render_layout(
+        let layout = measure_render_rects(
             rect.width,
             self.scroll.offset,
             &self.settings.preset,
@@ -1271,37 +1271,37 @@ impl RenderPanelState {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct RenderFieldLayout {
+struct RenderFieldRects {
     label: Rect,
     control: Rect,
 }
 
 #[derive(Clone, Copy)]
-struct RenderLayout {
+struct RenderRects {
     sections: [Rect; 5],
     section_bodies: [Rect; 5],
-    combos: [Option<RenderFieldLayout>; 7],
-    numbers: [RenderFieldLayout; 3],
+    combos: [Option<RenderFieldRects>; 7],
+    numbers: [RenderFieldRects; 3],
     preset_name: Rect,
     preset_save: Rect,
-    include_audio: RenderFieldLayout,
+    include_audio: RenderFieldRects,
     path_label: Rect,
     path: Rect,
-    overwrite: RenderFieldLayout,
+    overwrite: RenderFieldRects,
     begin_buttons: [Rect; 3],
     end_buttons: [Rect; 3],
-    background: RenderFieldLayout,
-    transcode: RenderFieldLayout,
+    background: RenderFieldRects,
+    transcode: RenderFieldRects,
     action: Rect,
     content_height: f32,
 }
 
-impl RenderLayout {
+impl RenderRects {
     fn combo(self, kind: RenderCombo) -> Option<Rect> {
         self.combos[kind as usize].map(|field| field.control)
     }
 
-    fn combo_field(self, kind: RenderCombo) -> Option<RenderFieldLayout> {
+    fn combo_field(self, kind: RenderCombo) -> Option<RenderFieldRects> {
         self.combos[kind as usize]
     }
 
@@ -1309,7 +1309,7 @@ impl RenderLayout {
         self.numbers[kind as usize].control
     }
 
-    fn number_field(self, kind: RenderNumber) -> RenderFieldLayout {
+    fn number_field(self, kind: RenderNumber) -> RenderFieldRects {
         self.numbers[kind as usize]
     }
 }
@@ -1321,7 +1321,7 @@ struct RenderFieldIds {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct RenderLayoutIds {
+struct RenderRectIds {
     root: BlockId,
     sections: [BlockId; 5],
     section_bodies: [BlockId; 5],
@@ -1342,11 +1342,11 @@ struct RenderLayoutIds {
     action: BlockId,
 }
 
-fn layout_spacer(ctx: &mut kama_ui::BuildCtx, width: Size, height: Size) {
+fn build_spacer(ctx: &mut kama_ui::BuildCtx, width: Size, height: Size) {
     ctx.new().width(width).height(height).build();
 }
 
-fn layout_full_width_item(
+fn build_full_width_item(
     ctx: &mut kama_ui::BuildCtx,
     height: f32,
     item_height: f32,
@@ -1359,45 +1359,44 @@ fn layout_full_width_item(
         .row()
         .align_items(align)
         .children(|ctx| {
-            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
             item = ctx
                 .new()
                 .width(Size::Fill)
                 .height(Size::Pixels(item_height))
                 .build();
-            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     item
 }
 
-fn layout_field_row(ctx: &mut kama_ui::BuildCtx, width: f32) -> RenderFieldIds {
+fn build_field_row(ctx: &mut kama_ui::BuildCtx) -> RenderFieldIds {
     let mut field = RenderFieldIds::default();
-    let label_width = (width * 0.42 - PAD).max(0.0);
     ctx.new()
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
         .row()
         .align_items(Align::Center)
         .children(|ctx| {
-            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
             field.label = ctx
                 .new()
-                .width(Size::Pixels(label_width))
+                .width(Size::FillPortion(0.42))
                 .height(Size::Pixels(20.0))
                 .build();
             field.control = ctx
                 .new()
-                .width(Size::Fill)
+                .width(Size::FillPortion(0.58))
                 .height(Size::Pixels(24.0))
                 .build();
-            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     field
 }
 
-fn layout_triple_row(ctx: &mut kama_ui::BuildCtx, width: f32) -> [BlockId; 3] {
+fn build_triple_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 3] {
     let mut buttons = [BlockId::default(); 3];
     ctx.new()
         .width(Size::Fill)
@@ -1405,9 +1404,10 @@ fn layout_triple_row(ctx: &mut kama_ui::BuildCtx, width: f32) -> [BlockId; 3] {
         .row()
         .align_items(Align::Center)
         .children(|ctx| {
-            layout_spacer(ctx, Size::Pixels(width * 0.42), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::FillPortion(0.42), Size::Fill);
             ctx.new()
-                .width(Size::Fill)
+                .width(Size::FillPortion(0.58))
                 .height(Size::Fill)
                 .row()
                 .gap(4.0)
@@ -1422,106 +1422,73 @@ fn layout_triple_row(ctx: &mut kama_ui::BuildCtx, width: f32) -> [BlockId; 3] {
                     }
                 })
                 .build();
-            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     buttons
 }
 
-fn padded_section_height(content_height: f32) -> f32 {
-    content_height + SECTION_CONTENT_PAD * 2.0
-}
-
-fn layout_section(
+fn build_section(
     ctx: &mut kama_ui::BuildCtx,
     open: f32,
-    content_height: f32,
     body: impl FnOnce(&mut kama_ui::BuildCtx),
 ) -> (BlockId, BlockId) {
-    let mut section = BlockId::default();
+    let mut header = BlockId::default();
     let mut section_body = BlockId::default();
-    let body_height = padded_section_height(content_height);
     ctx.new()
         .width(Size::Fill)
-        .height(Size::Pixels(SECTION_H + body_height * open + SECTION_GAP))
+        .height(Size::Fit)
         .column()
         .children(|ctx| {
-            section = layout_full_width_item(ctx, SECTION_H - 2.0, SECTION_H - 2.0, Align::Start);
-            layout_spacer(ctx, Size::Fill, Size::Pixels(2.0));
+            header = build_full_width_item(ctx, SECTION_H - 2.0, SECTION_H - 2.0, Align::Start);
+            build_spacer(ctx, Size::Fill, Size::Pixels(2.0));
             section_body = ctx
                 .new()
                 .width(Size::Fill)
-                .height(Size::Pixels(body_height * open))
+                .height(Size::FitScale(open))
                 .column()
                 .children(|ctx| {
-                    layout_spacer(ctx, Size::Fill, Size::Pixels(SECTION_CONTENT_PAD * open));
                     ctx.new()
                         .width(Size::Fill)
-                        .height(Size::Pixels(content_height * open))
-                        .row()
-                        .children(|ctx| {
-                            layout_spacer(ctx, Size::Pixels(SECTION_CONTENT_PAD), Size::Fill);
-                            ctx.new()
-                                .width(Size::Fill)
-                                .height(Size::Fill)
-                                .column()
-                                .children(body)
-                                .build();
-                            layout_spacer(ctx, Size::Pixels(SECTION_CONTENT_PAD), Size::Fill);
-                        })
+                        .height(Size::Fit)
+                        .padding(SECTION_CONTENT_PAD)
+                        .column()
+                        .children(body)
                         .build();
-                    layout_spacer(ctx, Size::Fill, Size::Pixels(SECTION_CONTENT_PAD * open));
                 })
                 .build();
-            layout_spacer(ctx, Size::Fill, Size::Pixels(SECTION_GAP));
+            build_spacer(ctx, Size::Fill, Size::Pixels(SECTION_GAP));
         })
         .build();
-    (section, section_body)
+    (header, section_body)
 }
 
-fn render_layout(width: f32, scroll: f32, preset: &RenderPreset, open: [f32; 5]) -> RenderLayout {
-    let audio_rows = 1
-        + usize::from(preset.include_audio) * 2
-        + usize::from(
-            preset.include_audio
-                && matches!(preset.audio_codec, AudioCodec::Aac | AudioCodec::Opus),
-        );
-    let audio_body = ROW_H * audio_rows as f32;
-    let preset_body = ROW_H * 2.0 + 6.0;
-    let video_body = ROW_H * 4.0 + 22.0;
-    let output_body = 49.0 + ROW_H;
-    let controls_body = ROW_H * 6.0 + 23.0 + ROW_H;
-    let section_width = (width - SECTION_CONTENT_PAD * 2.0).max(0.0);
-    let content_height = 7.0
-        + PAD
-        + (SECTION_H + SECTION_GAP) * 5.0
-        + padded_section_height(preset_body) * open[0]
-        + padded_section_height(video_body) * open[1]
-        + padded_section_height(audio_body) * open[2]
-        + padded_section_height(output_body) * open[3]
-        + padded_section_height(controls_body) * open[4];
-
+fn measure_render_rects(
+    width: f32,
+    scroll: f32,
+    preset: &RenderPreset,
+    open: [f32; 5],
+) -> RenderRects {
     let (ids, measured) = measure_layout(Rect::new(0.0, 0.0, width, 1.0), |ctx| {
-        let mut ids = RenderLayoutIds::default();
+        let mut ids = RenderRectIds::default();
         let root = ctx
             .new()
             .position((0.0, -scroll))
             .width(Size::Fill)
-            .height(Size::Pixels(content_height))
+            .height(Size::Fit)
             .column()
             .children(|ctx| {
-                layout_spacer(ctx, Size::Fill, Size::Pixels(7.0));
+                build_spacer(ctx, Size::Fill, Size::Pixels(7.0));
 
-                let (section, section_body) = layout_section(ctx, open[0], preset_body, |ctx| {
-                    ids.combos[RenderCombo::Preset as usize] =
-                        Some(layout_field_row(ctx, section_width));
+                let (section, section_body) = build_section(ctx, open[0], |ctx| {
+                    ids.combos[RenderCombo::Preset as usize] = Some(build_field_row(ctx));
                     ctx.new()
                         .width(Size::Fill)
                         .height(Size::Pixels(ROW_H))
                         .row()
                         .align_items(Align::Center)
                         .children(|ctx| {
-                            layout_spacer(ctx, Size::Pixels(PAD), Size::Fill);
+                            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
                             ctx.new()
                                 .width(Size::Fill)
                                 .height(Size::Fill)
@@ -1541,69 +1508,61 @@ fn render_layout(width: f32, scroll: f32, preset: &RenderPreset, open: [f32; 5])
                                         .build();
                                 })
                                 .build();
-                            layout_spacer(ctx, Size::Pixels(PAD + 1.0), Size::Fill);
+                            build_spacer(ctx, Size::Pixels(PAD + 1.0), Size::Fill);
                         })
                         .build();
-                    layout_spacer(ctx, Size::Fill, Size::Pixels(6.0));
+                    build_spacer(ctx, Size::Fill, Size::Pixels(6.0));
                 });
                 ids.sections[0] = section;
                 ids.section_bodies[0] = section_body;
 
-                let (section, section_body) = layout_section(ctx, open[1], video_body, |ctx| {
-                    ids.combos[RenderCombo::Resolution as usize] =
-                        Some(layout_field_row(ctx, section_width));
-                    ids.combos[RenderCombo::VideoCodec as usize] =
-                        Some(layout_field_row(ctx, section_width));
-                    ids.combos[RenderCombo::Container as usize] =
-                        Some(layout_field_row(ctx, section_width));
-                    ids.numbers[RenderNumber::Quality as usize] =
-                        layout_field_row(ctx, section_width);
-                    ids.alpha = layout_full_width_item(ctx, 22.0, 20.0, Align::Start);
+                let (section, section_body) = build_section(ctx, open[1], |ctx| {
+                    ids.combos[RenderCombo::Resolution as usize] = Some(build_field_row(ctx));
+                    ids.combos[RenderCombo::VideoCodec as usize] = Some(build_field_row(ctx));
+                    ids.combos[RenderCombo::Container as usize] = Some(build_field_row(ctx));
+                    ids.numbers[RenderNumber::Quality as usize] = build_field_row(ctx);
+                    ids.alpha = build_full_width_item(ctx, 22.0, 20.0, Align::Start);
                 });
                 ids.sections[1] = section;
                 ids.section_bodies[1] = section_body;
 
-                let (section, section_body) = layout_section(ctx, open[2], audio_body, |ctx| {
-                    ids.include_audio = layout_field_row(ctx, section_width);
+                let (section, section_body) = build_section(ctx, open[2], |ctx| {
+                    ids.include_audio = build_field_row(ctx);
                     if preset.include_audio {
-                        ids.combos[RenderCombo::AudioCodec as usize] =
-                            Some(layout_field_row(ctx, section_width));
-                        ids.combos[RenderCombo::SampleRate as usize] =
-                            Some(layout_field_row(ctx, section_width));
+                        ids.combos[RenderCombo::AudioCodec as usize] = Some(build_field_row(ctx));
+                        ids.combos[RenderCombo::SampleRate as usize] = Some(build_field_row(ctx));
                         if matches!(preset.audio_codec, AudioCodec::Aac | AudioCodec::Opus) {
-                            ids.combos[RenderCombo::Bitrate as usize] =
-                                Some(layout_field_row(ctx, section_width));
+                            ids.combos[RenderCombo::Bitrate as usize] = Some(build_field_row(ctx));
                         }
                     }
                 });
                 ids.sections[2] = section;
                 ids.section_bodies[2] = section_body;
 
-                let (section, section_body) = layout_section(ctx, open[3], output_body, |ctx| {
-                    ids.path_label = layout_full_width_item(ctx, 18.0, 20.0, Align::Start);
-                    ids.path = layout_full_width_item(ctx, 26.0, 26.0, Align::Start);
-                    layout_spacer(ctx, Size::Fill, Size::Pixels(5.0));
-                    ids.overwrite = layout_field_row(ctx, section_width);
+                let (section, section_body) = build_section(ctx, open[3], |ctx| {
+                    ids.path_label = build_full_width_item(ctx, 18.0, 20.0, Align::Start);
+                    ids.path = build_full_width_item(ctx, 26.0, 26.0, Align::Start);
+                    build_spacer(ctx, Size::Fill, Size::Pixels(5.0));
+                    ids.overwrite = build_field_row(ctx);
                 });
                 ids.sections[3] = section;
                 ids.section_bodies[3] = section_body;
 
-                let (section, section_body) = layout_section(ctx, open[4], controls_body, |ctx| {
-                    ids.numbers[RenderNumber::Begin as usize] =
-                        layout_field_row(ctx, section_width);
-                    ids.begin_buttons = layout_triple_row(ctx, section_width);
-                    ids.numbers[RenderNumber::End as usize] = layout_field_row(ctx, section_width);
-                    ids.end_buttons = layout_triple_row(ctx, section_width);
-                    ids.background = layout_field_row(ctx, section_width);
-                    ids.transcode = layout_field_row(ctx, section_width);
-                    ids.status = layout_full_width_item(ctx, 20.0, 20.0, Align::Start);
-                    layout_spacer(ctx, Size::Fill, Size::Pixels(3.0));
-                    ids.action = layout_full_width_item(ctx, ROW_H, 24.0, Align::Start);
+                let (section, section_body) = build_section(ctx, open[4], |ctx| {
+                    ids.numbers[RenderNumber::Begin as usize] = build_field_row(ctx);
+                    ids.begin_buttons = build_triple_row(ctx);
+                    ids.numbers[RenderNumber::End as usize] = build_field_row(ctx);
+                    ids.end_buttons = build_triple_row(ctx);
+                    ids.background = build_field_row(ctx);
+                    ids.transcode = build_field_row(ctx);
+                    ids.status = build_full_width_item(ctx, 20.0, 20.0, Align::Start);
+                    build_spacer(ctx, Size::Fill, Size::Pixels(3.0));
+                    ids.action = build_full_width_item(ctx, ROW_H, 24.0, Align::Start);
                 });
                 ids.sections[4] = section;
                 ids.section_bodies[4] = section_body;
 
-                layout_spacer(ctx, Size::Fill, Size::Pixels(PAD));
+                build_spacer(ctx, Size::Fill, Size::Pixels(PAD));
             })
             .build();
         ids.root = root;
@@ -1611,13 +1570,13 @@ fn render_layout(width: f32, scroll: f32, preset: &RenderPreset, open: [f32; 5])
     });
 
     let rect = |id: BlockId| measured.rect(id).unwrap_or_default();
-    let field = |ids: RenderFieldIds| RenderFieldLayout {
+    let field = |ids: RenderFieldIds| RenderFieldRects {
         label: rect(ids.label),
         control: rect(ids.control),
     };
     let combos = std::array::from_fn(|index| ids.combos[index].map(field));
 
-    RenderLayout {
+    RenderRects {
         sections: ids.sections.map(rect),
         section_bodies: ids.section_bodies.map(rect),
         combos,
@@ -1644,30 +1603,28 @@ fn render_button_icon(
     icon: IconId,
     color: Color,
 ) {
-    let icon_rect = crate::ui_layout::row(
-        rect,
-        &[
-            crate::ui_layout::Item::width(8.0),
-            crate::ui_layout::Item::width(18.0),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1];
     kama_ui::ui!(ctx, {
-        Block {
-            id: id;
-            bounds: (icon_rect.x, icon_rect.y, icon_rect.width, icon_rect.height);
-            content_centered;
+        Row {
+            id: @format("{}-layout", id);
+            bounds: (rect.x, rect.y, rect.width, rect.height);
+            padding: 0.0;
 
-            Icon {
-                id: @format("{}-glyph", id);
-                icon!: icon;
-                color!: color;
-                width: Size::Pixels(15.0);
-                height: Size::Pixels(15.0);
+            HSpacer { width: Size::Pixels(8.0); }
+            Block {
+                id: id;
+                width: Size::Pixels(18.0);
+                height: Size::Fill;
+                content_centered;
+
+                Icon {
+                    id: @format("{}-glyph", id);
+                    icon!: icon;
+                    color!: color;
+                    width: Size::Pixels(15.0);
+                    height: Size::Pixels(15.0);
+                }
             }
+            HSpacer { width: Size::Fill; }
         }
     });
 }
@@ -1683,7 +1640,7 @@ fn label_at(ctx: &mut kama_ui::BuildCtx, rect: Rect, text: &str, color: Color) {
     );
 }
 
-fn toggle_row_at(ctx: &mut kama_ui::BuildCtx, field: RenderFieldLayout, name: &str, value: bool) {
+fn toggle_row_at(ctx: &mut kama_ui::BuildCtx, field: RenderFieldRects, name: &str, value: bool) {
     label_at(ctx, field.label, name, theme::text());
     ToggleButton::build(
         ctx,

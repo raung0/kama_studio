@@ -7,16 +7,19 @@ use crate::{
 };
 
 pub(super) fn property_row_parts(row: Rect) -> (Rect, Rect, Rect) {
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::width(row.width * 0.38),
-            crate::ui_layout::Item::width(3.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(18.0), Size::Pixels(18.0)),
-            crate::ui_layout::Item::width(4.0),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::fill_portion(0.38),
+            kama_ui::layout::Item::width(3.0),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.62),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(18.0), Size::Pixels(18.0)),
+            kama_ui::layout::Item::width(4.0),
         ],
         0.0,
         0.0,
@@ -26,21 +29,32 @@ pub(super) fn property_row_parts(row: Rect) -> (Rect, Rect, Rect) {
 }
 
 pub(super) fn property_label_rect(row: Rect) -> Rect {
-    let mut rect = property_row_parts(row).0;
-    rect.y += 1.5;
-    rect.height = (rect.height - 1.5).max(0.0);
-    rect
+    let label = property_row_parts(row).0;
+    kama_ui::layout::column(
+        label,
+        &[
+            kama_ui::layout::Item::height(1.5),
+            kama_ui::layout::Item::fill(),
+        ],
+        0.0,
+        0.0,
+        kama_ui::Align::Start,
+        None,
+    )[1]
 }
 
 pub(super) fn plain_property_parts(row: Rect) -> (Rect, Rect) {
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::width(row.width * 0.38),
-            crate::ui_layout::Item::width(3.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(4.0),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::fill_portion(0.38),
+            kama_ui::layout::Item::width(3.0),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.62),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(4.0),
         ],
         0.0,
         0.0,
@@ -120,19 +134,46 @@ pub(super) fn font_family_property_row(
     });
 }
 
-pub(super) fn selection_summary_height(timeline: &TimelineState) -> f32 {
+fn selection_summary_row_count(timeline: &TimelineState) -> usize {
     if timeline.selected_clip().is_some() {
-        ROW_H * 2.0 + 4.0
+        2
     } else if timeline.selected_track().is_some() {
-        ROW_H * 3.0 + 4.0
+        3
     } else {
-        0.0
+        0
     }
 }
 
-pub(super) fn selection_summary_value_rect(rect: Rect, y: f32, index: usize) -> Rect {
-    let row = row_hit(rect, y + ROW_H * index as f32);
-    plain_property_parts(row).1
+pub(super) fn selection_summary_rects(
+    rect: Rect,
+    y: f32,
+    timeline: &TimelineState,
+) -> (Rect, Vec<Rect>) {
+    let count = selection_summary_row_count(timeline);
+    if count == 0 {
+        return (Rect::new(rect.x, y, rect.width, 0.0), Vec::new());
+    }
+    let mut items = vec![kama_ui::layout::Item::height(ROW_H); count];
+    items.push(kama_ui::layout::Item::height(4.0));
+    let (root, mut rows) =
+        kama_ui::layout::fit_column_at(rect, [rect.x, y], rect.width, &items, 0.0, 0.0);
+    rows.truncate(count);
+    (root, rows)
+}
+
+pub(super) fn selection_summary_value_rect(
+    rect: Rect,
+    y: f32,
+    timeline: &TimelineState,
+    index: usize,
+) -> Rect {
+    let (_, rows) = selection_summary_rects(rect, y, timeline);
+    rows.get(index)
+        .copied()
+        .map(|row| row_hit(rect, row.y))
+        .map(plain_property_parts)
+        .map(|(_, control)| control)
+        .unwrap_or_default()
 }
 
 impl InspectorState {
@@ -143,14 +184,15 @@ impl InspectorState {
         timeline: &TimelineState,
         y: f32,
     ) -> f32 {
+        let (summary, rows) = selection_summary_rects(rect, y, timeline);
         if timeline.selected_clip().is_some() {
-            for (index, (label, editor)) in
+            for ((index, (label, editor)), row) in
                 [("Start", &mut self.clip_start), ("End", &mut self.clip_end)]
                     .into_iter()
                     .enumerate()
+                    .zip(rows)
             {
-                let row_y = y + ROW_H * index as f32;
-                let row = row_hit(rect, row_y);
+                let row = row_hit(rect, row.y);
                 let (label_rect, control) = plain_property_parts(row);
                 ui_text!(
                     ctx,
@@ -168,7 +210,7 @@ impl InspectorState {
                     crate::widgets::component_style(),
                 );
             }
-            y + ROW_H * 2.0 + 4.0
+            summary.bottom()
         } else if let Some(track) = timeline.selected_track() {
             let kind = match track.kind {
                 TrackKind::Video => "Video",
@@ -187,17 +229,17 @@ impl InspectorState {
                 (false, true) => "Solo",
                 (false, false) => "Active",
             };
-            for ((label, value), index) in [
+            for ((label, value), row) in [
                 ("Type", kind.to_string()),
                 ("Clips", clip_count),
                 ("State", state.to_string()),
             ]
             .into_iter()
-            .zip(0usize..)
+            .zip(rows)
             {
-                value_row(ctx, rect, y + ROW_H * index as f32, label, &value);
+                value_row(ctx, rect, row.y, label, &value);
             }
-            y + ROW_H * 3.0 + 4.0
+            summary.bottom()
         } else {
             y
         }

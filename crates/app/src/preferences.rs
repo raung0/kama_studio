@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use kama_ui::{
@@ -186,25 +186,36 @@ const ROW_H: f32 = 34.0;
 const BODY_PAD: f32 = 12.0;
 
 #[derive(Clone, Copy)]
-struct SearchDialogLayout {
+struct SearchRowRects {
+    row: Rect,
+    label: Rect,
+    value: Rect,
+    accent_text: Rect,
+    accent_swatch: Rect,
+}
+
+#[derive(Clone)]
+struct SearchDialogRects {
     title: Rect,
     close: Rect,
     search: Rect,
     rows: Rect,
+    content: Rect,
     help: Rect,
+    empty: Rect,
+    items: Arc<[SearchRowRects]>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct SearchRectsKey {
+    rect: Rect,
+    row_count: usize,
+    scroll_offset: f32,
+    label_ratio: f32,
 }
 
 fn centered(width: f32, height: f32, w: f32, h: f32) -> Rect {
-    let viewport = Rect::new(0.0, 0.0, width, height);
-    let (id, measured) = kama_ui::measure_layout(viewport, |ctx| {
-        ctx.new()
-            .overlay()
-            .centered()
-            .width(Size::Pixels(w))
-            .height(Size::Pixels(h))
-            .build()
-    });
-    measured.rect(id).expect("centered dialog layout")
+    kama_ui::layout::centered(Rect::new(0.0, 0.0, width, height), w, h)
 }
 
 fn settings_rect(width: f32, height: f32) -> Rect {
@@ -225,132 +236,247 @@ fn keybinds_rect(width: f32, height: f32) -> Rect {
     )
 }
 
-fn search_dialog_layout(rect: Rect) -> SearchDialogLayout {
-    let vertical = crate::ui_layout::column(
-        rect,
-        &[
-            crate::ui_layout::Item::height(HEADER_H),
-            crate::ui_layout::Item::height(2.0),
-            crate::ui_layout::Item::height(SEARCH_H),
-            crate::ui_layout::Item::height(7.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::height(BODY_PAD),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    );
-    let header = crate::ui_layout::row(
-        vertical[0],
-        &[
-            crate::ui_layout::Item::width(14.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(5.0),
-            crate::ui_layout::Item::width(27.0),
-            crate::ui_layout::Item::width(8.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    );
-    let title = crate::ui_layout::column(
-        header[1],
-        &[
-            crate::ui_layout::Item::height(11.0),
-            crate::ui_layout::Item::height(22.0),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    )[1];
-    let close = crate::ui_layout::column(
-        header[3],
-        &[
-            crate::ui_layout::Item::height(8.0),
-            crate::ui_layout::Item::height(27.0),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    )[1];
-    let search = crate::ui_layout::row(
-        vertical[2],
-        &[
-            crate::ui_layout::Item::width(BODY_PAD),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(BODY_PAD),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1];
-    let rows = crate::ui_layout::row(
-        vertical[4],
-        &[
-            crate::ui_layout::Item::width(BODY_PAD),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(BODY_PAD),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1];
-    let help_row = crate::ui_layout::column(
-        rect,
-        &[
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::height(14.0),
-            crate::ui_layout::Item::height(6.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    )[1];
-    let help = crate::ui_layout::row(
-        help_row,
-        &[
-            crate::ui_layout::Item::width(18.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(18.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1];
-    SearchDialogLayout {
-        title,
-        close,
-        search,
-        rows,
-        help,
+fn search_dialog_rects(
+    rect: Rect,
+    row_count: usize,
+    scroll: ScrollState,
+    label_ratio: f32,
+) -> SearchDialogRects {
+    #[derive(Clone, Copy)]
+    struct RowIds {
+        row: BlockId,
+        label: BlockId,
+        value: BlockId,
+        accent_text: BlockId,
+        accent_swatch: BlockId,
+    }
+
+    let label_weight = label_ratio.clamp(0.0, 1.0);
+    let value_weight = (1.0 - label_weight).max(0.0);
+    let (((title, close, search, rows, content, help, empty), row_ids), measured) =
+        kama_ui::measure_layout(rect, |ctx| {
+            let mut title = BlockId(0);
+            let mut close = BlockId(0);
+            let mut search = BlockId(0);
+            let mut rows = BlockId(0);
+            let mut content = BlockId(0);
+            let mut help = BlockId(0);
+            let mut empty = BlockId(0);
+            let mut row_ids = Vec::with_capacity(row_count);
+
+            ctx.new()
+                .column()
+                .width(Size::Fill)
+                .height(Size::Fill)
+                .children(|ctx| {
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(HEADER_H))
+                        .align_items(kama_ui::Align::Center)
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::Pixels(14.0))
+                                .height(Size::Fill)
+                                .build();
+                            title = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                            ctx.new()
+                                .width(Size::Pixels(5.0))
+                                .height(Size::Fill)
+                                .build();
+                            close = ctx
+                                .new()
+                                .width(Size::Pixels(27.0))
+                                .height(Size::Pixels(27.0))
+                                .build();
+                            ctx.new()
+                                .width(Size::Pixels(8.0))
+                                .height(Size::Fill)
+                                .build();
+                        })
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(2.0))
+                        .build();
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(SEARCH_H))
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::Pixels(BODY_PAD))
+                                .height(Size::Fill)
+                                .build();
+                            search = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                            ctx.new()
+                                .width(Size::Pixels(BODY_PAD))
+                                .height(Size::Fill)
+                                .build();
+                        })
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(7.0))
+                        .build();
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::Fill)
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::Pixels(BODY_PAD))
+                                .height(Size::Fill)
+                                .build();
+                            rows = ctx
+                                .new()
+                                .column()
+                                .width(Size::Fill)
+                                .height(Size::Fill)
+                                .vertical_scroll(scroll)
+                                .children(|ctx| {
+                                    content = ctx
+                                        .new()
+                                        .column()
+                                        .width(Size::Fill)
+                                        .height(Size::Fit)
+                                        .gap(3.0)
+                                        .children(|ctx| {
+                                            if row_count == 0 {
+                                                ctx.new()
+                                                    .width(Size::Fill)
+                                                    .height(Size::Pixels(6.0))
+                                                    .build();
+                                                empty = ctx
+                                                    .new()
+                                                    .width(Size::Fill)
+                                                    .height(Size::Pixels(24.0))
+                                                    .build();
+                                            } else {
+                                                for _ in 0..row_count {
+                                                    let mut label = BlockId(0);
+                                                    let mut value = BlockId(0);
+                                                    let mut accent_text = BlockId(0);
+                                                    let mut accent_swatch = BlockId(0);
+                                                    let row = ctx
+                                                        .new()
+                                                        .row()
+                                                        .width(Size::Fill)
+                                                        .height(Size::Pixels(ROW_H - 3.0))
+                                                        .padding(3.0)
+                                                        .align_items(kama_ui::Align::Center)
+                                                        .children(|ctx| {
+                                                            label = ctx
+                                                                .new()
+                                                                .width(Size::FillPortion(
+                                                                    label_weight,
+                                                                ))
+                                                                .height(Size::Fill)
+                                                                .build();
+                                                            value = ctx
+                                                                .new()
+                                                                .row()
+                                                                .width(Size::FillPortion(
+                                                                    value_weight,
+                                                                ))
+                                                                .height(Size::Fill)
+                                                                .gap(4.0)
+                                                                .children(|ctx| {
+                                                                    accent_text = ctx
+                                                                        .new()
+                                                                        .width(Size::Fill)
+                                                                        .height(Size::Fill)
+                                                                        .build();
+                                                                    accent_swatch = ctx
+                                                                        .new()
+                                                                        .width(Size::Pixels(30.0))
+                                                                        .height(Size::Fill)
+                                                                        .build();
+                                                                })
+                                                                .build();
+                                                        })
+                                                        .build();
+                                                    row_ids.push(RowIds {
+                                                        row,
+                                                        label,
+                                                        value,
+                                                        accent_text,
+                                                        accent_swatch,
+                                                    });
+                                                }
+                                            }
+                                        })
+                                        .build();
+                                })
+                                .build();
+                            ctx.new()
+                                .width(Size::Pixels(BODY_PAD))
+                                .height(Size::Fill)
+                                .build();
+                        })
+                        .build();
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(14.0))
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::Pixels(18.0))
+                                .height(Size::Fill)
+                                .build();
+                            help = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                            ctx.new()
+                                .width(Size::Pixels(18.0))
+                                .height(Size::Fill)
+                                .build();
+                        })
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(6.0))
+                        .build();
+                })
+                .build();
+
+            ((title, close, search, rows, content, help, empty), row_ids)
+        });
+
+    let rect_for = |id: BlockId, what: &str| {
+        measured
+            .rect(id)
+            .unwrap_or_else(|| panic!("{what} layout rect"))
+    };
+    SearchDialogRects {
+        title: rect_for(title, "dialog title"),
+        close: rect_for(close, "dialog close"),
+        search: rect_for(search, "dialog search"),
+        rows: rect_for(rows, "dialog rows"),
+        content: rect_for(content, "dialog content"),
+        help: rect_for(help, "dialog help"),
+        empty: if row_count == 0 {
+            rect_for(empty, "dialog empty results")
+        } else {
+            Rect::default()
+        },
+        items: row_ids
+            .into_iter()
+            .map(|ids| SearchRowRects {
+                row: rect_for(ids.row, "dialog row"),
+                label: rect_for(ids.label, "dialog row label"),
+                value: rect_for(ids.value, "dialog row value"),
+                accent_text: rect_for(ids.accent_text, "dialog accent text"),
+                accent_swatch: rect_for(ids.accent_swatch, "dialog accent swatch"),
+            })
+            .collect::<Vec<_>>()
+            .into(),
     }
 }
 
-fn search_rect(rect: Rect) -> Rect {
-    search_dialog_layout(rect).search
-}
-
-fn rows_rect(rect: Rect) -> Rect {
-    search_dialog_layout(rect).rows
-}
-
-fn dialog_frame(ctx: &mut kama_ui::BuildCtx, id: &str, rect: Rect, title: &str) {
-    let layout = search_dialog_layout(rect);
-    ui_text!(
-        ctx,
-        (id, "title"),
-        layout.title,
-        14.0,
-        theme::popup_text(),
-        title,
-    );
+fn dialog_frame(ctx: &mut kama_ui::BuildCtx, id: &str, layout: &SearchDialogRects, title: &str) {
     kama_ui::ui!(ctx, {
+        Rect((id, "title"), layout.title) {
+            padding: 2.0; font_size: 14.0; text_color: theme::popup_text(); text: title;
+        }
         Rect((id, "close"), layout.close) {
             fill: theme::control(); border: 1; border_color: theme::line(); border_radius: 5.0;
             font_size: 15.0; text_color: theme::popup_text(); text_centered; text: "×"; interactive;
@@ -426,180 +552,11 @@ fn filtered_settings(query: &str) -> Vec<SettingEntry> {
     scored.into_iter().map(|(_, entry)| entry).collect()
 }
 
-fn flow_row_rect(body: Rect, index: usize, scroll: ScrollState) -> Rect {
-    let (ids, measured) = kama_ui::measure_layout(body, |ctx| {
-        let mut ids = Vec::with_capacity(index + 1);
-        ctx.new()
-            .width(Size::Fill)
-            .height(Size::Fill)
-            .gap(3.0)
-            .vertical_scroll(scroll)
-            .children(|ctx| {
-                for _ in 0..=index {
-                    ids.push(
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(ROW_H - 3.0))
-                            .build(),
-                    );
-                }
-            })
-            .build();
-        ids
-    });
-    measured.rect(ids[index]).expect("search dialog row layout")
-}
-
-fn settings_row_rect(rect: Rect, index: usize) -> Rect {
-    flow_row_rect(rows_rect(rect), index, ScrollState::default())
-}
-
-fn setting_row_parts(row: Rect) -> (Rect, Rect) {
-    let ((label, value), measured) = kama_ui::measure_layout(row, |ctx| {
-        let mut label = BlockId(0);
-        let mut value = BlockId(0);
-        ctx.new()
-            .row()
-            .width(Size::Fill)
-            .height(Size::Fill)
-            .padding(3.0)
-            .children(|ctx| {
-                label = ctx
-                    .new()
-                    .width(Size::Pixels((row.width * 0.57 - 3.0).max(0.0)))
-                    .height(Size::Fill)
-                    .build();
-                value = ctx.new().width(Size::Fill).height(Size::Fill).build();
-            })
-            .build();
-        (label, value)
-    });
-    (
-        measured.rect(label).expect("setting label layout"),
-        measured.rect(value).expect("setting value layout"),
-    )
-}
-
-fn setting_value_rect(row: Rect) -> Rect {
-    setting_row_parts(row).1
-}
-
-fn setting_label_row(row: Rect, width_ratio: f32) -> Rect {
-    let vertical = crate::ui_layout::column(
-        row,
-        &[
-            crate::ui_layout::Item::height(5.0),
-            crate::ui_layout::Item::height(20.0),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    );
-    crate::ui_layout::row(
-        vertical[1],
-        &[
-            crate::ui_layout::Item::width(8.0),
-            crate::ui_layout::Item::width((row.width * width_ratio - 12.0).max(0.0)),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1]
-}
-
-fn setting_label_rect(row: Rect) -> Rect {
-    setting_label_row(row, 0.55)
-}
-
-fn keybind_label_rect(row: Rect) -> Rect {
-    setting_label_row(row, 0.62)
-}
-
-fn empty_results_rect(body: Rect) -> Rect {
-    let vertical = crate::ui_layout::column(
-        body,
-        &[
-            crate::ui_layout::Item::height(6.0),
-            crate::ui_layout::Item::height(24.0),
-            crate::ui_layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    );
-    crate::ui_layout::row(
-        vertical[1],
-        &[
-            crate::ui_layout::Item::width(8.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(8.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1]
-}
-
-fn setting_accent_rects(value: Rect) -> (Rect, Rect) {
-    let ((text, swatch), measured) = kama_ui::measure_layout(value, |ctx| {
-        let mut text = BlockId(0);
-        let mut swatch = BlockId(0);
-        ctx.new()
-            .row()
-            .width(Size::Fill)
-            .height(Size::Fill)
-            .gap(4.0)
-            .children(|ctx| {
-                text = ctx.new().width(Size::Fill).height(Size::Fill).build();
-                swatch = ctx
-                    .new()
-                    .width(Size::Pixels(30.0))
-                    .height(Size::Fill)
-                    .build();
-            })
-            .build();
-        (text, swatch)
-    });
-    (
-        measured.rect(text).expect("accent text layout"),
-        measured.rect(swatch).expect("accent swatch layout"),
-    )
-}
-
-fn keybind_row_parts(row: Rect) -> (Rect, Rect) {
-    let ((label, value), measured) = kama_ui::measure_layout(row, |ctx| {
-        let mut label = BlockId(0);
-        let mut value = BlockId(0);
-        ctx.new()
-            .row()
-            .width(Size::Fill)
-            .height(Size::Fill)
-            .padding(3.0)
-            .children(|ctx| {
-                label = ctx
-                    .new()
-                    .width(Size::Pixels((row.width * 0.62 - 3.0).max(0.0)))
-                    .height(Size::Fill)
-                    .build();
-                value = ctx.new().width(Size::Fill).height(Size::Fill).build();
-            })
-            .build();
-        (label, value)
-    });
-    (
-        measured.rect(label).expect("keybind label layout"),
-        measured.rect(value).expect("keybind value layout"),
-    )
-}
-
 struct SearchDialogState {
     query: TextEdit,
     selected: usize,
     scroll: ScrollState,
+    rect_cache: Option<(SearchRectsKey, SearchDialogRects)>,
     closed: bool,
 }
 
@@ -611,8 +568,56 @@ impl SearchDialogState {
             query,
             selected: 0,
             scroll: ScrollState::default(),
+            rect_cache: None,
             closed: false,
         }
+    }
+
+    fn rects(&mut self, rect: Rect, row_count: usize, label_ratio: f32) -> SearchDialogRects {
+        let key = SearchRectsKey {
+            rect,
+            row_count,
+            scroll_offset: self.scroll.offset,
+            label_ratio,
+        };
+        if self
+            .rect_cache
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != key)
+        {
+            self.rect_cache = Some((
+                key,
+                search_dialog_rects(rect, row_count, self.scroll, label_ratio),
+            ));
+        }
+        self.rect_cache
+            .as_ref()
+            .expect("search dialog rect cache")
+            .1
+            .clone()
+    }
+
+    fn cached_rects(&self) -> Option<&SearchDialogRects> {
+        self.rect_cache.as_ref().map(|(_, rects)| rects)
+    }
+
+    fn invalidate_rects(&mut self) {
+        self.rect_cache = None;
+    }
+
+    fn max_scroll(&self) -> f32 {
+        self.cached_rects().map_or(0.0, |rects| {
+            (rects.content.height - rects.rows.height).max(0.0)
+        })
+    }
+
+    fn scroll_by(&mut self, delta: f32) -> bool {
+        let max_scroll = self.max_scroll();
+        let changed = self.scroll.scroll_by(delta, max_scroll);
+        if changed {
+            self.invalidate_rects();
+        }
+        changed
     }
 
     fn move_selection(&mut self, count: usize, delta: isize) {
@@ -628,6 +633,7 @@ impl SearchDialogState {
         if response.changed {
             self.selected = 0;
             self.scroll.offset = 0.0;
+            self.invalidate_rects();
         }
         (response.changed, response.handled)
     }
@@ -637,37 +643,44 @@ impl SearchDialogState {
         if response.changed {
             self.selected = 0;
             self.scroll.offset = 0.0;
+            self.invalidate_rects();
         }
         (response.changed, response.handled)
     }
 
-    fn close_if_outside(&mut self, rect: Rect, point: [f32; 2]) -> bool {
-        if search_dialog_layout(rect).close.contains(point) || !rect.contains(point) {
+    fn close_if_outside(&mut self, rect: Rect, close: Rect, point: [f32; 2]) -> bool {
+        if close.contains(point) || !rect.contains(point) {
             self.closed = true;
             return true;
         }
         false
     }
 
-    fn ensure_selected_visible(&mut self, body_height: f32, count: usize) {
-        if count == 0 {
+    fn ensure_selected_visible(&mut self) {
+        let Some(rects) = self.cached_rects().cloned() else {
+            return;
+        };
+        if rects.items.is_empty() {
             self.scroll.offset = 0.0;
             self.selected = 0;
             return;
         }
-        self.selected = self.selected.min(count - 1);
-        let top = self.selected as f32 * ROW_H;
-        let bottom = top + ROW_H;
-        if top < self.scroll.offset {
-            self.scroll.offset = top;
+        self.selected = self.selected.min(rects.items.len() - 1);
+        let selected = rects.items[self.selected].row;
+        let viewport = rects.rows;
+        let max_scroll = (rects.content.height - viewport.height).max(0.0);
+        let next = if selected.y < viewport.y {
+            self.scroll.offset - (viewport.y - selected.y)
+        } else if selected.bottom() > viewport.bottom() {
+            self.scroll.offset + (selected.bottom() - viewport.bottom())
+        } else {
+            self.scroll.offset
         }
-        if bottom > self.scroll.offset + body_height {
-            self.scroll.offset = (bottom - body_height).max(0.0);
+        .clamp(0.0, max_scroll);
+        if (next - self.scroll.offset).abs() > f32::EPSILON {
+            self.scroll.offset = next;
+            self.invalidate_rects();
         }
-        self.scroll.offset = self
-            .scroll
-            .offset
-            .min((count as f32 * ROW_H - body_height).max(0.0));
     }
 }
 
@@ -756,12 +769,15 @@ impl SettingsDialog {
         height: f32,
         chevron: IconId,
     ) {
+        let rect = settings_rect(width, height);
+        let entries = filtered_settings(self.search.query.text());
+        let layout = self.search.rects(rect, entries.len(), 0.57);
         dialog::build_shell(
             ctx,
             "settings-scrim",
             "settings-dialog-shell",
             Rect::new(0.0, 0.0, width, height),
-            settings_rect(width, height),
+            rect,
             self.opacity,
             |_| {},
         );
@@ -769,174 +785,197 @@ impl SettingsDialog {
             Rect("settings-overlay-root", Rect::new(0.0, 0.0, width, height)) {
                 overlay; overflow_visible; opacity: self.opacity;
                 @rust {
-                let rect = settings_rect(width, height);
-                dialog_frame(ctx, "settings-dialog", rect, "Settings");
-                let search = search_rect(rect);
+                dialog_frame(ctx, "settings-dialog", &layout, "Settings");
                 self.search.query.build(
                     ctx,
                     "settings-search",
-                    search,
+                    layout.search,
                     "Search settings…",
                     component_style(),
                 );
-                let entries = filtered_settings(self.search.query.text());
                 if entries.is_empty() {
                     ui_text!(
                         ctx,
                         "settings-no-results",
-                        empty_results_rect(rows_rect(rect)),
+                        layout.empty,
                         10.5,
                         theme::popup_muted(),
                         "No fuzzy matches",
                     );
-                    return;
-                }
-                let selected = self.search.selected.min(entries.len() - 1);
-                let mut dark_accent_swatch = None;
-                let mut light_accent_swatch = None;
-                for (index, entry) in entries.iter().copied().enumerate() {
-                    let row = settings_row_rect(rect, index);
-                    let active = index == selected;
-                    kama_ui::ui!(ctx, {
-                        Rect(("settings-row", index), row) {
-                            fill: if active { theme::accent_hover() } else { Color::TRANSPARENT };
-                            border: 1; border_color: if active { theme::accent() } else { Color::TRANSPARENT };
-                            border_radius: 5.0; interactive;
-                        }
-                    });
-                    let (name, value) = match entry {
-                        SettingEntry::Theme => (
-                            "Theme preset",
-                            match theme::theme() {
-                                ThemePreset::System => "System".to_string(),
-                                ThemePreset::Light => "Light".to_string(),
-                                ThemePreset::Dark => "Dark".to_string(),
-                            },
-                        ),
-                        SettingEntry::DarkAccent => {
-                            let rgba = theme::dark_accent_rgba8();
-                            (
-                                "Dark accent color",
-                                format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
-                            )
-                        }
-                        SettingEntry::LightAccent => {
-                            let rgba = theme::light_accent_rgba8();
-                            (
-                                "Light accent color",
-                                format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
-                            )
-                        }
-                        SettingEntry::Brightness => ("Brightness", String::new()),
-                        SettingEntry::AccentMixing => ("Accent mixing", String::new()),
-                        SettingEntry::RevealStrength => ("Reveal strength", String::new()),
-                        SettingEntry::RevealAccentMix => ("Reveal accent mix", String::new()),
-                        SettingEntry::RoundedCorners => (
-                            "Rounded corners",
-                            if kama_ui::rounded_corners_enabled() { "On" } else { "Off" }.to_string(),
-                        ),
-                        SettingEntry::HardwareDecoding => (
-                            "Hardware decoding",
-                            if hardware_decoding_enabled() { "On" } else { "Off" }.to_string(),
-                        ),
-                        SettingEntry::PluginPaths => ("Plugin paths", String::new()),
-                    };
-                    ui_text!(
-                        ctx,
-                        ("settings-name", index),
-                        setting_label_rect(row),
-                        10.5,
-                        if active { theme::accent_text() } else { theme::popup_text() },
-                        name,
-                    );
-                    let value_rect = setting_value_rect(row);
-                    match entry {
-                        SettingEntry::Theme => {
-                            self.theme_combo.set_selected(theme_index(theme::theme()));
-                            self.theme_combo.build_control(
-                                ctx,
-                                "settings-theme-value",
-                                value_rect,
-                                &THEME_OPTIONS,
-                                chevron,
-                                component_style(),
-                            );
-                        }
-                        SettingEntry::DarkAccent | SettingEntry::LightAccent => {
-                            let (accent_value, swatch) = setting_accent_rects(value_rect);
-                            kama_ui::ui!(ctx, {
-                                Rect(("settings-accent-value", index), accent_value) {
-                                    fill: theme::control(); border: 1; border_color: theme::line(); border_radius: 4.0;
-                                    padding: 6.0; font_size: 10.0; text_color: theme::popup_text(); text: value;
+                } else {
+                    let selected = self.search.selected.min(entries.len() - 1);
+                    let mut dark_accent_swatch = None;
+                    let mut light_accent_swatch = None;
+                    for (index, entry) in entries.iter().copied().enumerate() {
+                        let row = layout.items[index];
+                        let active = index == selected;
+                        kama_ui::ui!(ctx, {
+                            Rect(("settings-row", index), row.row) {
+                                fill: if active { theme::accent_hover() } else { Color::TRANSPARENT };
+                                border: 1; border_color: if active { theme::accent() } else { Color::TRANSPARENT };
+                                border_radius: 5.0; interactive;
+                            }
+                        });
+                        let (name, value) = match entry {
+                            SettingEntry::Theme => (
+                                "Theme preset",
+                                match theme::theme() {
+                                    ThemePreset::System => "System".to_string(),
+                                    ThemePreset::Light => "Light".to_string(),
+                                    ThemePreset::Dark => "Dark".to_string(),
+                                },
+                            ),
+                            SettingEntry::DarkAccent => {
+                                let rgba = theme::dark_accent_rgba8();
+                                (
+                                    "Dark accent color",
+                                    format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
+                                )
+                            }
+                            SettingEntry::LightAccent => {
+                                let rgba = theme::light_accent_rgba8();
+                                (
+                                    "Light accent color",
+                                    format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
+                                )
+                            }
+                            SettingEntry::Brightness => ("Brightness", String::new()),
+                            SettingEntry::AccentMixing => ("Accent mixing", String::new()),
+                            SettingEntry::RevealStrength => ("Reveal strength", String::new()),
+                            SettingEntry::RevealAccentMix => ("Reveal accent mix", String::new()),
+                            SettingEntry::RoundedCorners => (
+                                "Rounded corners",
+                                if kama_ui::rounded_corners_enabled() { "On" } else { "Off" }.to_string(),
+                            ),
+                            SettingEntry::HardwareDecoding => (
+                                "Hardware decoding",
+                                if hardware_decoding_enabled() { "On" } else { "Off" }.to_string(),
+                            ),
+                            SettingEntry::PluginPaths => ("Plugin paths", String::new()),
+                        };
+                        kama_ui::ui!(ctx, {
+                            Rect(("settings-name", index), row.label) {
+                                padding: 5.0; font_size: 10.5;
+                                text_color: if active { theme::accent_text() } else { theme::popup_text() };
+                                text: name;
+                            }
+                        });
+                        match entry {
+                            SettingEntry::Theme => {
+                                self.theme_combo.set_selected(theme_index(theme::theme()));
+                                self.theme_combo.build_control(
+                                    ctx,
+                                    "settings-theme-value",
+                                    row.value,
+                                    &THEME_OPTIONS,
+                                    chevron,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::DarkAccent | SettingEntry::LightAccent => {
+                                kama_ui::ui!(ctx, {
+                                    Rect(("settings-accent-value", index), row.accent_text) {
+                                        fill: theme::control();
+                                        border: 1;
+                                        border_color: theme::line();
+                                        border_radius: 4.0;
+                                        padding: 6.0;
+                                        font_size: 10.0;
+                                        text_color: theme::popup_text();
+                                        text: value;
+                                    }
+                                });
+                                match entry {
+                                    SettingEntry::DarkAccent => dark_accent_swatch = Some(row.accent_swatch),
+                                    SettingEntry::LightAccent => light_accent_swatch = Some(row.accent_swatch),
+                                    _ => unreachable!(),
                                 }
-                            });
-                            match entry {
-                                SettingEntry::DarkAccent => dark_accent_swatch = Some(swatch),
-                                SettingEntry::LightAccent => light_accent_swatch = Some(swatch),
-                                _ => unreachable!(),
+                            }
+                            SettingEntry::Brightness => {
+                                self.brightness.build(
+                                    ctx,
+                                    "settings-brightness",
+                                    row.value,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::AccentMixing => {
+                                self.accent_mixing.build(
+                                    ctx,
+                                    "settings-accent-mixing",
+                                    row.value,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::RevealStrength => {
+                                self.reveal_strength.build(
+                                    ctx,
+                                    "settings-reveal-strength",
+                                    row.value,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::RevealAccentMix => {
+                                self.reveal_accent_mix.build(
+                                    ctx,
+                                    "settings-reveal-accent-mix",
+                                    row.value,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::RoundedCorners | SettingEntry::HardwareDecoding => {
+                                kama_ui::ui!(ctx, {
+                                    Rect(("settings-toggle-value", index), row.value) {
+                                        fill: theme::control();
+                                        border: 1;
+                                        border_color: theme::line();
+                                        border_radius: 4.0;
+                                        padding: 6.0;
+                                        font_size: 10.0;
+                                        text_color: theme::popup_text();
+                                        text: value;
+                                    }
+                                });
+                            }
+                            SettingEntry::PluginPaths => {
+                                self.plugin_paths.build(
+                                    ctx,
+                                    "settings-plugin-paths",
+                                    row.value,
+                                    "folder;folder;…",
+                                    component_style(),
+                                );
                             }
                         }
-                        SettingEntry::Brightness => {
-                            self.brightness.build(ctx, "settings-brightness", value_rect, component_style());
-                        }
-                        SettingEntry::AccentMixing => {
-                            self.accent_mixing.build(ctx, "settings-accent-mixing", value_rect, component_style());
-                        }
-                        SettingEntry::RevealStrength => {
-                            self.reveal_strength.build(ctx, "settings-reveal-strength", value_rect, component_style());
-                        }
-                        SettingEntry::RevealAccentMix => {
-                            self.reveal_accent_mix.build(ctx, "settings-reveal-accent-mix", value_rect, component_style());
-                        }
-                        SettingEntry::RoundedCorners | SettingEntry::HardwareDecoding => {
-                            kama_ui::ui!(ctx, {
-                                Rect(("settings-toggle-value", index), value_rect) {
-                                    fill: theme::control(); border: 1; border_color: theme::line(); border_radius: 4.0;
-                                    padding: 6.0; font_size: 10.0; text_color: theme::popup_text(); text: value;
-                                }
-                            });
-                        }
-                        SettingEntry::PluginPaths => {
-                            self.plugin_paths.build(
-                                ctx,
-                                "settings-plugin-paths",
-                                value_rect,
-                                "folder;folder;…",
-                                component_style(),
-                            );
-                        }
                     }
-                }
 
-
-                if let Some(swatch) = dark_accent_swatch {
-                    self.dark_accent.build_in(
-                        ctx,
-                        "settings-dark-accent",
-                        swatch,
-                        rect,
-                        component_style(),
-                    );
-                }
-                if let Some(swatch) = light_accent_swatch {
-                    self.light_accent.build_in(
-                        ctx,
-                        "settings-light-accent",
-                        swatch,
-                        rect,
-                        component_style(),
-                    );
-                }
-
-
-                if let Some(index) = entries.iter().position(|entry| *entry == SettingEntry::Theme) {
-                    self.theme_combo.build_popup(
-                        ctx,
-                        "settings-theme-value",
-                        setting_value_rect(settings_row_rect(rect, index)),
-                        &THEME_OPTIONS,
-                        component_style(),
-                    );
+                    if let Some(swatch) = dark_accent_swatch {
+                        self.dark_accent.build_in(
+                            ctx,
+                            "settings-dark-accent",
+                            swatch,
+                            rect,
+                            component_style(),
+                        );
+                    }
+                    if let Some(swatch) = light_accent_swatch {
+                        self.light_accent.build_in(
+                            ctx,
+                            "settings-light-accent",
+                            swatch,
+                            rect,
+                            component_style(),
+                        );
+                    }
+                    if let Some(index) = entries.iter().position(|entry| *entry == SettingEntry::Theme) {
+                        self.theme_combo.build_popup(
+                            ctx,
+                            "settings-theme-value",
+                            layout.items[index].value,
+                            &THEME_OPTIONS,
+                            component_style(),
+                        );
+                    }
                 }
                 }
             }
@@ -1009,11 +1048,12 @@ impl SettingsDialog {
     ) -> bool {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
+        let layout = self.search.rects(rect, entries.len(), 0.57);
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::Theme)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if let Some(option) = self
                 .theme_combo
                 .option_at(value, point, THEME_OPTIONS.len())
@@ -1047,8 +1087,7 @@ impl SettingsDialog {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let value = setting_value_rect(settings_row_rect(rect, index));
-            let (_, swatch) = setting_accent_rects(value);
+            let swatch = layout.items[index].accent_swatch;
             let handled = match entry {
                 SettingEntry::DarkAccent => self
                     .dark_accent
@@ -1070,7 +1109,7 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::Brightness)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if self.brightness.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1084,7 +1123,7 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::AccentMixing)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if self.accent_mixing.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1098,7 +1137,7 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::RevealStrength)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if self.reveal_strength.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1112,7 +1151,7 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::RevealAccentMix)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if self.reveal_accent_mix.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1126,25 +1165,25 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::PluginPaths)
         {
-            let value = setting_value_rect(settings_row_rect(rect, index));
+            let value = layout.items[index].value;
             if self.plugin_paths.pointer_pressed(value, point, modifiers) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
                 return true;
             }
         }
-        if self.search.close_if_outside(rect, point) {
+        if self.search.close_if_outside(rect, layout.close, point) {
             return true;
         }
         if self
             .search
             .query
-            .pointer_pressed(search_rect(rect), point, modifiers)
+            .pointer_pressed(layout.search, point, modifiers)
         {
             return true;
         }
         for (index, entry) in entries.into_iter().enumerate() {
-            if settings_row_rect(rect, index).contains(point) {
+            if layout.items[index].row.contains(point) {
                 self.search.selected = index;
                 self.activate(entry);
                 return true;
@@ -1156,6 +1195,7 @@ impl SettingsDialog {
     pub(crate) fn pointer_moved(&mut self, width: f32, height: f32, point: [f32; 2]) -> bool {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
+        let layout = self.search.rects(rect, entries.len(), 0.57);
         let mut changed = false;
         if self.brightness.pointer_moved(point) {
             theme::set_brightness(self.brightness.value());
@@ -1180,8 +1220,7 @@ impl SettingsDialog {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let value = setting_value_rect(settings_row_rect(rect, index));
-            let (_, swatch) = setting_accent_rects(value);
+            let swatch = layout.items[index].accent_swatch;
             let accent_changed = match entry {
                 SettingEntry::DarkAccent => self.dark_accent.pointer_moved_in(swatch, rect, point),
                 SettingEntry::LightAccent => {
@@ -1329,23 +1368,20 @@ impl SettingsDialog {
     pub(crate) fn caret_rect(&self, width: f32, height: f32) -> Option<Rect> {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
+        let layout = self.search.cached_rects()?;
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::PluginPaths)
         {
             if self.plugin_paths.is_focused() {
-                return Some(
-                    self.plugin_paths
-                        .caret_rect(setting_value_rect(settings_row_rect(rect, index))),
-                );
+                return Some(self.plugin_paths.caret_rect(layout.items[index].value));
             }
         }
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let value = setting_value_rect(settings_row_rect(rect, index));
-            let (_, swatch) = setting_accent_rects(value);
+            let swatch = layout.items[index].accent_swatch;
             let caret = match entry {
                 SettingEntry::DarkAccent => self.dark_accent.caret_rect_in(swatch, rect),
                 SettingEntry::LightAccent => self.light_accent.caret_rect_in(swatch, rect),
@@ -1358,7 +1394,7 @@ impl SettingsDialog {
         self.search
             .query
             .is_focused()
-            .then(|| self.search.query.caret_rect(search_rect(rect)))
+            .then(|| self.search.query.caret_rect(layout.search))
     }
 
     fn close_accent_pickers(&mut self) {
@@ -1449,10 +1485,6 @@ impl KeybindsDialog {
             || self.search.query.is_animating()
     }
 
-    fn body(&self, rect: Rect) -> Rect {
-        rows_rect(rect)
-    }
-
     pub(crate) fn build(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
@@ -1460,12 +1492,15 @@ impl KeybindsDialog {
         height: f32,
         registry: &CommandRegistry,
     ) {
+        let rect = keybinds_rect(width, height);
+        let indices = filtered_keybind_indices(registry, self.search.query.text());
+        let layout = self.search.rects(rect, indices.len(), 0.62);
         dialog::build_shell(
             ctx,
             "keybinds-scrim",
             "keybinds-dialog-shell",
             Rect::new(0.0, 0.0, width, height),
-            keybinds_rect(width, height),
+            rect,
             self.opacity,
             |_| {},
         );
@@ -1473,22 +1508,19 @@ impl KeybindsDialog {
             Rect("keybinds-overlay-root", Rect::new(0.0, 0.0, width, height)) {
                 overlay; overflow_visible; opacity: self.opacity;
                 @rust {
-                let rect = keybinds_rect(width, height);
-                dialog_frame(ctx, "keybinds-dialog", rect, "Keybinds");
+                dialog_frame(ctx, "keybinds-dialog", &layout, "Keybinds");
                 self.search.query.build(
                     ctx,
                     "keybinds-search",
-                    search_rect(rect),
+                    layout.search,
                     "Search commands…",
                     component_style(),
                 );
-                let body = self.body(rect);
-                let indices = filtered_keybind_indices(registry, self.search.query.text());
                 if indices.is_empty() {
                     ui_text!(
                         ctx,
                         "keybinds-no-results",
-                        empty_results_rect(body),
+                        layout.empty,
                         10.5,
                         theme::popup_muted(),
                         "No fuzzy matches",
@@ -1496,22 +1528,21 @@ impl KeybindsDialog {
                 }
                 for (visible_index, definition_index) in indices.into_iter().enumerate() {
                     let definition = &registry.definitions()[definition_index];
-                    let row = flow_row_rect(body, visible_index, self.search.scroll);
-                    if row.bottom() < body.y || row.y > body.bottom() {
+                    let row = layout.items[visible_index];
+                    if row.row.bottom() < layout.rows.y || row.row.y > layout.rows.bottom() {
                         continue;
                     }
                     let selected = visible_index == self.search.selected;
                     kama_ui::ui!(ctx, {
-                        Rect(("keybind-row", &definition.id), row) {
+                        Rect(("keybind-row", &definition.id), row.row) {
                             fill: if selected { theme::accent_hover() } else { Color::TRANSPARENT };
                             border: 1; border_color: if selected { theme::accent() } else { Color::TRANSPARENT };
                             border_radius: 5.0; interactive;
                         }
-                    });
-                    kama_ui::ui!(ctx, {
-                        Rect(("keybind-label", &definition.id), keybind_label_rect(row)) {
-                            font_size: 10.5; text_color: if selected { theme::accent_text() } else { theme::popup_text() }; text: &definition.label;
-                            tooltip: &definition.description;
+                        Rect(("keybind-label", &definition.id), row.label) {
+                            padding: 5.0; font_size: 10.5;
+                            text_color: if selected { theme::accent_text() } else { theme::popup_text() };
+                            text: &definition.label; tooltip: &definition.description;
                         }
                     });
                     let value = if self.capturing.as_deref() == Some(definition.id.as_str()) {
@@ -1522,7 +1553,7 @@ impl KeybindsDialog {
                             .map_or_else(|| "Unbound".into(), |binding| binding.to_string())
                     };
                     kama_ui::ui!(ctx, {
-                        Rect(("keybind-value", &definition.id), keybind_row_parts(row).1) {
+                        Rect(("keybind-value", &definition.id), row.value) {
                             fill: if self.capturing.as_deref() == Some(definition.id.as_str()) {
                                 theme::focused()
                             } else { theme::control() };
@@ -1534,7 +1565,7 @@ impl KeybindsDialog {
                 ui_text!(
                     ctx,
                     "keybind-help",
-                    search_dialog_layout(rect).help,
+                    layout.help,
                     9.0,
                     theme::popup_dim(),
                     "↑↓ select    ↵ rebind    esc cancel/close",
@@ -1552,23 +1583,22 @@ impl KeybindsDialog {
         registry: &mut CommandRegistry,
     ) -> bool {
         let rect = keybinds_rect(width, height);
-        if self.search.close_if_outside(rect, point) {
+        let indices = filtered_keybind_indices(registry, self.search.query.text());
+        let layout = self.search.rects(rect, indices.len(), 0.62);
+        if self.search.close_if_outside(rect, layout.close, point) {
             return true;
         }
         if self
             .search
             .query
-            .pointer_pressed(search_rect(rect), point, ModifiersState::empty())
+            .pointer_pressed(layout.search, point, ModifiersState::empty())
         {
             return true;
         }
-        let body = self.body(rect);
-        if !body.contains(point) {
+        if !layout.rows.contains(point) {
             return true;
         }
-        let indices = filtered_keybind_indices(registry, self.search.query.text());
-        let Some(visible_index) = (0..indices.len())
-            .find(|&index| flow_row_rect(body, index, self.search.scroll).contains(point))
+        let Some(visible_index) = layout.items.iter().position(|row| row.row.contains(point))
         else {
             return true;
         };
@@ -1591,11 +1621,9 @@ impl KeybindsDialog {
         if !rect.contains(point) {
             return false;
         }
-        let body_h = self.body(rect).height;
         let count = filtered_keybind_indices(registry, self.search.query.text()).len();
-        self.search
-            .scroll
-            .scroll_by(-delta[1], (count as f32 * ROW_H - body_h).max(0.0))
+        let _ = self.search.rects(rect, count, 0.62);
+        self.search.scroll_by(-delta[1])
     }
 
     pub(crate) fn handle_key(
@@ -1628,7 +1656,6 @@ impl KeybindsDialog {
             }
             return true;
         }
-        let body_height = KEYBINDS_H - HEADER_H - SEARCH_H - 33.0;
         let indices = filtered_keybind_indices(registry, self.search.query.text());
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => {
@@ -1637,14 +1664,12 @@ impl KeybindsDialog {
             }
             Key::Named(NamedKey::ArrowDown) => {
                 self.search.move_selection(indices.len(), 1);
-                self.search
-                    .ensure_selected_visible(body_height, indices.len());
+                self.search.ensure_selected_visible();
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
                 self.search.move_selection(indices.len(), -1);
-                self.search
-                    .ensure_selected_visible(body_height, indices.len());
+                self.search.ensure_selected_visible();
                 true
             }
             Key::Named(NamedKey::Enter) => {
@@ -1667,11 +1692,11 @@ impl KeybindsDialog {
         self.search.edit_ime(event).1
     }
 
-    pub(crate) fn caret_rect(&self, width: f32, height: f32) -> Option<Rect> {
-        self.search.query.is_focused().then(|| {
-            self.search
-                .query
-                .caret_rect(search_rect(keybinds_rect(width, height)))
-        })
+    pub(crate) fn caret_rect(&self, _width: f32, _height: f32) -> Option<Rect> {
+        let layout = self.search.cached_rects()?;
+        self.search
+            .query
+            .is_focused()
+            .then(|| self.search.query.caret_rect(layout.search))
     }
 }

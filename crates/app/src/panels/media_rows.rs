@@ -4,16 +4,16 @@ pub(super) const MEDIA_ROW_H: f32 = 30.0;
 pub(super) const MEDIA_TRACK_H: f32 = 25.0;
 pub(super) const MEDIA_ITEM_GAP: f32 = 3.0;
 pub(super) fn media_list_top(rect: Rect) -> f32 {
-    crate::ui_layout::inset(rect, 4.0).y
+    kama_ui::layout::inset(rect, 4.0).y
 }
 
 pub(super) fn media_disclosure_rect(row: Rect) -> Rect {
-    crate::ui_layout::row(
+    kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
-            crate::ui_layout::Item::width(5.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
+            kama_ui::layout::Item::width(5.0),
         ],
         0.0,
         0.0,
@@ -22,18 +22,18 @@ pub(super) fn media_disclosure_rect(row: Rect) -> Rect {
 }
 
 pub(super) fn composition_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::width(18.0),
-            crate::ui_layout::Item::width(5.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(5.0),
-            crate::ui_layout::Item::width(78.0),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
-            crate::ui_layout::Item::width(5.0),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::width(18.0),
+            kama_ui::layout::Item::width(5.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(5.0),
+            kama_ui::layout::Item::width(78.0),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
+            kama_ui::layout::Item::width(5.0),
         ],
         0.0,
         0.0,
@@ -42,19 +42,19 @@ pub(super) fn composition_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     (parts[1], parts[3], parts[5], parts[7])
 }
 
-pub(super) fn media_row_parts(row: Rect, duration_width: f32) -> (Rect, Rect, Rect, Rect) {
-    let parts = crate::ui_layout::row(
+pub(super) fn media_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(6.0),
-            crate::ui_layout::Item::width(18.0),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::width(duration_width),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
-            crate::ui_layout::Item::width(5.0),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::width(18.0),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::width(64.0),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(Size::Pixels(16.0), Size::Pixels(16.0)),
+            kama_ui::layout::Item::width(5.0),
         ],
         0.0,
         0.0,
@@ -64,14 +64,14 @@ pub(super) fn media_row_parts(row: Rect, duration_width: f32) -> (Rect, Rect, Re
 }
 
 pub(super) fn media_stream_row_parts(row: Rect) -> (Rect, Rect) {
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(12.0),
-            crate::ui_layout::Item::width(18.0),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(6.0),
+            kama_ui::layout::Item::width(12.0),
+            kama_ui::layout::Item::width(18.0),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(6.0),
         ],
         0.0,
         0.0,
@@ -148,8 +148,7 @@ pub(super) fn draw_media_row(
     open_amount: f32,
     icons: Icons,
 ) {
-    let duration_width = 64.0f32.min(row.width * 0.3);
-    let (symbol, name, duration, disclosure) = media_row_parts(row, duration_width);
+    let (symbol, name, duration, disclosure) = media_row_parts(row);
     let icon = media_kind_icon(asset.kind);
     kama_ui::ui!(ctx, {
         Rect(("media-row", asset.id), row) {

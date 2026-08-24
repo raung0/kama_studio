@@ -11,17 +11,17 @@ pub(super) fn project_background(
 }
 
 pub(super) fn project_option_rows(rect: Rect) -> [Rect; 5] {
-    let slots = crate::ui_layout::column(
+    let slots = kama_ui::layout::column(
         rect,
         &[
-            crate::ui_layout::Item::height(PANEL_HEADER_H),
-            crate::ui_layout::Item::height(PANEL_GAP),
-            crate::ui_layout::Item::height(ROW_H),
-            crate::ui_layout::Item::height(ROW_H),
-            crate::ui_layout::Item::height(ROW_H),
-            crate::ui_layout::Item::height(PANEL_GAP),
-            crate::ui_layout::Item::height(ROW_H),
-            crate::ui_layout::Item::height(ROW_H),
+            kama_ui::layout::Item::height(PANEL_HEADER_H),
+            kama_ui::layout::Item::height(PANEL_GAP),
+            kama_ui::layout::Item::height(ROW_H),
+            kama_ui::layout::Item::height(ROW_H),
+            kama_ui::layout::Item::height(ROW_H),
+            kama_ui::layout::Item::height(PANEL_GAP),
+            kama_ui::layout::Item::height(ROW_H),
+            kama_ui::layout::Item::height(ROW_H),
         ],
         0.0,
         0.0,
@@ -33,12 +33,15 @@ pub(super) fn project_option_rows(rect: Rect) -> [Rect; 5] {
 
 pub(super) fn project_option_control_rect(rect: Rect, y: f32) -> Rect {
     let row = project_row_hit(rect, y);
-    crate::ui_layout::row(
+    kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(row.width * 0.38),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(5.0),
+            kama_ui::layout::Item::fill_portion(0.38),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.62),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(5.0),
         ],
         0.0,
         0.0,
@@ -64,12 +67,12 @@ pub(super) fn project_frame_rate_y() -> f32 {
 
 pub(super) fn project_resolution_rects(rect: Rect, y: f32) -> ([Rect; 2], Rect) {
     let control = project_option_control_rect(rect, y);
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         control,
         &[
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(16.0),
-            crate::ui_layout::Item::fill(),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(16.0),
+            kama_ui::layout::Item::fill(),
         ],
         0.0,
         0.0,
@@ -79,14 +82,20 @@ pub(super) fn project_resolution_rects(rect: Rect, y: f32) -> ([Rect; 2], Rect) 
 }
 
 pub(super) fn project_background_mode_rects(row: Rect) -> [Rect; 2] {
-    let parts = crate::ui_layout::row(
+    let parts = kama_ui::layout::row(
         row,
         &[
-            crate::ui_layout::Item::width(row.width * 0.38),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(4.0),
-            crate::ui_layout::Item::new(Size::Fill, Size::Pixels((row.height - 4.0).max(1.0))),
-            crate::ui_layout::Item::width(5.0),
+            kama_ui::layout::Item::fill_portion(0.38),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.31),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(4.0),
+            kama_ui::layout::Item::new(
+                Size::FillPortion(0.31),
+                Size::Pixels((row.height - 4.0).max(1.0)),
+            ),
+            kama_ui::layout::Item::width(5.0),
         ],
         0.0,
         0.0,

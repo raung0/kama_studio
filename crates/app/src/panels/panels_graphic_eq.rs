@@ -332,7 +332,7 @@ pub(super) fn draw_effect_header(
     position: (Rect, f32),
     node: &crate::effects::EffectNode,
     section: &Accordion,
-    body_height: f32,
+    body: Rect,
     chrome: (Icons, &PluginRegistry),
     state: (bool, KeyframeControl),
 ) {
@@ -351,11 +351,11 @@ pub(super) fn draw_effect_header(
         chevron,
         style,
     );
-    let _ = section.build_body(
+    let body = Rect::new(header.x, rect.y + body.y, header.width, body.height);
+    section.build_body_rect(
         ctx,
         FormatKey::new(format_args!("inspector-effect-{}", node.id)),
-        header,
-        body_height,
+        body,
         style,
     );
     let buttons = node_action_rects(rect, y);

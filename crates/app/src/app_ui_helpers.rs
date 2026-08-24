@@ -31,12 +31,12 @@ pub(super) fn centered_dialog_rect(
     height: f32,
 ) -> Rect {
     let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
-    let centered = ui_layout::centered(viewport, width, height);
-    ui_layout::fit_column_at(
+    let centered = kama_ui::layout::centered(viewport, width, height);
+    kama_ui::layout::fit_column_at(
         viewport,
         [centered.x.max(8.0), centered.y.max(8.0)],
         width,
-        &[ui_layout::Item::height(height)],
+        &[kama_ui::layout::Item::height(height)],
         0.0,
         0.0,
     )
@@ -44,12 +44,12 @@ pub(super) fn centered_dialog_rect(
 }
 
 fn dialog_content_row(row: Rect) -> Rect {
-    ui_layout::row(
+    kama_ui::layout::row(
         row,
         &[
-            ui_layout::Item::width(14.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(14.0),
+            kama_ui::layout::Item::width(14.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(14.0),
         ],
         0.0,
         0.0,
@@ -166,7 +166,7 @@ fn build_about_column(
     (content_id, button_id)
 }
 
-fn about_dialog_layout(viewport: Rect) -> (Rect, Rect) {
+fn about_dialog_rects(viewport: Rect) -> (Rect, Rect) {
     let ((content, button), measured) = ui::measure_layout(viewport, |ctx| {
         build_about_column(ctx, None, ui::Size::Pixels(ABOUT_DIALOG_W), true)
     });
@@ -177,11 +177,11 @@ fn about_dialog_layout(viewport: Rect) -> (Rect, Rect) {
 }
 
 pub(super) fn about_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
-    about_dialog_layout(Rect::new(0.0, 0.0, viewport_width, viewport_height)).0
+    about_dialog_rects(Rect::new(0.0, 0.0, viewport_width, viewport_height)).0
 }
 
 pub(super) fn about_dialog_button_rect(dialog: Rect) -> Rect {
-    about_dialog_layout(dialog).1
+    about_dialog_rects(dialog).1
 }
 
 pub(super) fn build_about_dialog(
@@ -288,16 +288,16 @@ pub(super) fn action_dialog_rect(
     centered_dialog_rect(viewport_width, viewport_height, spec.size[0], spec.size[1])
 }
 pub(super) fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, [Rect; 2]) {
-    let rows = ui_layout::column(
+    let rows = kama_ui::layout::column(
         dialog,
         &[
-            ui_layout::Item::height(10.0),
-            ui_layout::Item::height(20.0),
-            ui_layout::Item::height(8.0),
-            ui_layout::Item::height(spec.description_height),
-            ui_layout::Item::fill(),
-            ui_layout::Item::height(24.0),
-            ui_layout::Item::height(10.0),
+            kama_ui::layout::Item::height(10.0),
+            kama_ui::layout::Item::height(20.0),
+            kama_ui::layout::Item::height(8.0),
+            kama_ui::layout::Item::height(spec.description_height),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::height(24.0),
+            kama_ui::layout::Item::height(10.0),
         ],
         0.0,
         0.0,
@@ -307,14 +307,14 @@ pub(super) fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect,
     let title = dialog_content_row(rows[1]);
     let description = dialog_content_row(rows[3]);
     let gap = (spec.secondary_offset - spec.primary_width - 82.0).max(0.0);
-    let buttons = ui_layout::row(
+    let buttons = kama_ui::layout::row(
         rows[5],
         &[
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(70.0),
-            ui_layout::Item::width(gap),
-            ui_layout::Item::width(spec.primary_width),
-            ui_layout::Item::width(12.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(70.0),
+            kama_ui::layout::Item::width(gap),
+            kama_ui::layout::Item::width(spec.primary_width),
+            kama_ui::layout::Item::width(12.0),
         ],
         0.0,
         0.0,
@@ -440,16 +440,16 @@ pub(super) fn missing_media_dialog_rect(
 }
 
 pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, [Rect; 2]) {
-    let rows = ui_layout::column(
+    let rows = kama_ui::layout::column(
         dialog,
         &[
-            ui_layout::Item::height(12.0),
-            ui_layout::Item::height(20.0),
-            ui_layout::Item::height(8.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::height(10.0),
-            ui_layout::Item::height(24.0),
-            ui_layout::Item::height(12.0),
+            kama_ui::layout::Item::height(12.0),
+            kama_ui::layout::Item::height(20.0),
+            kama_ui::layout::Item::height(8.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::height(10.0),
+            kama_ui::layout::Item::height(24.0),
+            kama_ui::layout::Item::height(12.0),
         ],
         0.0,
         0.0,
@@ -458,14 +458,14 @@ pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, [Rect; 2]
     );
     let title = dialog_content_row(rows[1]);
     let body = dialog_content_row(rows[3]);
-    let buttons = ui_layout::row(
+    let buttons = kama_ui::layout::row(
         rows[5],
         &[
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(70.0),
-            ui_layout::Item::width(8.0),
-            ui_layout::Item::width(96.0),
-            ui_layout::Item::width(12.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(70.0),
+            kama_ui::layout::Item::width(8.0),
+            kama_ui::layout::Item::width(96.0),
+            kama_ui::layout::Item::width(12.0),
         ],
         0.0,
         0.0,
@@ -548,24 +548,24 @@ impl TextModalSpec {
     }
 
     fn title(self, dialog: Rect) -> Rect {
-        let rows = ui_layout::column(
+        let rows = kama_ui::layout::column(
             dialog,
             &[
-                ui_layout::Item::height(8.0),
-                ui_layout::Item::height(20.0),
-                ui_layout::Item::fill(),
+                kama_ui::layout::Item::height(8.0),
+                kama_ui::layout::Item::height(20.0),
+                kama_ui::layout::Item::fill(),
             ],
             0.0,
             0.0,
             ui::Align::Start,
             None,
         );
-        ui_layout::row(
+        kama_ui::layout::row(
             rows[1],
             &[
-                ui_layout::Item::width(12.0),
-                ui_layout::Item::fill(),
-                ui_layout::Item::width(12.0),
+                kama_ui::layout::Item::width(12.0),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(12.0),
             ],
             0.0,
             0.0,
@@ -574,24 +574,24 @@ impl TextModalSpec {
     }
 
     pub(super) fn input(self, dialog: Rect) -> Rect {
-        let rows = ui_layout::column(
+        let rows = kama_ui::layout::column(
             dialog,
             &[
-                ui_layout::Item::height(self.input_y),
-                ui_layout::Item::height(28.0),
-                ui_layout::Item::fill(),
+                kama_ui::layout::Item::height(self.input_y),
+                kama_ui::layout::Item::height(28.0),
+                kama_ui::layout::Item::fill(),
             ],
             0.0,
             0.0,
             ui::Align::Start,
             None,
         );
-        ui_layout::row(
+        kama_ui::layout::row(
             rows[1],
             &[
-                ui_layout::Item::width(12.0),
-                ui_layout::Item::fill(),
-                ui_layout::Item::width(12.0),
+                kama_ui::layout::Item::width(12.0),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(12.0),
             ],
             0.0,
             0.0,
@@ -600,26 +600,26 @@ impl TextModalSpec {
     }
 
     pub(super) fn button(self, dialog: Rect, confirm: bool) -> Rect {
-        let rows = ui_layout::column(
+        let rows = kama_ui::layout::column(
             dialog,
             &[
-                ui_layout::Item::fill(),
-                ui_layout::Item::height(24.0),
-                ui_layout::Item::height(10.0),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::height(24.0),
+                kama_ui::layout::Item::height(10.0),
             ],
             0.0,
             0.0,
             ui::Align::Start,
             None,
         );
-        let buttons = ui_layout::row(
+        let buttons = kama_ui::layout::row(
             rows[1],
             &[
-                ui_layout::Item::fill(),
-                ui_layout::Item::width(72.0),
-                ui_layout::Item::width(8.0),
-                ui_layout::Item::width(72.0),
-                ui_layout::Item::width(12.0),
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(72.0),
+                kama_ui::layout::Item::width(8.0),
+                kama_ui::layout::Item::width(72.0),
+                kama_ui::layout::Item::width(12.0),
             ],
             0.0,
             0.0,
@@ -719,28 +719,28 @@ pub(super) fn build_new_composition_dialog(
 }
 
 pub(super) fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
-    let rows = ui_layout::column(
+    let rows = kama_ui::layout::column(
         dialog,
         &[
-            ui_layout::Item::height(36.0),
-            ui_layout::Item::height(26.0),
-            ui_layout::Item::fill(),
+            kama_ui::layout::Item::height(36.0),
+            kama_ui::layout::Item::height(26.0),
+            kama_ui::layout::Item::fill(),
         ],
         0.0,
         0.0,
         ui::Align::Start,
         None,
     );
-    ui_layout::row(
+    kama_ui::layout::row(
         rows[1],
         &[
-            ui_layout::Item::width(12.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(6.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(6.0),
-            ui_layout::Item::fill(),
-            ui_layout::Item::width(12.0),
+            kama_ui::layout::Item::width(12.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(6.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(12.0),
         ],
         0.0,
         0.0,
@@ -866,55 +866,124 @@ pub(super) fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
     }
 }
 
-pub(super) fn palette_body_height(state: &PaletteState, visible_rows: usize) -> f32 {
-    if visible_rows == 0 {
-        return 28.0;
-    }
-    let metrics = palette_metrics(state);
-    ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, metrics.width, 1_000_000.0),
-        [0.0, 0.0],
-        metrics.width,
-        &vec![ui_layout::Item::height(metrics.row_h); visible_rows],
-        metrics.row_gap,
-        0.0,
-    )
-    .0
-    .height
+#[derive(Clone, Copy)]
+pub(super) struct PaletteRects {
+    title: Option<Rect>,
+    input: Rect,
+    back: Option<Rect>,
+    body: Rect,
+    footer: Option<Rect>,
 }
 
-fn palette_items(state: &PaletteState, visible_rows: usize) -> Vec<ui_layout::Item> {
+fn measure_palette_rects(
+    viewport: Rect,
+    state: &PaletteState,
+    visible_rows: usize,
+    constrained: bool,
+) -> (PaletteRects, Rect) {
+    #[derive(Default)]
+    struct Ids {
+        title: Option<ui::BlockId>,
+        input: ui::BlockId,
+        back: Option<ui::BlockId>,
+        body: ui::BlockId,
+        footer: Option<ui::BlockId>,
+    }
+
     let metrics = palette_metrics(state);
-    let mut items = Vec::new();
-    if metrics.title_h > 0.0 {
-        items.push(ui_layout::Item::height(metrics.title_h));
-    }
-    items.push(ui_layout::Item::height(metrics.input_h));
-    if metrics.breadcrumb_h > 0.0 {
-        items.push(ui_layout::Item::height(metrics.breadcrumb_h));
-    }
-    items.push(ui_layout::Item::height(palette_body_height(
-        state,
-        visible_rows,
-    )));
-    if metrics.footer_h > 0.0 {
-        items.push(ui_layout::Item::height(metrics.footer_h));
-    }
-    items
+    let ((root, ids), measured) = ui::measure_layout(viewport, |ctx| {
+        let mut ids = Ids::default();
+        let root = ctx
+            .new()
+            .width(Size::Fill)
+            .height(if constrained { Size::Fill } else { Size::Fit })
+            .padding(6.0)
+            .gap(3.0)
+            .column()
+            .children(|ctx| {
+                if metrics.title_h > 0.0 {
+                    ids.title = Some(
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(metrics.title_h))
+                            .build(),
+                    );
+                }
+                ids.input = ctx
+                    .new()
+                    .width(Size::Fill)
+                    .height(Size::Pixels(metrics.input_h))
+                    .build();
+                if metrics.breadcrumb_h > 0.0 {
+                    ids.back = Some(
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(metrics.breadcrumb_h))
+                            .build(),
+                    );
+                }
+                ids.body = ctx
+                    .new()
+                    .width(Size::Fill)
+                    .height(if constrained {
+                        Size::Fill
+                    } else if visible_rows == 0 {
+                        Size::Pixels(28.0)
+                    } else {
+                        Size::Fit
+                    })
+                    .gap(metrics.row_gap)
+                    .column()
+                    .children(|ctx| {
+                        if visible_rows == 0 {
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(28.0))
+                                .build();
+                        } else {
+                            for _ in 0..visible_rows {
+                                ctx.new()
+                                    .width(Size::Fill)
+                                    .height(Size::Pixels(metrics.row_h))
+                                    .build();
+                            }
+                        }
+                    })
+                    .build();
+                if metrics.footer_h > 0.0 {
+                    ids.footer = Some(
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(metrics.footer_h))
+                            .build(),
+                    );
+                }
+            })
+            .build();
+        (root, ids)
+    });
+    let rect = |id: ui::BlockId| measured.rect(id).expect("palette rect");
+    (
+        PaletteRects {
+            title: ids.title.map(rect),
+            input: rect(ids.input),
+            back: ids.back.map(rect),
+            body: rect(ids.body),
+            footer: ids.footer.map(rect),
+        },
+        rect(root),
+    )
 }
 
 pub(super) fn palette_natural_height(state: &PaletteState, visible_rows: usize) -> f32 {
     let metrics = palette_metrics(state);
-    let items = palette_items(state, visible_rows);
-    ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, metrics.width, 1_000_000.0),
-        [0.0, 0.0],
-        metrics.width,
-        &items,
-        3.0,
-        6.0,
+    measure_palette_rects(
+        Rect::new(0.0, 0.0, metrics.width, 1.0),
+        state,
+        visible_rows,
+        false,
     )
-    .0
+    .1
     .height
 }
 
@@ -949,11 +1018,11 @@ pub(super) fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> V
         return Vec::new();
     }
     let metrics = palette_metrics(state);
-    ui_layout::fit_column_at(
-        Rect::new(0.0, 0.0, metrics.width, 1_000_000.0),
+    kama_ui::layout::fit_column_at(
+        Rect::new(0.0, 0.0, metrics.width, 1.0),
         [0.0, 0.0],
         metrics.width,
-        &vec![ui_layout::Item::height(metrics.row_h); entries],
+        &vec![kama_ui::layout::Item::height(metrics.row_h); entries],
         metrics.row_gap,
         0.0,
     )
@@ -964,53 +1033,21 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
     if entries <= visible_rows {
         return 0.0;
     }
-    let full = palette_body_height(state, entries);
-    let visible = palette_body_height(state, visible_rows);
-    (full - visible).max(0.0)
+    let extent = |count| {
+        let rows = palette_unscrolled_rows(state, count);
+        rows.last()
+            .zip(rows.first())
+            .map_or(0.0, |(last, first)| last.bottom() - first.y)
+    };
+    (extent(entries) - extent(visible_rows)).max(0.0)
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct PaletteLayout {
-    title: Option<Rect>,
-    input: Rect,
-    back: Option<Rect>,
-    body: Rect,
-    footer: Option<Rect>,
-}
-
-pub(super) fn palette_layout(
+pub(super) fn palette_rects(
     popup: Rect,
     state: &PaletteState,
     visible_rows: usize,
-) -> PaletteLayout {
-    let metrics = palette_metrics(state);
-    let items = palette_items(state, visible_rows);
-    let parts = ui_layout::column(popup, &items, 3.0, 6.0, ui::Align::Start, None);
-    let mut index = 0;
-    let title = if metrics.title_h > 0.0 {
-        index += 1;
-        Some(parts[0])
-    } else {
-        None
-    };
-    let input = parts[index];
-    index += 1;
-    let back = if metrics.breadcrumb_h > 0.0 {
-        let back = Some(parts[index]);
-        index += 1;
-        back
-    } else {
-        None
-    };
-    let body = parts[index];
-    index += 1;
-    PaletteLayout {
-        title,
-        input,
-        back,
-        body,
-        footer: (metrics.footer_h > 0.0).then(|| parts[index]),
-    }
+) -> PaletteRects {
+    measure_palette_rects(popup, state, visible_rows, true).0
 }
 
 pub(super) fn palette_rect(
@@ -1025,12 +1062,12 @@ pub(super) fn palette_rect(
     let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
     if state.kind.is_some_and(PaletteKind::is_add_menu) {
         let anchor = state.anchor.unwrap_or_else(|| {
-            let centered = ui_layout::centered(viewport, 1.0, 1.0);
-            ui_layout::fit_column_at(
+            let centered = kama_ui::layout::centered(viewport, 1.0, 1.0);
+            kama_ui::layout::fit_column_at(
                 viewport,
                 [centered.x + 0.5, centered.y + 0.5],
                 1.0,
-                &[ui_layout::Item::height(1.0)],
+                &[kama_ui::layout::Item::height(1.0)],
                 0.0,
                 0.0,
             )
@@ -1043,17 +1080,17 @@ pub(super) fn palette_rect(
     }
     let width = metrics.width.min((viewport_width - 12.0).max(1.0));
     let height = height.min((viewport_height - 12.0).max(1.0));
-    let centered = ui_layout::centered(viewport, width, height);
+    let centered = kama_ui::layout::centered(viewport, width, height);
     let y = if matches!(state.kind, Some(PaletteKind::Commands)) {
         74.0f32.min((viewport_height - height - 8.0).max(8.0))
     } else {
         centered.y.max(8.0)
     };
-    ui_layout::fit_column_at(
+    kama_ui::layout::fit_column_at(
         viewport,
         [centered.x.max(8.0), y],
         width,
-        &[ui_layout::Item::height(height)],
+        &[kama_ui::layout::Item::height(height)],
         0.0,
         0.0,
     )
@@ -1061,23 +1098,26 @@ pub(super) fn palette_rect(
 }
 
 pub(super) fn palette_input_rect(popup: Rect, state: &PaletteState) -> Rect {
-    palette_layout(popup, state, 0).input
+    palette_rects(popup, state, 0).input
 }
 
 pub(super) fn palette_back_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
-    palette_layout(popup, state, 0).back
+    palette_rects(popup, state, 0).back
 }
 
 pub(super) fn palette_body_rect(popup: Rect, state: &PaletteState, visible_rows: usize) -> Rect {
-    palette_layout(popup, state, visible_rows).body
+    palette_rects(popup, state, visible_rows).body
 }
 
 pub(super) fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
-    let title = palette_layout(popup, state, 0).title?;
+    let title = palette_rects(popup, state, 0).title?;
     Some(
-        ui_layout::row(
+        kama_ui::layout::row(
             title,
-            &[ui_layout::Item::fill(), ui_layout::Item::width(27.0)],
+            &[
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(27.0),
+            ],
             0.0,
             0.0,
             ui::Align::Start,
@@ -1090,11 +1130,14 @@ pub(super) fn palette_footer_close_rect(
     state: &PaletteState,
     visible_rows: usize,
 ) -> Option<Rect> {
-    let footer = palette_layout(popup, state, visible_rows).footer?;
+    let footer = palette_rects(popup, state, visible_rows).footer?;
     Some(
-        ui_layout::row(
+        kama_ui::layout::row(
             footer,
-            &[ui_layout::Item::fill(), ui_layout::Item::width(44.0)],
+            &[
+                kama_ui::layout::Item::fill(),
+                kama_ui::layout::Item::width(44.0),
+            ],
             0.0,
             0.0,
             ui::Align::Start,
@@ -1104,9 +1147,9 @@ pub(super) fn palette_footer_close_rect(
 
 pub(super) fn palette_virtual_rows(body: Rect, state: &PaletteState, entries: usize) -> Vec<Rect> {
     let metrics = palette_metrics(state);
-    ui_layout::column(
+    kama_ui::layout::column(
         body,
-        &vec![ui_layout::Item::height(metrics.row_h); entries],
+        &vec![kama_ui::layout::Item::height(metrics.row_h); entries],
         metrics.row_gap,
         0.0,
         ui::Align::Start,
@@ -1148,6 +1191,7 @@ pub(super) fn build_palette(
     let max_scroll = palette_max_scroll(state, entries.len(), visible_rows);
     state.scroll.offset = state.scroll.offset.clamp(0.0, max_scroll);
     let rect = palette_rect(viewport_width, viewport_height, state, visible_rows);
+    let palette_rects = palette_rects(rect, state, visible_rows);
     let width = rect.width;
     let height = rect.height;
     let (x, y) = (rect.x, rect.y);
@@ -1291,7 +1335,7 @@ pub(super) fn build_palette(
             Block {
                 id: "palette-scroll-container";
                 width: Size::Fill;
-                height: Size::Pixels(palette_body_height(state, visible_rows));
+                height: Size::Pixels(palette_rects.body.height);
                 padding: 0.0;
                 gap: metrics.row_gap;
                 vertical_scroll: state.scroll;

@@ -21,7 +21,6 @@ const TITLE_H: f32 = 34.0;
 const ROW_H: f32 = 28.0;
 const TEXT_H: f32 = 72.0;
 const ROW_GAP: f32 = 9.0;
-const LABEL_W: f32 = 86.0;
 const FORM_GAP: f32 = 12.0;
 const ACCORDION_BODY_H: f32 = 58.0;
 const OPTIONS: [&str; 3] = ["Option A", "Option B", "Option C"];
@@ -153,7 +152,7 @@ struct Field {
 }
 
 #[derive(Clone, Copy)]
-struct GalleryLayout {
+struct GalleryRects {
     title: Rect,
     label: Field,
     text_edit: Field,
@@ -168,6 +167,7 @@ struct GalleryLayout {
     combo: Field,
     combo_action: Rect,
     accordion: Field,
+    accordion_body: Rect,
     content_bottom: f32,
 }
 
@@ -177,13 +177,9 @@ struct GalleryFieldIds {
     control: BlockId,
 }
 
-fn gallery_field(
-    ctx: &mut ui::BuildCtx,
-    label_width: f32,
-    height: f32,
-    control_width: Size,
-) -> GalleryFieldIds {
+fn gallery_field(ctx: &mut ui::BuildCtx, height: f32, control_width: Size) -> GalleryFieldIds {
     let mut ids = None;
+    let flexible = matches!(control_width, Size::Fill);
     ctx.new()
         .row()
         .width(Size::Fill)
@@ -193,20 +189,31 @@ fn gallery_field(
             ids = Some(GalleryFieldIds {
                 label: ctx
                     .new()
-                    .width(Size::Pixels(label_width))
+                    .width(if flexible {
+                        Size::FillPortion(0.32)
+                    } else {
+                        Size::Fill
+                    })
                     .height(Size::Fill)
                     .build(),
-                control: ctx.new().width(control_width).height(Size::Fill).build(),
+                control: ctx
+                    .new()
+                    .width(if flexible {
+                        Size::FillPortion(0.68)
+                    } else {
+                        control_width
+                    })
+                    .height(Size::Fill)
+                    .build(),
             });
         })
         .build();
     ids.expect("gallery field ids")
 }
 
-impl GalleryLayout {
-    fn new(bounds: Rect) -> Self {
-        let label_width = LABEL_W.min((bounds.width - PAD * 2.0).max(0.0) * 0.32);
-        let viewport = Rect::new(bounds.x, bounds.y, bounds.width, 4096.0);
+impl GalleryRects {
+    fn new(bounds: Rect, accordion_open: f32) -> Self {
+        let viewport = bounds;
         let (ids, measured) = ui::measure_layout(viewport, |ctx| {
             let mut title = BlockId(0);
             let mut label = None;
@@ -215,9 +222,12 @@ impl GalleryLayout {
             let mut number = None;
             let mut color = None;
             let mut button = None;
+            let mut button_action = BlockId(0);
+            let mut button_note = BlockId(0);
             let mut toggle = None;
             let mut combo = None;
             let mut accordion = None;
+            let mut accordion_body = BlockId(0);
 
             let root = ctx
                 .new()
@@ -231,24 +241,74 @@ impl GalleryLayout {
                         .width(Size::Fill)
                         .height(Size::Pixels(TITLE_H))
                         .build();
-                    label = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
-                    text_edit = Some(gallery_field(ctx, label_width, TEXT_H, Size::Fill));
-                    slider = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
-                    number = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
-                    color = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
+                    label = Some(gallery_field(ctx, ROW_H, Size::Fill));
+                    text_edit = Some(gallery_field(ctx, TEXT_H, Size::Fill));
+                    slider = Some(gallery_field(ctx, ROW_H, Size::Fill));
+                    number = Some(gallery_field(ctx, ROW_H, Size::Fill));
+                    color = Some(gallery_field(ctx, ROW_H, Size::Fill));
 
-                    button = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
-                    toggle = Some(gallery_field(ctx, label_width, ROW_H, Size::Pixels(112.0)));
-                    combo = Some(gallery_field(ctx, label_width, ROW_H, Size::Pixels(220.0)));
-                    accordion = Some(gallery_field(ctx, label_width, ROW_H, Size::Fill));
+                    let mut button_ids = None;
                     ctx.new()
+                        .row()
                         .width(Size::Fill)
-                        .height(Size::Pixels((ACCORDION_BODY_H + 4.0 - ROW_GAP).max(0.0)))
+                        .height(Size::Pixels(ROW_H))
+                        .gap(FORM_GAP)
+                        .children(|ctx| {
+                            let label = ctx
+                                .new()
+                                .width(Size::FillPortion(0.32))
+                                .height(Size::Fill)
+                                .build();
+                            let control = ctx
+                                .new()
+                                .width(Size::FillPortion(0.68))
+                                .height(Size::Fill)
+                                .row()
+                                .gap(10.0)
+                                .children(|ctx| {
+                                    button_action = ctx
+                                        .new()
+                                        .width(Size::Pixels(112.0))
+                                        .height(Size::Fill)
+                                        .build();
+                                    button_note =
+                                        ctx.new().width(Size::Fill).height(Size::Fill).build();
+                                })
+                                .build();
+                            button_ids = Some(GalleryFieldIds { label, control });
+                        })
+                        .build();
+                    button = button_ids;
+
+                    toggle = Some(gallery_field(ctx, ROW_H, Size::Pixels(112.0)));
+                    combo = Some(gallery_field(ctx, ROW_H, Size::Pixels(220.0)));
+                    accordion = Some(gallery_field(ctx, ROW_H, Size::Fill));
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::FitScale(accordion_open))
+                        .gap(FORM_GAP)
+                        .children(|ctx| {
+                            ctx.new()
+                                .width(Size::FillPortion(0.32))
+                                .height(Size::Fill)
+                                .build();
+                            accordion_body = ctx
+                                .new()
+                                .width(Size::FillPortion(0.68))
+                                .height(Size::Fill)
+                                .children(|ctx| {
+                                    ctx.new()
+                                        .width(Size::Fill)
+                                        .height(Size::Pixels(ACCORDION_BODY_H))
+                                        .build();
+                                })
+                                .build();
+                        })
                         .build();
                 })
                 .build();
 
-            let button = button.expect("button field ids");
             (
                 root,
                 title,
@@ -257,10 +317,13 @@ impl GalleryLayout {
                 slider.expect("slider field ids"),
                 number.expect("number field ids"),
                 color.expect("color field ids"),
-                button,
+                button.expect("button field ids"),
+                button_action,
+                button_note,
                 toggle.expect("toggle field ids"),
                 combo.expect("combo field ids"),
                 accordion.expect("accordion field ids"),
+                accordion_body,
             )
         });
 
@@ -273,11 +336,14 @@ impl GalleryLayout {
             number,
             color,
             button,
+            button_action,
+            button_note,
             toggle,
             combo,
             accordion,
+            accordion_body,
         ) = ids;
-        let rect = |id| measured.rect(id).expect("gallery layout rect");
+        let rect = |id| measured.rect(id).expect("gallery rect");
         let field = |ids: GalleryFieldIds| Field {
             label: rect(ids.label),
             control: rect(ids.control),
@@ -285,35 +351,6 @@ impl GalleryLayout {
         let button = field(button);
         let toggle = field(toggle);
         let combo = field(combo);
-
-        let pair_layout = |control: Rect, first_width: f32, gap: f32| {
-            let ((first, second), measured) = ui::measure_layout(control, |ctx| {
-                let mut first = BlockId(0);
-                let mut second = BlockId(0);
-                ctx.new()
-                    .row()
-                    .width(Size::Fill)
-                    .height(Size::Fill)
-                    .gap(gap)
-                    .children(|ctx| {
-                        first = ctx
-                            .new()
-                            .width(Size::Pixels(first_width.min(control.width)))
-                            .height(Size::Fill)
-                            .build();
-                        second = ctx.new().width(Size::Fill).height(Size::Fill).build();
-                    })
-                    .build();
-                (first, second)
-            });
-            (
-                measured.rect(first).expect("gallery action rect"),
-                measured.rect(second).expect("gallery note rect"),
-            )
-        };
-        let (button_action, button_note) = pair_layout(button.control, 112.0, 10.0);
-        let (toggle_action, _) = pair_layout(toggle.control, 112.0, 0.0);
-        let (combo_action, _) = pair_layout(combo.control, 220.0, 0.0);
 
         Self {
             title: rect(title),
@@ -323,13 +360,14 @@ impl GalleryLayout {
             number: field(number),
             color: field(color),
             button,
-            button_action,
-            button_note,
+            button_action: rect(button_action),
+            button_note: rect(button_note),
             toggle,
-            toggle_action,
+            toggle_action: toggle.control,
             combo,
-            combo_action,
+            combo_action: combo.control,
             accordion: field(accordion),
+            accordion_body: rect(accordion_body),
             content_bottom: rect(root).bottom(),
         }
     }
@@ -379,20 +417,20 @@ impl WidgetGallery {
         self.focused_stack = stack;
     }
 
-    fn layout(&self, bounds: Rect) -> GalleryLayout {
-        let content = crate::ui_layout::column(
+    fn rects(&self, bounds: Rect) -> GalleryRects {
+        let content = kama_ui::layout::column(
             bounds,
-            &[crate::ui_layout::Item::height(bounds.height)],
+            &[kama_ui::layout::Item::height(bounds.height)],
             0.0,
             0.0,
             Align::Start,
             Some(self.vertical_scroll),
         )[0];
-        GalleryLayout::new(content)
+        GalleryRects::new(content, self.accordion.open_amount())
     }
 
     pub fn scroll(&mut self, bounds: Rect, cursor: [f32; 2], delta: [f32; 2]) -> bool {
-        let layout = self.layout(bounds);
+        let layout = self.rects(bounds);
         if self
             .combo
             .scroll(layout.combo(), cursor, delta, OPTIONS.len())
@@ -403,7 +441,8 @@ impl WidgetGallery {
             self.text.scroll(layout.text_edit.control, delta);
             return true;
         }
-        let content = GalleryLayout::new(bounds).content_bottom() - bounds.y;
+        let content =
+            GalleryRects::new(bounds, self.accordion.open_amount()).content_bottom() - bounds.y;
         self.vertical_scroll
             .scroll_by(-delta[1], (content - bounds.height).max(0.0))
     }
@@ -431,7 +470,7 @@ impl WidgetGallery {
     }
 
     pub fn ime_area(&self, bounds: Rect) -> Option<Rect> {
-        let layout = self.layout(bounds);
+        let layout = self.rects(bounds);
         if self.text.is_focused() {
             return Some(self.text.caret_rect(layout.text_edit.control));
         }
@@ -442,7 +481,7 @@ impl WidgetGallery {
     }
 
     pub fn popup_contains(&self, bounds: Rect, point: [f32; 2]) -> bool {
-        let layout = self.layout(bounds);
+        let layout = self.rects(bounds);
         self.color.popup_contains(layout.color.control, point)
             || self.combo.is_open()
                 && self
@@ -459,7 +498,7 @@ impl WidgetGallery {
         modifiers: ModifiersState,
     ) -> bool {
         self.set_focused(Some(stack));
-        let layout = self.layout(bounds);
+        let layout = self.rects(bounds);
         let combo = layout.combo();
         self.color_rect = Some(layout.color.control);
         if self
@@ -565,7 +604,10 @@ impl WidgetGallery {
     }
 
     pub fn build(&mut self, ctx: &mut ui::BuildCtx, stack: StackId, content: Rect, icons: Icons) {
-        let layout = GalleryLayout::new(Rect::new(0.0, 0.0, content.width, content.height));
+        let layout = GalleryRects::new(
+            Rect::new(0.0, 0.0, content.width, content.height),
+            self.accordion.open_amount(),
+        );
         let style = component_style();
         let labels = [
             ("Label", layout.label.label),
@@ -685,7 +727,7 @@ impl WidgetGallery {
                         ctx,
                         format_args!("{} accordion", stack.0),
                         layout.accordion.control,
-                        ACCORDION_BODY_H,
+                        layout.accordion_body,
                         AccordionContent {
                             title: "Accordion section",
                             body: "Accordion content expands and collapses without replacing the header.",

@@ -4,6 +4,7 @@ pub use kama_ui_macros::{ui, ui_component};
 pub mod components;
 pub mod control_registry;
 pub mod dock;
+pub mod layout;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -179,7 +180,12 @@ fn reveal_target() -> Color {
 pub enum Size {
     #[default]
     Fit,
+    /// Use the remaining space with the same weight as `FillPortion(1.0)`.
     Fill,
+    /// Use a weighted share of the remaining space along the parent flow axis.
+    FillPortion(f32),
+    /// Use the intrinsic size multiplied by this scale. Useful for animated collapse/reveal.
+    FitScale(f32),
     Pixels(f32),
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1129,8 +1135,8 @@ fn find_block(blocks: &[Block], id: BlockId) -> Option<&Block> {
 }
 
 fn layout_roots(blocks: &mut [Block], viewport: Rect) {
-    let (fixed, fill_count) = flow_metrics(blocks, false, 0.0);
-    let fill_height = fill_share(viewport.height, fixed, fill_count);
+    let (fixed, fill_weight) = flow_metrics(blocks, false, 0.0);
+    let fill_height = fill_share(viewport.height, fixed, fill_weight);
     let mut cursor_y = viewport.y;
 
     for block in blocks {
@@ -1203,9 +1209,9 @@ fn layout_block(
     let horizontal = block.direction == Direction::Row;
     let main_available = axis_extent(content, horizontal);
     let cross_available = axis_extent(content, !horizontal);
-    let (fixed, fill_count) = flow_metrics(&block.children, horizontal, block.gap);
-    let fill_size = fill_share(main_available, fixed, fill_count);
-    let occupied = fixed + fill_size * fill_count as f32;
+    let (fixed, fill_weight) = flow_metrics(&block.children, horizontal, block.gap);
+    let fill_size = fill_share(main_available, fixed, fill_weight);
+    let occupied = fixed + fill_size * fill_weight;
     let mut cursor = alignment_offset(main_available, occupied, block.justify_content);
 
     for child in &mut block.children {
@@ -1311,26 +1317,46 @@ fn alignment_offset(available: f32, occupied: f32, align: Align) -> f32 {
         }
 }
 
-fn flow_metrics(blocks: &[Block], horizontal: bool, gap: f32) -> (f32, usize) {
+fn flow_metrics(blocks: &[Block], horizontal: bool, gap: f32) -> (f32, f32) {
     let mut fixed = 0.0;
-    let mut fill_count = 0;
+    let mut fill_weight = 0.0;
     let mut count = 0usize;
     for block in blocks.iter().filter(|block| is_flow(block)) {
         count += 1;
         match axis_spec(block, horizontal) {
             Size::Pixels(value) => fixed += value.max(0.0),
             Size::Fit => fixed += intrinsic_size(block, horizontal),
-            Size::Fill => fill_count += 1,
+            Size::FitScale(scale) => {
+                fixed += intrinsic_size(block, horizontal) * normalized_scale(scale)
+            }
+            Size::Fill => fill_weight += 1.0,
+            Size::FillPortion(portion) => fill_weight += normalized_weight(portion),
         }
     }
-    (fixed + gap * count.saturating_sub(1) as f32, fill_count)
+    (fixed + gap * count.saturating_sub(1) as f32, fill_weight)
 }
 
-fn fill_share(available: f32, fixed: f32, count: usize) -> f32 {
-    if count == 0 {
+fn fill_share(available: f32, fixed: f32, weight: f32) -> f32 {
+    if weight <= 0.0 {
         0.0
     } else {
-        (available - fixed).max(0.0) / count as f32
+        (available - fixed).max(0.0) / weight
+    }
+}
+
+fn normalized_weight(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn normalized_scale(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -1338,7 +1364,9 @@ fn resolve_main(spec: Size, fill: f32, intrinsic: f32) -> f32 {
     match spec {
         Size::Pixels(value) => value.max(0.0),
         Size::Fit => intrinsic,
+        Size::FitScale(scale) => intrinsic * normalized_scale(scale),
         Size::Fill => fill,
+        Size::FillPortion(portion) => fill * normalized_weight(portion),
     }
 }
 
@@ -1373,17 +1401,20 @@ fn push_clip(clips: &mut Vec<ClipShape>, clip: ClipShape) {
 fn resolve_cross(spec: Size, available: f32, intrinsic: f32) -> f32 {
     match spec {
         Size::Pixels(value) => value.max(0.0),
-        Size::Fill => available.max(0.0),
+        Size::Fill | Size::FillPortion(_) => available.max(0.0),
         Size::Fit => intrinsic.min(available).max(0.0),
+        Size::FitScale(scale) => (intrinsic * normalized_scale(scale))
+            .min(available)
+            .max(0.0),
     }
 }
 
 fn resolve_absolute(spec: Size, available: f32, intrinsic: f32) -> f32 {
     match spec {
         Size::Pixels(value) => value.max(0.0),
-        Size::Fill => available.max(0.0),
-
+        Size::Fill | Size::FillPortion(_) => available.max(0.0),
         Size::Fit => intrinsic.max(0.0),
+        Size::FitScale(scale) => (intrinsic * normalized_scale(scale)).max(0.0),
     }
 }
 
@@ -1427,8 +1458,8 @@ fn intrinsic_size(block: &Block, horizontal: bool) -> f32 {
 fn preferred_size(block: &Block, horizontal: bool) -> f32 {
     match axis_spec(block, horizontal) {
         Size::Pixels(value) => value.max(0.0),
-
-        Size::Fit | Size::Fill => intrinsic_size(block, horizontal),
+        Size::FitScale(scale) => intrinsic_size(block, horizontal) * normalized_scale(scale),
+        Size::Fit | Size::Fill | Size::FillPortion(_) => intrinsic_size(block, horizontal),
     }
 }
 
@@ -2199,6 +2230,59 @@ mod layout_tests {
         assert_eq!(measured.rect(root).unwrap().height, 44.0);
         assert_eq!(measured.rect(fill).unwrap().height, 44.0);
         assert_eq!(measured.rect(row).unwrap().height, 44.0);
+    }
+
+    #[test]
+    fn fill_portions_share_remaining_space_by_weight() {
+        let ((one, two), measured) = measure_layout(Rect::new(0.0, 0.0, 300.0, 40.0), |ctx| {
+            let mut one = BlockId::default();
+            let mut two = BlockId::default();
+            ctx.new()
+                .width(Size::Fill)
+                .height(Size::Fill)
+                .row()
+                .children(|ctx| {
+                    one = ctx
+                        .new()
+                        .width(Size::FillPortion(1.0))
+                        .height(Size::Fill)
+                        .build();
+                    two = ctx
+                        .new()
+                        .width(Size::FillPortion(2.0))
+                        .height(Size::Fill)
+                        .build();
+                })
+                .build();
+            (one, two)
+        });
+
+        assert_eq!(measured.rect(one).unwrap().width, 100.0);
+        assert_eq!(measured.rect(two).unwrap().width, 200.0);
+    }
+
+    #[test]
+    fn fit_scale_scales_intrinsic_main_axis_size() {
+        let ((scaled, child), measured) =
+            measure_layout(Rect::new(0.0, 0.0, 200.0, 200.0), |ctx| {
+                let mut child = BlockId::default();
+                let scaled = ctx
+                    .new()
+                    .width(Size::Fill)
+                    .height(Size::FitScale(0.25))
+                    .children(|ctx| {
+                        child = ctx
+                            .new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(80.0))
+                            .build();
+                    })
+                    .build();
+                (scaled, child)
+            });
+
+        assert_eq!(measured.rect(scaled).unwrap().height, 20.0);
+        assert_eq!(measured.rect(child).unwrap().height, 80.0);
     }
 
     #[test]

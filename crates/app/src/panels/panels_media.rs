@@ -190,12 +190,12 @@ fn visit_media_rows<'a, B>(
         }
     }
 
-    let viewport = crate::ui_layout::inset(rect, 4.0);
-    let slots = crate::ui_layout::column(
+    let viewport = kama_ui::layout::inset(rect, 4.0);
+    let slots = kama_ui::layout::column(
         viewport,
         &pending
             .iter()
-            .map(|item| crate::ui_layout::Item::height(item.slot_height))
+            .map(|item| kama_ui::layout::Item::height(item.slot_height))
             .collect::<Vec<_>>(),
         0.0,
         0.0,
@@ -203,11 +203,11 @@ fn visit_media_rows<'a, B>(
         Some(kama_ui::ScrollState { offset: scroll_y }),
     );
     for (item, slot) in pending.into_iter().zip(slots) {
-        let row = crate::ui_layout::column(
+        let row = kama_ui::layout::column(
             slot,
             &[
-                crate::ui_layout::Item::height(item.row_height),
-                crate::ui_layout::Item::fill(),
+                kama_ui::layout::Item::height(item.row_height),
+                kama_ui::layout::Item::fill(),
             ],
             0.0,
             0.0,
@@ -215,11 +215,11 @@ fn visit_media_rows<'a, B>(
             None,
         )[0];
         let row = if item.child_inset > 0.0 {
-            crate::ui_layout::row(
+            kama_ui::layout::row(
                 row,
                 &[
-                    crate::ui_layout::Item::width(item.child_inset),
-                    crate::ui_layout::Item::fill(),
+                    kama_ui::layout::Item::width(item.child_inset),
+                    kama_ui::layout::Item::fill(),
                 ],
                 0.0,
                 0.0,

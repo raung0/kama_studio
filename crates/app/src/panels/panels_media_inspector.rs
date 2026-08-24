@@ -1,10 +1,10 @@
 use super::*;
 
-pub(super) struct MediaInspectorLayout {
-    pub(super) general: InspectorSectionLayout,
-    pub(super) video: Option<InspectorSectionLayout>,
-    pub(super) audio: Option<InspectorSectionLayout>,
-    pub(super) model: Option<InspectorSectionLayout>,
+pub(super) struct MediaInspectorRects {
+    pub(super) general: InspectorSectionRects,
+    pub(super) video: Option<InspectorSectionRects>,
+    pub(super) audio: Option<InspectorSectionRects>,
+    pub(super) model: Option<InspectorSectionRects>,
     pub(super) end: f32,
 }
 
@@ -15,13 +15,13 @@ pub(super) struct MediaInspectorSections<'a> {
     pub(super) model: &'a Accordion,
 }
 
-pub(super) fn media_inspector_layout(
+pub(super) fn media_inspector_rects(
     rect: Rect,
     asset: &crate::project::MediaAsset,
     selected_stream: MediaStream,
     sections: MediaInspectorSections<'_>,
     start: f32,
-) -> MediaInspectorLayout {
+) -> MediaInspectorRects {
     let MediaInspectorSections {
         general,
         video,
@@ -38,33 +38,27 @@ pub(super) fn media_inspector_layout(
             .any(|stream| matches!(stream, MediaStream::Audio(_)));
     let specs = [
         (
-            Some(
-                media_general_detail_rows(asset).len() as f32 * ROW_H + INSPECTOR_SECTION_PAD * 2.0,
-            ),
+            Some(vec![ROW_H; media_general_detail_rows(asset).len()]),
             general.open_amount(),
         ),
         (
-            has_video_tracks.then(|| {
-                media_video_detail_rows(asset, selected_stream).len() as f32 * ROW_H
-                    + INSPECTOR_SECTION_PAD * 2.0
-            }),
+            has_video_tracks
+                .then(|| vec![ROW_H; media_video_detail_rows(asset, selected_stream).len()]),
             video.open_amount(),
         ),
         (
-            has_audio_tracks.then(|| {
-                media_audio_detail_rows(asset, selected_stream).len() as f32 * ROW_H
-                    + INSPECTOR_SECTION_PAD * 2.0
-            }),
+            has_audio_tracks
+                .then(|| vec![ROW_H; media_audio_detail_rows(asset, selected_stream).len()]),
             audio.open_amount(),
         ),
         (
-            (asset.kind == MediaKind::Model3d).then_some(ROW_H + INSPECTOR_SECTION_PAD * 2.0),
+            (asset.kind == MediaKind::Model3d).then(|| vec![ROW_H]),
             model.open_amount(),
         ),
     ];
-    let (sections, end) = inspector_layout_sections(rect, start, &specs);
+    let (sections, end) = measure_inspector_sections(rect, start, &specs);
     let mut sections = sections.into_iter();
-    MediaInspectorLayout {
+    MediaInspectorRects {
         general: sections
             .next()
             .expect("media general section slot")
@@ -78,23 +72,22 @@ pub(super) fn media_inspector_layout(
 
 pub(super) fn build_media_detail_section(
     ctx: &mut kama_ui::BuildCtx,
-    content: Rect,
-    layout: InspectorSectionLayout,
+    layout: InspectorSectionRects,
     section: &Accordion,
     identity: (&str, &str, IconId),
     rows: Vec<(String, String)>,
 ) {
     let (title, id, chevron) = identity;
-    accordion_header(ctx, section, content, layout.header, title, chevron);
-    inspector_accordion_body(ctx, section, content, layout.header, layout.height, id);
+    accordion_header(ctx, section, layout.header, title, chevron);
+    inspector_accordion_body(ctx, section, layout.body, id);
     if section.is_visible() {
-        let body = inspector_section_content(section, content, layout);
+        let body = inspector_section_content(layout);
         ctx.with_clip(body, |ctx| {
-            let row_rects = crate::ui_layout::column(
+            let row_rects = kama_ui::layout::column(
                 body,
                 &rows
                     .iter()
-                    .map(|_| crate::ui_layout::Item::height(ROW_H))
+                    .map(|_| kama_ui::layout::Item::height(ROW_H))
                     .collect::<Vec<_>>(),
                 0.0,
                 0.0,
@@ -115,12 +108,12 @@ pub(super) fn build_media_detail_section(
                 ui_text!(
                     ctx,
                     ("media-detail-value", id, index),
-                    crate::ui_layout::row(
+                    kama_ui::layout::row(
                         row,
                         &[
-                            crate::ui_layout::Item::width(label_rect.width + 9.0),
-                            crate::ui_layout::Item::fill(),
-                            crate::ui_layout::Item::width(7.0),
+                            kama_ui::layout::Item::width(label_rect.width + 9.0),
+                            kama_ui::layout::Item::fill(),
+                            kama_ui::layout::Item::width(7.0),
                         ],
                         0.0,
                         0.0,
@@ -160,8 +153,8 @@ pub(super) fn build_media_inspector(
         },
         scroll_y,
     );
-    let content = crate::ui_layout::scrolled_content(rect, scroll_y);
-    let layout = media_inspector_layout(
+    let content = kama_ui::layout::scrolled_content(rect, scroll_y);
+    let layout = media_inspector_rects(
         content,
         asset,
         selected_stream,
@@ -175,7 +168,6 @@ pub(super) fn build_media_inspector(
     );
     build_media_detail_section(
         ctx,
-        content,
         layout.general,
         general,
         ("General Information", "media-general", chevron),
@@ -188,7 +180,6 @@ pub(super) fn build_media_inspector(
         };
         build_media_detail_section(
             ctx,
-            content,
             section,
             video,
             (&title, "media-video", chevron),
@@ -202,7 +193,6 @@ pub(super) fn build_media_inspector(
         };
         build_media_detail_section(
             ctx,
-            content,
             section,
             audio,
             (&title, "media-audio", chevron),
@@ -212,7 +202,6 @@ pub(super) fn build_media_inspector(
     if let Some(section) = layout.model {
         build_media_detail_section(
             ctx,
-            content,
             section,
             model,
             ("3D Model", "media-model", chevron),
