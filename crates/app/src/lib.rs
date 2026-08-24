@@ -2490,10 +2490,10 @@ impl EditorApp {
 
     fn value_drag_active(&self) -> bool {
         self.inspector.is_cursor_lock_dragging()
-            || self.project_options.is_value_dragging()
+            || self.project_options.is_cursor_lock_dragging()
             || self.pipeline_graph.is_cursor_lock_dragging()
             || self.render_panel.is_value_dragging()
-            || self.widgets.is_value_dragging()
+            || self.widgets.is_cursor_lock_dragging()
             || self.editor.timeline.is_value_dragging()
     }
 

@@ -257,8 +257,8 @@ impl ProjectOptionsState {
             || self.background_color.is_animating()
     }
 
-    pub fn is_value_dragging(&self) -> bool {
-        self.numbers.is_dragging() || self.background_color.is_dragging()
+    pub fn is_cursor_lock_dragging(&self) -> bool {
+        self.numbers.is_dragging()
     }
 
     pub fn sync_color_picker_textures(&mut self, renderer: &mut Renderer) -> Result<()> {

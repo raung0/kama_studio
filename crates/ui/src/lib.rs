@@ -286,6 +286,61 @@ impl ScrollState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupDirection {
+    Down,
+    Up,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PopupPlacement {
+    pub rect: Rect,
+    pub direction: PopupDirection,
+}
+
+pub fn place_popup_with_direction(
+    anchor: Rect,
+    size: [f32; 2],
+    viewport: Rect,
+    prefer_above: bool,
+    gap: f32,
+) -> PopupPlacement {
+    let margin = 6.0;
+    let width = size[0].min((viewport.width - margin * 2.0).max(1.0));
+    let desired_height = size[1].max(1.0);
+    let below_y = anchor.bottom() + gap;
+    let available_below = (viewport.bottom() - margin - below_y).max(0.0);
+    let available_above = (anchor.y - gap - (viewport.y + margin)).max(0.0);
+
+    let direction = if prefer_above {
+        if available_above >= desired_height || available_above >= available_below {
+            PopupDirection::Up
+        } else {
+            PopupDirection::Down
+        }
+    } else if available_below >= desired_height || available_below >= available_above {
+        PopupDirection::Down
+    } else {
+        PopupDirection::Up
+    };
+    let available_height = match direction {
+        PopupDirection::Down => available_below,
+        PopupDirection::Up => available_above,
+    };
+    let height = desired_height.min(available_height.max(1.0));
+    let y = match direction {
+        PopupDirection::Down => below_y,
+        PopupDirection::Up => anchor.y - gap - height,
+    };
+    let min_x = viewport.x + margin;
+    let max_x = (viewport.right() - width - margin).max(min_x);
+
+    PopupPlacement {
+        rect: Rect::new(anchor.x.clamp(min_x, max_x), y, width, height),
+        direction,
+    }
+}
+
 pub fn place_popup(
     anchor: Rect,
     size: [f32; 2],
@@ -293,32 +348,7 @@ pub fn place_popup(
     prefer_above: bool,
     gap: f32,
 ) -> Rect {
-    let margin = 6.0;
-    let width = size[0].min((viewport.width - margin * 2.0).max(1.0));
-    let height = size[1].min((viewport.height - margin * 2.0).max(1.0));
-    let below = anchor.bottom() + gap;
-    let above = anchor.y - height - gap;
-    let y = if prefer_above {
-        if above >= viewport.y + margin {
-            above
-        } else {
-            below
-        }
-    } else if below + height <= viewport.bottom() - margin {
-        below
-    } else {
-        above
-    };
-    let min_x = viewport.x + margin;
-    let max_x = (viewport.right() - width - margin).max(min_x);
-    let min_y = viewport.y + margin;
-    let max_y = (viewport.bottom() - height - margin).max(min_y);
-    Rect::new(
-        anchor.x.clamp(min_x, max_x),
-        y.clamp(min_y, max_y),
-        width,
-        height,
-    )
+    place_popup_with_direction(anchor, size, viewport, prefer_above, gap).rect
 }
 
 pub struct ClickEvent {
@@ -2397,6 +2427,52 @@ mod layout_tests {
 
         assert_eq!(measured.rect(scaled).unwrap().height, 20.0);
         assert_eq!(measured.rect(child).unwrap().height, 80.0);
+    }
+
+    #[test]
+    fn popup_placement_reports_downward_direction() {
+        let placement = place_popup_with_direction(
+            Rect::new(20.0, 20.0, 80.0, 24.0),
+            [120.0, 100.0],
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+            false,
+            4.0,
+        );
+
+        assert_eq!(placement.direction, PopupDirection::Down);
+        assert!(placement.rect.y >= 48.0);
+    }
+
+    #[test]
+    fn popup_placement_reports_upward_direction_when_below_does_not_fit() {
+        let anchor = Rect::new(20.0, 350.0, 80.0, 24.0);
+        let placement = place_popup_with_direction(
+            anchor,
+            [120.0, 100.0],
+            Rect::new(0.0, 0.0, 400.0, 400.0),
+            false,
+            4.0,
+        );
+
+        assert_eq!(placement.direction, PopupDirection::Up);
+        assert!(placement.rect.bottom() <= anchor.y - 4.0 + f32::EPSILON);
+    }
+
+    #[test]
+    fn popup_placement_shrinks_on_one_side_without_overlapping_anchor() {
+        let anchor = Rect::new(20.0, 50.0, 80.0, 24.0);
+        let placement = place_popup_with_direction(
+            anchor,
+            [120.0, 100.0],
+            Rect::new(0.0, 0.0, 200.0, 140.0),
+            false,
+            4.0,
+        );
+
+        assert_eq!(placement.direction, PopupDirection::Down);
+        assert!(placement.rect.y >= anchor.bottom() + 4.0 - f32::EPSILON);
+        assert!(placement.rect.bottom() <= 134.0 + f32::EPSILON);
+        assert!(placement.rect.height < 100.0);
     }
 
     #[test]

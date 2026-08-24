@@ -456,8 +456,8 @@ impl WidgetGallery {
         self.accordion.tick(dt);
     }
 
-    pub fn is_value_dragging(&self) -> bool {
-        self.slider.is_dragging() || self.number.is_dragging() || self.color.is_dragging()
+    pub fn is_cursor_lock_dragging(&self) -> bool {
+        self.slider.is_dragging() || self.number.is_dragging()
     }
 
     pub fn is_animating(&self) -> bool {

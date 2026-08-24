@@ -470,7 +470,6 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
         self.numbers.is_dragging()
             || self.angles.is_number_dragging()
             || self.sliders.is_dragging()
-            || self.color_picker.is_dragging()
     }
 
     fn pointer_released(&mut self) -> bool {

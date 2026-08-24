@@ -10,13 +10,15 @@ use winit::{
     keyboard::ModifiersState,
 };
 
-use crate::{Align, BlockId, BuildCtx, Color, CursorShape, PopupState, Rect, Renderer, Size, TextureId};
+use crate::{
+    Align, BlockId, BuildCtx, Color, CursorShape, LayoutRects, PopupDirection, PopupState, Rect,
+    Renderer, Size, TextureId,
+};
 
 use super::{ease, ColorButton, Style, TextEdit};
 
 const SPEED: f32 = 18.0;
 const POPUP_W: f32 = 300.0;
-const POPUP_H: f32 = 352.0;
 const TEXTURE_WIDTH: u32 = 256;
 const COLOR_AREA_HEIGHT: u32 = 256;
 const STRIP_HEIGHT: u32 = 16;
@@ -25,7 +27,6 @@ const STRIP_HEIGHT: u32 = 16;
 enum Mode {
     Hsv,
     Rgb,
-    Okhsl,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,19 +39,27 @@ enum Drag {
 #[derive(Clone, Copy)]
 struct Layout {
     popup: Rect,
-    tabs: [Rect; 3],
-    preview: Rect,
+    tabs: [Rect; 2],
     plane: Rect,
     hue: Rect,
     alpha: Rect,
     hex: Rect,
 }
 
+#[derive(Clone, Copy)]
+struct ContentIds {
+    root: BlockId,
+    tabs: [BlockId; 2],
+    plane: BlockId,
+    hue: Option<BlockId>,
+    alpha: BlockId,
+    hex: BlockId,
+}
+
 #[derive(Default)]
 struct Textures {
     plane: Option<TextureId>,
     alpha: Option<TextureId>,
-    checker: Option<TextureId>,
     signature: Option<u64>,
 }
 
@@ -186,10 +195,6 @@ impl ColorPicker {
             STRIP_HEIGHT,
             &alpha,
         )?;
-        if self.textures.checker.is_none() {
-            let checker = checker_pixels(48, 48, 8);
-            sync_texture(renderer, &mut self.textures.checker, 48, 48, &checker)?;
-        }
         self.textures.signature = Some(signature);
         Ok(())
     }
@@ -224,7 +229,7 @@ impl ColorPicker {
         if self.open.is_open() && layout.popup.contains(point) {
             for (index, tab) in layout.tabs.into_iter().enumerate() {
                 if tab.contains(point) {
-                    self.mode = [Mode::Hsv, Mode::Rgb, Mode::Okhsl][index];
+                    self.mode = [Mode::Hsv, Mode::Rgb][index];
                     self.textures.signature = None;
                     self.hex.set_focused(false);
                     return true;
@@ -360,7 +365,6 @@ impl ColorPicker {
             @for (index, (tab, label, mode)) in [
                 (layout.tabs[0], "HSV", Mode::Hsv),
                 (layout.tabs[1], "RGB", Mode::Rgb),
-                (layout.tabs[2], "Okhsl", Mode::Okhsl),
             ].into_iter().enumerate() {
                 @let selected = self.mode == mode;
                 Rect(@format("color-picker-tab {id} {index}"), tab) {
@@ -370,15 +374,6 @@ impl ColorPicker {
                     text_color: if selected { style.text } else { style.muted };
                     text_centered; text: label; interactive;
                 }
-            }
-            Rect(@format("color-picker-preview-bg {id}"), layout.preview) {
-                top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
-                border_color: style.border; border_radius: style.radius_sm;
-                fill_texture_opt: self.textures.checker;
-            }
-            Rect(@format("color-picker-preview {id}"), layout.preview) {
-                top_overlay; opacity: opacity; fill: self.color(); border: 1;
-                border_color: style.border; border_radius: style.radius_sm;
             }
         });
 
@@ -412,18 +407,6 @@ impl ColorPicker {
                     self.current_hue(),
                     hsv_triangle_weights(hsv[1], hsv[2]),
                     "hsv",
-                    opacity,
-                );
-            }
-            Mode::Okhsl => {
-                let hsl = linear_rgb_to_okhsl([self.linear[0], self.linear[1], self.linear[2]]);
-                wheel_handles(
-                    ctx,
-                    &id,
-                    layout.plane,
-                    self.current_hue(),
-                    okhsl_triangle_weights(hsl[1], hsl[2]),
-                    "okhsl",
                     opacity,
                 );
             }
@@ -484,114 +467,156 @@ impl ColorPicker {
     }
 
     fn layout(&self, rect: Rect, bounds: Option<Rect>) -> Layout {
-        let (width, height, x, y) = if let Some(bounds) = bounds {
-            let placed = crate::place_popup(rect, [POPUP_W, POPUP_H], bounds, false, 4.0);
-            (placed.width, placed.height, placed.x, placed.y)
+        let width = POPUP_W;
+        let max_plane_size = (width - 16.0).max(1.0).min(210.0);
+        let probe_viewport = Rect::new(0.0, 0.0, width, 1.0);
+        let (probe_ids, probe) = self.measure_content(probe_viewport, max_plane_size, Size::Fit);
+        let desired_height = probe
+            .rect(probe_ids.root)
+            .expect("color picker content layout")
+            .height;
+
+        let mut placement = if let Some(bounds) = bounds {
+            crate::place_popup_with_direction(rect, [width, desired_height], bounds, false, 4.0)
         } else {
-            (
-                POPUP_W.max(rect.width.min(POPUP_W)),
-                POPUP_H,
-                rect.x,
-                rect.bottom() + 4.0,
-            )
+            crate::PopupPlacement {
+                rect: Rect::new(rect.x, rect.bottom() + 4.0, width, desired_height),
+                direction: PopupDirection::Down,
+            }
         };
 
-        let popup = Rect::new(
-            x,
-            y - (1.0 - self.t) * 5.0,
-            width,
-            height * self.t.max(0.001),
-        );
-        let inner_w = (popup.width - 16.0).max(1.0);
-        let plane_size = inner_w.min((height - 132.0).max(96.0)).min(210.0);
-        let ((tabs, preview, plane, hue, alpha, hex), measured) =
-            crate::measure_layout(popup, |ctx| {
-                let mut tabs = [BlockId(0); 3];
-                let mut preview = BlockId(0);
-                let mut plane = BlockId(0);
-                let mut hue = None;
-                let mut alpha = BlockId(0);
-                let mut hex = BlockId(0);
-                ctx.new()
-                    .column()
-                    .width(Size::Fill)
-                    .height(Size::Fill)
-                    .padding(8.0)
-                    .align_items(Align::Center)
-                    .children(|ctx| {
-                        ctx.new()
-                            .row()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(22.0))
-                            .gap(2.0)
-                            .children(|ctx| {
-                                for tab in &mut tabs {
-                                    *tab = ctx.new().width(Size::Fill).height(Size::Fill).build();
-                                }
-                            })
-                            .build();
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(5.0))
-                            .build();
-                        preview = ctx
-                            .new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(24.0))
-                            .build();
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(5.0))
-                            .build();
-                        plane = ctx
-                            .new()
-                            .width(Size::Pixels(plane_size))
-                            .height(Size::Pixels(plane_size))
-                            .build();
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(5.0))
-                            .build();
-                        if self.mode == Mode::Rgb {
-                            hue = Some(
-                                ctx.new()
-                                    .width(Size::Fill)
-                                    .height(Size::Pixels(14.0))
-                                    .build(),
-                            );
-                            ctx.new()
-                                .width(Size::Fill)
-                                .height(Size::Pixels(5.0))
-                                .build();
-                        }
-                        alpha = ctx
-                            .new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(14.0))
-                            .build();
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(7.0))
-                            .build();
-                        hex = ctx
-                            .new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(24.0))
-                            .build();
-                    })
-                    .build();
-                (tabs, preview, plane, hue, alpha, hex)
-            });
-        let alpha = measured.rect(alpha).expect("color picker alpha layout");
+        let overflow = (desired_height - placement.rect.height).max(0.0);
+        let plane_size = (max_plane_size - overflow).max(48.0);
+        if overflow > 0.001 {
+            let (fit_ids, fit) = self.measure_content(probe_viewport, plane_size, Size::Fit);
+            let fit_height = fit
+                .rect(fit_ids.root)
+                .expect("color picker fitted content layout")
+                .height;
+            if let Some(bounds) = bounds {
+                placement = crate::place_popup_with_direction(
+                    rect,
+                    [width, fit_height],
+                    bounds,
+                    placement.direction == PopupDirection::Up,
+                    4.0,
+                );
+            } else {
+                placement.rect.height = fit_height;
+            }
+        }
+
+        let animated_height = placement.rect.height * self.t.max(0.001);
+        let popup = match placement.direction {
+            PopupDirection::Down => Rect::new(
+                placement.rect.x,
+                placement.rect.y,
+                placement.rect.width,
+                animated_height,
+            ),
+            PopupDirection::Up => Rect::new(
+                placement.rect.x,
+                placement.rect.bottom() - animated_height,
+                placement.rect.width,
+                animated_height,
+            ),
+        };
+
+        let (ids, measured) = self.measure_content(popup, plane_size, Size::Fill);
+        let alpha = measured.rect(ids.alpha).expect("color picker alpha layout");
         Layout {
             popup,
-            tabs: tabs.map(|id| measured.rect(id).expect("color picker tab layout")),
-            preview: measured.rect(preview).expect("color picker preview layout"),
-            plane: measured.rect(plane).expect("color picker plane layout"),
-            hue: hue.and_then(|id| measured.rect(id)).unwrap_or(alpha),
+            tabs: ids
+                .tabs
+                .map(|id| measured.rect(id).expect("color picker tab layout")),
+            plane: measured.rect(ids.plane).expect("color picker plane layout"),
+            hue: ids.hue.and_then(|id| measured.rect(id)).unwrap_or(alpha),
             alpha,
-            hex: measured.rect(hex).expect("color picker hex layout"),
+            hex: measured.rect(ids.hex).expect("color picker hex layout"),
         }
+    }
+
+    fn measure_content(
+        &self,
+        viewport: Rect,
+        plane_size: f32,
+        height: Size,
+    ) -> (ContentIds, LayoutRects) {
+        crate::measure_layout(viewport, |ctx| {
+            let mut tabs = [BlockId(0); 2];
+            let mut plane = BlockId(0);
+            let mut hue = None;
+            let mut alpha = BlockId(0);
+            let mut hex = BlockId(0);
+            let root = ctx
+                .new()
+                .column()
+                .width(Size::Fill)
+                .height(height)
+                .padding(8.0)
+                .align_items(Align::Center)
+                .children(|ctx| {
+                    ctx.new()
+                        .row()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(22.0))
+                        .gap(2.0)
+                        .children(|ctx| {
+                            for tab in &mut tabs {
+                                *tab = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                            }
+                        })
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(5.0))
+                        .build();
+                    plane = ctx
+                        .new()
+                        .width(Size::Pixels(plane_size))
+                        .height(Size::Pixels(plane_size))
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(5.0))
+                        .build();
+                    if self.mode == Mode::Rgb {
+                        hue = Some(
+                            ctx.new()
+                                .width(Size::Fill)
+                                .height(Size::Pixels(14.0))
+                                .build(),
+                        );
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(5.0))
+                            .build();
+                    }
+                    alpha = ctx
+                        .new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(14.0))
+                        .build();
+                    ctx.new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(7.0))
+                        .build();
+                    hex = ctx
+                        .new()
+                        .width(Size::Fill)
+                        .height(Size::Pixels(24.0))
+                        .build();
+                })
+                .build();
+            ContentIds {
+                root,
+                tabs,
+                plane,
+                hue,
+                alpha,
+                hex,
+            }
+        })
     }
 
     fn apply_hex(&mut self) {
@@ -601,24 +626,12 @@ impl ColorPicker {
     }
 
     fn current_hue(&self) -> f32 {
-        match self.mode {
-            Mode::Hsv | Mode::Rgb => {
-                let srgb = linear_to_srgb_rgba(self.linear);
-                let hsv = rgb_to_hsv([srgb[0], srgb[1], srgb[2]]);
-                if hsv[1] > 1e-4 && hsv[2] > 1e-4 {
-                    hsv[0]
-                } else {
-                    self.hue
-                }
-            }
-            Mode::Okhsl => {
-                let hsl = linear_rgb_to_okhsl([self.linear[0], self.linear[1], self.linear[2]]);
-                if hsl[1] > 1e-4 && hsl[2] > 1e-4 && hsl[2] < 1.0 - 1e-4 {
-                    hsl[0]
-                } else {
-                    self.hue
-                }
-            }
+        let srgb = linear_to_srgb_rgba(self.linear);
+        let hsv = rgb_to_hsv([srgb[0], srgb[1], srgb[2]]);
+        if hsv[1] > 1e-4 && hsv[2] > 1e-4 {
+            hsv[0]
+        } else {
+            self.hue
         }
     }
 
@@ -633,14 +646,6 @@ impl ColorPicker {
                         let [s, v] = hsv_from_triangle_weights(weights);
                         let rgb = hsv_to_rgb([hue, s, v]);
                         self.set_linear(srgb_to_linear_rgba([rgb[0], rgb[1], rgb[2], alpha]));
-                        self.hue = hue;
-                    }
-                    Mode::Okhsl => {
-                        let hue = self.current_hue();
-                        let weights = triangle_weights_clamped(layout.plane, hue, point);
-                        let [s, l] = okhsl_from_triangle_weights(weights);
-                        let rgb = okhsl_to_linear_rgb([hue, s, l]);
-                        self.set_linear([rgb[0], rgb[1], rgb[2], alpha]);
                         self.hue = hue;
                     }
                     Mode::Rgb => {
@@ -670,12 +675,6 @@ impl ColorPicker {
                         let hsv = rgb_to_hsv([srgb[0], srgb[1], srgb[2]]);
                         let rgb = hsv_to_rgb([hue, hsv[1], hsv[2]]);
                         self.set_linear(srgb_to_linear_rgba([rgb[0], rgb[1], rgb[2], alpha]));
-                    }
-                    Mode::Okhsl => {
-                        let hsl =
-                            linear_rgb_to_okhsl([self.linear[0], self.linear[1], self.linear[2]]);
-                        let rgb = okhsl_to_linear_rgb([hue, hsl[1], hsl[2]]);
-                        self.set_linear([rgb[0], rgb[1], rgb[2], alpha]);
                     }
                     Mode::Rgb => {}
                 }
@@ -870,24 +869,6 @@ fn hsv_from_triangle_weights(weights: [f32; 3]) -> [f32; 2] {
     [saturation, value]
 }
 
-fn okhsl_triangle_weights(saturation: f32, lightness: f32) -> [f32; 3] {
-    let lightness = lightness.clamp(0.0, 1.0);
-    let hue = saturation.clamp(0.0, 1.0) * 2.0 * lightness.min(1.0 - lightness);
-    let white = (lightness - hue * 0.5).clamp(0.0, 1.0);
-    [hue, white, (1.0 - hue - white).clamp(0.0, 1.0)]
-}
-
-fn okhsl_from_triangle_weights(weights: [f32; 3]) -> [f32; 2] {
-    let lightness = (weights[1] + weights[0] * 0.5).clamp(0.0, 1.0);
-    let max_hue = 2.0 * lightness.min(1.0 - lightness);
-    let saturation = if max_hue <= 1e-7 {
-        0.0
-    } else {
-        (weights[0] / max_hue).clamp(0.0, 1.0)
-    };
-    [saturation, lightness]
-}
-
 fn wheel_triangle_pixel(
     mode: Mode,
     selected_hue: f32,
@@ -928,11 +909,6 @@ fn wheel_triangle_pixel(
             let rgb = hsv_to_rgb([selected_hue, saturation, value]);
             [rgb[0], rgb[1], rgb[2], 1.0]
         }
-        Mode::Okhsl => {
-            let [saturation, lightness] = okhsl_from_triangle_weights(weights);
-            let linear = okhsl_to_linear_rgb([selected_hue, saturation, lightness]);
-            linear_to_srgb_rgba([linear[0], linear[1], linear[2], 1.0])
-        }
         Mode::Rgb => [0.0, 0.0, 0.0, 0.0],
     };
     color[3] = coverage;
@@ -962,17 +938,9 @@ fn point_line_distance(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     ((point[0] - a[0]) * ab[1] - (point[1] - a[1]) * ab[0]).abs() / length
 }
 
-fn hue_color(mode: Mode, hue: f32) -> [f32; 4] {
-    match mode {
-        Mode::Okhsl => {
-            let linear = okhsl_to_linear_rgb([hue, 1.0, 0.5]);
-            linear_to_srgb_rgba([linear[0], linear[1], linear[2], 1.0])
-        }
-        Mode::Hsv | Mode::Rgb => {
-            let rgb = hsv_to_rgb([hue, 1.0, 1.0]);
-            [rgb[0], rgb[1], rgb[2], 1.0]
-        }
-    }
+fn hue_color(_mode: Mode, hue: f32) -> [f32; 4] {
+    let rgb = hsv_to_rgb([hue, 1.0, 1.0]);
+    [rgb[0], rgb[1], rgb[2], 1.0]
 }
 
 fn wheel_handles(
@@ -1097,27 +1065,6 @@ fn sync_texture(
         *texture = Some(renderer.register_texture_rgba8(width, height, pixels)?);
     }
     Ok(())
-}
-
-fn checker_pixels(width: u32, height: u32, tile: usize) -> Vec<u8> {
-    let width = width as usize;
-    let height = height as usize;
-    let mut pixels = vec![0u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let checker = if ((x / tile) + (y / tile)).is_multiple_of(2) {
-                0.30
-            } else {
-                0.52
-            };
-            write_pixel(
-                &mut pixels,
-                (y * width + x) * 4,
-                [checker, checker, checker, 1.0],
-            );
-        }
-    }
-    pixels
 }
 
 fn alpha_pixels(linear: [f32; 4]) -> Vec<u8> {
@@ -1254,177 +1201,24 @@ fn byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn linear_rgb_to_okhsl(rgb: [f32; 3]) -> [f32; 3] {
-    let lab = linear_srgb_to_oklab(rgb);
-    let chroma = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
-    if chroma <= 1e-7 {
-        return [0.0, 0.0, toe(lab[0]).clamp(0.0, 1.0)];
-    }
-    let a = lab[1] / chroma;
-    let b = lab[2] / chroma;
-    let h = (0.5 + 0.5 * (-lab[2]).atan2(-lab[1]) / std::f32::consts::PI).rem_euclid(1.0);
-    let [c0, cmid, cmax] = okhsl_chromas(lab[0], a, b);
-    let mid = 0.8;
-    let s = if chroma < cmid {
-        let k1 = mid * c0;
-        let k2 = 1.0 - safe_div(k1, cmid);
-        let t = safe_div(chroma, k1 + k2 * chroma);
-        t * mid
-    } else {
-        let k0 = cmid;
-        let k1 = (1.0 - mid) * cmid * cmid * 1.25 * 1.25 / c0.max(1e-7);
-        let k2 = 1.0 - safe_div(k1, cmax - cmid);
-        let delta = chroma - k0;
-        let t = safe_div(delta, k1 + k2 * delta);
-        mid + (1.0 - mid) * t
-    };
-    [h, s.clamp(0.0, 1.0), toe(lab[0]).clamp(0.0, 1.0)]
-}
-fn okhsl_to_linear_rgb(okhsl: [f32; 3]) -> [f32; 3] {
-    let h = okhsl[0].rem_euclid(1.0);
-    let s = okhsl[1].clamp(0.0, 1.0);
-    let l = okhsl[2].clamp(0.0, 1.0);
-    if l <= 0.0 {
-        return [0.0; 3];
-    }
-    if l >= 1.0 {
-        return [1.0; 3];
-    }
-    let angle = 2.0 * std::f32::consts::PI * h;
-    let a = angle.cos();
-    let b = angle.sin();
-    let lightness = toe_inv(l);
-    let [c0, cmid, cmax] = okhsl_chromas(lightness, a, b);
-    let mid = 0.8;
-    let chroma = if s < mid {
-        let t = 1.25 * s;
-        let k1 = mid * c0;
-        let k2 = 1.0 - safe_div(k1, cmid);
-        safe_div(t * k1, 1.0 - k2 * t)
-    } else {
-        let t = (s - mid) / (1.0 - mid);
-        let k0 = cmid;
-        let k1 = (1.0 - mid) * cmid * cmid * 1.25 * 1.25 / c0.max(1e-7);
-        let k2 = 1.0 - safe_div(k1, cmax - cmid);
-        k0 + safe_div(t * k1, 1.0 - k2 * t)
-    };
-    let rgb = oklab_to_linear_srgb([lightness, chroma * a, chroma * b]);
-    [
-        rgb[0].clamp(0.0, 1.0),
-        rgb[1].clamp(0.0, 1.0),
-        rgb[2].clamp(0.0, 1.0),
-    ]
-}
-fn okhsl_chromas(l: f32, a: f32, b: f32) -> [f32; 3] {
-    let cmax = max_chroma(l, a, b);
-    let [lc, cc] = numeric_cusp(a, b);
-    let smax = cc / lc.max(1e-6);
-    let tmax = cc / (1.0 - lc).max(1e-6);
-    let triangle = (l * smax).min((1.0 - l) * tmax).max(1e-7);
-    let k = cmax / triangle;
-    let [smid, tmid] = st_mid(a, b);
-    let ca = (l * smid).max(1e-7);
-    let cb = ((1.0 - l) * tmid).max(1e-7);
-    let cmid = 0.9 * k * (1.0 / (1.0 / ca.powi(4) + 1.0 / cb.powi(4))).sqrt().sqrt();
-    let ca0 = (l * 0.4).max(1e-7);
-    let cb0 = ((1.0 - l) * 0.8).max(1e-7);
-    let c0 = (1.0 / (1.0 / (ca0 * ca0) + 1.0 / (cb0 * cb0))).sqrt();
-    [
-        c0.max(1e-7),
-        cmid.clamp(1e-7, cmax.max(1e-7)),
-        cmax.max(1e-7),
-    ]
-}
-fn numeric_cusp(a: f32, b: f32) -> [f32; 2] {
-    let (mut lo, mut hi) = (0.001, 0.999);
-    for _ in 0..18 {
-        let l1 = lo + (hi - lo) / 3.0;
-        let l2 = hi - (hi - lo) / 3.0;
-        if max_chroma(l1, a, b) < max_chroma(l2, a, b) {
-            lo = l1
-        } else {
-            hi = l2
-        }
-    }
-    let l = (lo + hi) * 0.5;
-    [l, max_chroma(l, a, b)]
-}
-fn max_chroma(l: f32, a: f32, b: f32) -> f32 {
-    if l <= 0.0 || l >= 1.0 {
-        return 0.0;
-    }
-    let (mut lo, mut hi) = (0.0, 0.6);
-    while in_gamut(oklab_to_linear_srgb([l, hi * a, hi * b])) && hi < 2.0 {
-        hi *= 1.5
-    }
-    for _ in 0..18 {
-        let mid = (lo + hi) * 0.5;
-        if in_gamut(oklab_to_linear_srgb([l, mid * a, mid * b])) {
-            lo = mid
-        } else {
-            hi = mid
-        }
-    }
-    lo
-}
-fn st_mid(a: f32, b: f32) -> [f32; 2] {
-    let s = 0.11516993
-        + 1.0
-            / (7.4477897
-                + 4.1590123 * b
-                + a * (-2.1955736
-                    + 1.751984 * b
-                    + a * (-2.1370494 - 10.02301 * b
-                        + a * (-4.2489457 + 5.387708 * b + 4.69891 * a))));
-    let t = 0.11239642
-        + 1.0
-            / (1.6132032 - 0.6812438 * b
-                + a * (0.40370613
-                    + 0.9014812 * b
-                    + a * (-0.27087942
-                        + 0.6122399 * b
-                        + a * (0.00299215 - 0.45399567 * b - 0.14661872 * a))));
-    [s, t]
-}
-fn toe(x: f32) -> f32 {
-    let k1 = 0.206;
-    let k2 = 0.03;
-    let k3 = (1.0 + k1) / (1.0 + k2);
-    0.5 * (k3 * x - k1 + ((k3 * x - k1).powi(2) + 4.0 * k2 * k3 * x).sqrt())
-}
-fn toe_inv(x: f32) -> f32 {
-    let k1 = 0.206;
-    let k2 = 0.03;
-    let k3 = (1.0 + k1) / (1.0 + k2);
-    (x * x + k1 * x) / (k3 * (x + k2).max(1e-7))
-}
-fn linear_srgb_to_oklab(rgb: [f32; 3]) -> [f32; 3] {
-    let l = (0.41222146 * rgb[0] + 0.53633255 * rgb[1] + 0.051445995 * rgb[2]).cbrt();
-    let m = (0.2119035 * rgb[0] + 0.6806995 * rgb[1] + 0.10739696 * rgb[2]).cbrt();
-    let s = (0.08830246 * rgb[0] + 0.28171885 * rgb[1] + 0.6299787 * rgb[2]).cbrt();
-    [
-        0.21045426 * l + 0.7936178 * m - 0.004072047 * s,
-        1.9779985 * l - 2.4285922 * m + 0.4505937 * s,
-        0.025904037 * l + 0.78277177 * m - 0.80867577 * s,
-    ]
-}
-fn oklab_to_linear_srgb(lab: [f32; 3]) -> [f32; 3] {
-    let l = (lab[0] + 0.39633778 * lab[1] + 0.21580376 * lab[2]).powi(3);
-    let m = (lab[0] - 0.105561346 * lab[1] - 0.06385417 * lab[2]).powi(3);
-    let s = (lab[0] - 0.08948418 * lab[1] - 1.2914855 * lab[2]).powi(3);
-    [
-        4.0767417 * l - 3.3077116 * m + 0.23096994 * s,
-        -1.268438 * l + 2.6097574 * m - 0.34131938 * s,
-        -0.0041960864 * l - 0.7034186 * m + 1.7076147 * s,
-    ]
-}
-fn in_gamut(rgb: [f32; 3]) -> bool {
-    rgb.into_iter().all(|v| (-1e-5..=1.00001).contains(&v))
-}
-fn safe_div(a: f32, b: f32) -> f32 {
-    if b.abs() <= 1e-7 {
-        0.0
-    } else {
-        a / b
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popup_height_is_intrinsic_to_mode_content() {
+        let mut picker = ColorPicker::new(Color::WHITE);
+        picker.t = 1.0;
+        let control = Rect::new(40.0, 40.0, 120.0, 24.0);
+        let bounds = Rect::new(0.0, 0.0, 500.0, 700.0);
+
+        picker.mode = Mode::Hsv;
+        let hsv = picker.layout(control, Some(bounds));
+        picker.mode = Mode::Rgb;
+        let rgb = picker.layout(control, Some(bounds));
+
+        assert!(rgb.popup.height > hsv.popup.height);
+        assert!(hsv.popup.y >= control.bottom() + 4.0 - f32::EPSILON);
+        assert!(rgb.popup.y >= control.bottom() + 4.0 - f32::EPSILON);
     }
 }
