@@ -868,10 +868,10 @@ impl RenderPanelState {
                     style,
                 );
             }
-            three_buttons_at(
+            two_buttons_at(
                 ctx,
                 layout.begin_buttons,
-                ["Playhead", "Start", ""],
+                ["Playhead", "Start"],
                 "render-begin",
             );
             label_at(
@@ -897,10 +897,10 @@ impl RenderPanelState {
                     style,
                 );
             }
-            three_buttons_at(
+            two_buttons_at(
                 ctx,
                 layout.end_buttons,
-                ["Playhead", "End", ""],
+                ["Playhead", "End"],
                 "render-end",
             );
             toggle_row_at(
@@ -1288,8 +1288,8 @@ struct RenderRects {
     path_label: Rect,
     path: Rect,
     overwrite: RenderFieldRects,
-    begin_buttons: [Rect; 3],
-    end_buttons: [Rect; 3],
+    begin_buttons: [Rect; 2],
+    end_buttons: [Rect; 2],
     background: RenderFieldRects,
     transcode: RenderFieldRects,
     action: Rect,
@@ -1334,8 +1334,8 @@ struct RenderRectIds {
     path_label: BlockId,
     path: BlockId,
     overwrite: RenderFieldIds,
-    begin_buttons: [BlockId; 3],
-    end_buttons: [BlockId; 3],
+    begin_buttons: [BlockId; 2],
+    end_buttons: [BlockId; 2],
     background: RenderFieldIds,
     transcode: RenderFieldIds,
     status: BlockId,
@@ -1396,8 +1396,8 @@ fn build_field_row(ctx: &mut kama_ui::BuildCtx) -> RenderFieldIds {
     field
 }
 
-fn build_triple_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 3] {
-    let mut buttons = [BlockId::default(); 3];
+fn build_two_button_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 2] {
+    let mut buttons = [BlockId::default(); 2];
     ctx.new()
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
@@ -1550,9 +1550,9 @@ fn measure_render_rects(
 
                 let (section, section_body) = build_section(ctx, open[4], |ctx| {
                     ids.numbers[RenderNumber::Begin as usize] = build_field_row(ctx);
-                    ids.begin_buttons = build_triple_row(ctx);
+                    ids.begin_buttons = build_two_button_row(ctx);
                     ids.numbers[RenderNumber::End as usize] = build_field_row(ctx);
-                    ids.end_buttons = build_triple_row(ctx);
+                    ids.end_buttons = build_two_button_row(ctx);
                     ids.background = build_field_row(ctx);
                     ids.transcode = build_field_row(ctx);
                     ids.status = build_full_width_item(ctx, 20.0, 20.0, Align::Start);
@@ -1651,17 +1651,15 @@ fn toggle_row_at(ctx: &mut kama_ui::BuildCtx, field: RenderFieldRects, name: &st
         crate::widgets::component_style(),
     );
 }
-fn three_buttons_at(ctx: &mut kama_ui::BuildCtx, rects: [Rect; 3], labels: [&str; 3], id: &str) {
+fn two_buttons_at(ctx: &mut kama_ui::BuildCtx, rects: [Rect; 2], labels: [&str; 2], id: &str) {
     for (index, (rect, label)) in rects.into_iter().zip(labels).enumerate() {
-        if !label.is_empty() {
-            Button::build(
-                ctx,
-                format!("{id}-{index}"),
-                rect,
-                label,
-                crate::widgets::component_style(),
-            );
-        }
+        Button::build(
+            ctx,
+            format!("{id}-{index}"),
+            rect,
+            label,
+            crate::widgets::component_style(),
+        );
     }
 }
 
@@ -1680,5 +1678,31 @@ fn save_user_presets(presets: &[RenderPreset]) {
 impl Drop for RenderPanelState {
     fn drop(&mut self) {
         self.cancel_active();
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn assert_range_button_layout(width: f32) {
+        let preset = built_in_presets().remove(0);
+        let layout = measure_render_rects(width, 0.0, &preset, [0.0, 0.0, 0.0, 0.0, 1.0]);
+
+        for (buttons, number) in [
+            (layout.begin_buttons, layout.number(RenderNumber::Begin)),
+            (layout.end_buttons, layout.number(RenderNumber::End)),
+        ] {
+            assert!((buttons[0].width - buttons[1].width).abs() < 0.001);
+            assert!((buttons[0].x - number.x).abs() < 0.001);
+            assert!((buttons[1].right() - number.right()).abs() < 0.001);
+            assert!((buttons[1].x - buttons[0].right() - 4.0).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn range_buttons_split_the_control_column_evenly() {
+        assert_range_button_layout(180.0);
+        assert_range_button_layout(480.0);
     }
 }
