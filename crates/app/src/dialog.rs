@@ -292,6 +292,7 @@ pub(crate) fn build_shell<K1: Hash, K2: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>
     build_panel_shell(ctx, panel_key, panel, opacity, children);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_search_dialog<K1, K2, K3, F>(
     ctx: &mut kama_ui::BuildCtx,
     scrim_key: K1,

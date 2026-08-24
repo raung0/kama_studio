@@ -1587,6 +1587,7 @@ impl VideoGpuRuntime {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_compiled_stage_sized(
         &mut self,
         device: &wgpu::Device,
@@ -1653,6 +1654,7 @@ impl VideoGpuRuntime {
         output
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn gaussian_blur(
         &mut self,
         device: &wgpu::Device,
@@ -2308,6 +2310,7 @@ fn stage_for_single_node(node: &EffectNode) -> CompiledStage {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn effect_uniform_buffers(
     uploads: &mut UniformUploadArena,
     parameter_scratch: &mut Vec<[f32; 4]>,
@@ -2541,6 +2544,7 @@ fn cached_dispatch_bind_group(
     group
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_unary(
     cache: &mut HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
     device: &wgpu::Device,
@@ -2583,6 +2587,7 @@ fn dispatch_unary(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_unary_uniform(
     cache: &mut HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
     device: &wgpu::Device,
@@ -2622,6 +2627,7 @@ fn dispatch_unary_uniform(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_binary_uniform(
     cache: &mut HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
     device: &wgpu::Device,
@@ -2665,6 +2671,7 @@ fn dispatch_binary_uniform(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_source(
     cache: &mut HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
     device: &wgpu::Device,
@@ -2705,6 +2712,7 @@ fn dispatch_source(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_binary(
     cache: &mut HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
     device: &wgpu::Device,

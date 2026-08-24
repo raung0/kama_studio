@@ -468,7 +468,7 @@ impl ColorPicker {
 
     fn layout(&self, rect: Rect, bounds: Option<Rect>) -> Layout {
         let width = POPUP_W;
-        let max_plane_size = (width - 16.0).max(1.0).min(210.0);
+        let max_plane_size = (width - 16.0).clamp(1.0, 210.0);
         let probe_viewport = Rect::new(0.0, 0.0, width, 1.0);
         let (probe_ids, probe) = self.measure_content(probe_viewport, max_plane_size, Size::Fit);
         let desired_height = probe

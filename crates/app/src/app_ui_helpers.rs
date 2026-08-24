@@ -1156,6 +1156,7 @@ pub(super) fn palette_row_at(
         .position(|row| row.contains(point))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_command_palette_dialog(
     ctx: &mut ui::Ui<'_>,
     viewport_width: f32,

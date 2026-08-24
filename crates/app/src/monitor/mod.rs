@@ -1337,6 +1337,7 @@ impl MonitorState {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn begin_gizmo_drag(
         &mut self,
         handle: TransformGizmoHandle,

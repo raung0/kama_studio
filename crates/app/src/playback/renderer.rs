@@ -1581,6 +1581,7 @@ impl FrameRenderer {
             .unwrap_or_else(|| SourceGeometry::canvas(preview_width, preview_height))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_source(
         &mut self,
         render: &mut RenderContext<'_>,
@@ -2494,6 +2495,7 @@ impl FrameRenderer {
         output
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn refresh_preview(
         &mut self,
         renderer: &mut Renderer,

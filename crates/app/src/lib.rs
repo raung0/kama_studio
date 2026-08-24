@@ -681,7 +681,7 @@ enum Modal {
     Discard(ActionDialog),
     Busy(ActionDialog),
     Settings(Box<SettingsDialog>),
-    Keybinds(KeybindsDialog),
+    Keybinds(Box<KeybindsDialog>),
     Composition(NewCompositionDialog),
     SpeedDuration(SpeedDurationDialog),
     MissingMedia(MissingMediaDialog),
@@ -4679,7 +4679,7 @@ impl EditorApp {
                 SettingsDialog::new(&self.plugin_paths),
             ))),
             EditorCommand::OpenKeybinds => {
-                self.open_modal(Modal::Keybinds(KeybindsDialog::new()));
+                self.open_modal(Modal::Keybinds(Box::new(KeybindsDialog::new())));
             }
             EditorCommand::OpenUrl(url) => {
                 if let Err(error) = open::that(url) {
