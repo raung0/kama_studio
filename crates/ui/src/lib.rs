@@ -6,8 +6,10 @@ pub mod control_registry;
 pub mod dock;
 pub mod layout;
 use std::{
+    cell::Cell,
     collections::HashMap,
     hash::{Hash, Hasher},
+    rc::Rc,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Instant,
 };
@@ -331,6 +333,32 @@ pub struct InputState {
     pub mouse_released: bool,
 }
 
+/// Shared open state for a dismissible top-level popup.
+///
+/// Popup components own this state; the UI runtime keeps a clone for the
+/// currently rendered popup so an outside press can dismiss it before the
+/// application dispatches that press to underlying content.
+#[derive(Clone, Debug, Default)]
+pub struct PopupState(Rc<Cell<bool>>);
+
+impl PopupState {
+    pub fn is_open(&self) -> bool {
+        self.0.get()
+    }
+
+    pub fn set_open(&self, open: bool) {
+        self.0.set(open);
+    }
+
+    pub fn close(&self) {
+        self.set_open(false);
+    }
+
+    pub fn toggle(&self) {
+        self.set_open(!self.is_open());
+    }
+}
+
 /// Fill texture sizing modes.
 ///
 /// `0` preserves existing stretch behavior. `TEXTURE_MODE_CONTAIN` preserves
@@ -370,6 +398,7 @@ pub struct Block {
     pub vertical_scroll: Option<ScrollState>,
     pub cursor: CursorShape,
 
+    popup_dismiss: Option<PopupState>,
     custom_vertices: Option<Vec<[f32; 2]>>,
     interactive: bool,
     clip_children: bool,
@@ -431,6 +460,7 @@ impl Block {
             horizontal_scroll: None,
             vertical_scroll: None,
             cursor: CursorShape::Auto,
+            popup_dismiss: None,
             custom_vertices: None,
             interactive: false,
             clip_children: true,
@@ -691,6 +721,14 @@ impl BlockBuilder<'_> {
         self
     }
 
+    /// Marks this top-level popup surface as owning outside-press dismissal.
+    pub fn dismissible_popup(self, state: PopupState) -> Self {
+        let block = &mut *self.block;
+        block.layer = Layer::Popup;
+        block.popup_dismiss = Some(state);
+        self
+    }
+
     pub fn on_mouse_enter(self, callback: impl FnMut() + 'static) -> Self {
         self.block.on_mouse_enter = Some(Box::new(callback));
         self.block.interactive = true;
@@ -806,6 +844,7 @@ pub struct Gui {
     last_frame: Instant,
     frame_index: u64,
     tooltip: TooltipState,
+    popup_capture: Option<(Rect, PopupState)>,
 }
 
 impl Default for Gui {
@@ -827,6 +866,7 @@ impl Gui {
             last_frame: Instant::now(),
             frame_index: 0,
             tooltip: TooltipState::default(),
+            popup_capture: None,
         }
     }
 
@@ -841,6 +881,24 @@ impl Gui {
 
     pub fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
+    }
+
+    /// Dismisses the currently rendered top-level popup when `point` is
+    /// outside its surface. Returns true when the press must be consumed.
+    pub fn consume_popup_press(&mut self, point: [f32; 2]) -> bool {
+        let Some((rect, state)) = self.popup_capture.as_ref() else {
+            return false;
+        };
+        if !state.is_open() {
+            self.popup_capture = None;
+            return false;
+        }
+        if rect.contains(point) {
+            return false;
+        }
+        state.close();
+        self.popup_capture = None;
+        true
     }
 
     pub fn measure_text_ink_width(&mut self, text: &str, font_size: f32, scale: f32) -> f32 {
@@ -880,6 +938,19 @@ impl Gui {
     }
 }
 
+fn popup_capture(blocks: &[Block]) -> Option<(Rect, PopupState)> {
+    let mut capture = None;
+    for block in blocks {
+        if let Some(state) = block.popup_dismiss.as_ref() {
+            capture = Some((block.rect, state.clone()));
+        }
+        if let Some(child) = popup_capture(&block.children) {
+            capture = Some(child);
+        }
+    }
+    capture
+}
+
 pub struct Ui<'a> {
     gui: &'a mut Gui,
     renderer: &'a mut Renderer,
@@ -917,6 +988,7 @@ impl Ui<'_> {
 
         let mut roots = std::mem::take(&mut self.root.blocks);
         layout_roots(&mut roots, viewport);
+        self.gui.popup_capture = popup_capture(&roots);
         self.handle_interaction(&mut roots);
         self.update_animations(&mut roots);
         let tooltip_size = if self.gui.tooltip.opacity > 0.0 {

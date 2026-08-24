@@ -456,11 +456,7 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
     fn blur(&mut self) {
         self.numbers.blur();
         self.angles.blur();
-        self.enums.close();
         self.sliders.pointer_released();
-        self.color_picker.close();
-        self.color_target = None;
-        self.color_rect = None;
     }
 
     fn is_dragging(&self) -> bool {
@@ -494,6 +490,7 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
             [point[0] - rect.x, point[1] - rect.y],
         )
     }
+
 
     fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool
     where
@@ -899,6 +896,7 @@ impl InspectorState {
         self.context_menu = None;
         self.clear_editor_focus();
     }
+
 
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         let context_menu = self.context_menu.as_ref().is_some_and(|menu| {

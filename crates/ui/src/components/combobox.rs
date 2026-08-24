@@ -1,6 +1,6 @@
 use std::{cell::Cell, fmt::Display};
 
-use crate::{Align, BuildCtx, Color, IconId, Rect, ScrollState, Size};
+use crate::{Align, BuildCtx, Color, IconId, PopupState, Rect, ScrollState, Size};
 
 use super::{ease, Style};
 
@@ -17,7 +17,7 @@ pub enum ComboBoxOpenDirection {
 
 pub struct ComboBox {
     selected: usize,
-    open: bool,
+    open: PopupState,
     t: f32,
     open_direction: ComboBoxOpenDirection,
     scroll: Cell<f32>,
@@ -28,7 +28,7 @@ impl ComboBox {
     pub fn new(selected: usize) -> Self {
         Self {
             selected,
-            open: false,
+            open: PopupState::default(),
             t: 0.0,
             open_direction: ComboBoxOpenDirection::Down,
             scroll: Cell::new(0.0),
@@ -50,27 +50,27 @@ impl ComboBox {
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.open.is_open()
     }
 
     pub fn close(&mut self) {
-        self.open = false;
+        self.open.close();
     }
 
     pub fn toggle(&mut self) {
-        self.open = !self.open;
+        self.open.toggle();
     }
 
     pub fn tick(&mut self, dt: f32) {
-        ease(&mut self.t, self.open as u8 as f32, SPEED, dt);
+        ease(&mut self.t, self.open.is_open() as u8 as f32, SPEED, dt);
     }
 
     pub fn is_animating(&self) -> bool {
-        (self.t - self.open as u8 as f32).abs() > 0.001
+        (self.t - self.open.is_open() as u8 as f32).abs() > 0.001
     }
 
     pub fn option_at(&self, rect: Rect, point: [f32; 2], len: usize) -> Option<usize> {
-        if !self.open {
+        if !self.open.is_open() {
             return None;
         }
         let popup = self.popup_rect(rect, len)?;
@@ -83,7 +83,7 @@ impl ComboBox {
     }
 
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2], len: usize) -> bool {
-        self.open
+        self.open.is_open()
             && self
                 .popup_rect(rect, len)
                 .is_some_and(|popup| popup.contains(point))
@@ -110,7 +110,7 @@ impl ComboBox {
     pub fn select(&mut self, index: usize, close: bool) {
         self.selected = index;
         if close {
-            self.open = false;
+            self.open.close();
         }
     }
 
@@ -147,9 +147,9 @@ impl ComboBox {
                 bounds: (rect.x, rect.y, rect.width, rect.height);
                 padding: 0.0;
                 align_items: Align::Center;
-                fill: if self.open { style.focused } else { style.control };
+                fill: if self.open.is_open() { style.focused } else { style.control };
                 border: 1;
-                border_color: if self.open { style.accent } else { style.border };
+                border_color: if self.open.is_open() { style.accent } else { style.border };
                 border_radius: style.radius_sm;
                 interactive;
 
@@ -200,7 +200,7 @@ impl ComboBox {
         crate::ui!(ctx, {
             Block {
                 id: @format("combobox-popup {}", id);
-                top_overlay;
+                top_overlay; dismissible_popup: self.open.clone();
                 bounds: (popup.x, popup.y, popup.width, popup.height);
                 fill: Color::TRANSPARENT;
                 backdrop_blur: 22.0;

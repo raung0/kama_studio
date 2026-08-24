@@ -881,97 +881,33 @@ fn measure_palette_rects(
     visible_rows: usize,
     constrained: bool,
 ) -> (PaletteRects, Rect) {
-    #[derive(Default)]
-    struct Ids {
-        title: Option<ui::BlockId>,
-        input: ui::BlockId,
-        back: Option<ui::BlockId>,
-        body: ui::BlockId,
-        footer: Option<ui::BlockId>,
-    }
-
     let metrics = palette_metrics(state);
-    let ((root, ids), measured) = ui::measure_layout(viewport, |ctx| {
-        let mut ids = Ids::default();
-        let root = ctx
-            .new()
-            .width(Size::Fill)
-            .height(if constrained { Size::Fill } else { Size::Fit })
-            .padding(dialog::SEARCH_DIALOG_PADDING)
-            .gap(dialog::SEARCH_DIALOG_GAP)
-            .column()
-            .children(|ctx| {
-                if metrics.title_h > 0.0 {
-                    ids.title = Some(
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(metrics.title_h))
-                            .build(),
-                    );
-                }
-                ids.input = ctx
-                    .new()
-                    .width(Size::Fill)
-                    .height(Size::Pixels(metrics.input_h))
-                    .build();
-                if metrics.breadcrumb_h > 0.0 {
-                    ids.back = Some(
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(metrics.breadcrumb_h))
-                            .build(),
-                    );
-                }
-                ids.body = ctx
-                    .new()
-                    .width(Size::Fill)
-                    .height(if constrained {
-                        Size::Fill
-                    } else if visible_rows == 0 {
-                        Size::Pixels(28.0)
-                    } else {
-                        Size::Fit
-                    })
-                    .gap(metrics.row_gap)
-                    .column()
-                    .children(|ctx| {
-                        if visible_rows == 0 {
-                            ctx.new()
-                                .width(Size::Fill)
-                                .height(Size::Pixels(28.0))
-                                .build();
-                        } else {
-                            for _ in 0..visible_rows {
-                                ctx.new()
-                                    .width(Size::Fill)
-                                    .height(Size::Pixels(metrics.row_h))
-                                    .build();
-                            }
-                        }
-                    })
-                    .build();
-                if metrics.footer_h > 0.0 {
-                    ids.footer = Some(
-                        ctx.new()
-                            .width(Size::Fill)
-                            .height(Size::Pixels(metrics.footer_h))
-                            .build(),
-                    );
-                }
-            })
-            .build();
-        (root, ids)
-    });
-    let rect = |id: ui::BlockId| measured.rect(id).expect("palette rect");
+    let (layout, root) = dialog::measure_search_surface(
+        viewport,
+        dialog::SearchSurfaceMetrics {
+            padding: dialog::SEARCH_DIALOG_PADDING,
+            gap: dialog::SEARCH_DIALOG_GAP,
+            title_height: metrics.title_h,
+            search_height: metrics.input_h,
+            auxiliary_height: metrics.breadcrumb_h,
+            row_height: metrics.row_h,
+            row_gap: metrics.row_gap,
+            footer_height: metrics.footer_h,
+            close_width: dialog::SEARCH_DIALOG_CLOSE_WIDTH,
+        },
+        visible_rows,
+        ScrollState::default(),
+        constrained,
+    );
     (
         PaletteRects {
-            title: ids.title.map(rect),
-            input: rect(ids.input),
-            back: ids.back.map(rect),
-            body: rect(ids.body),
-            footer: ids.footer.map(rect),
+            title: layout.title,
+            input: layout.search,
+            back: layout.auxiliary,
+            body: layout.rows,
+            footer: layout.footer,
         },
-        rect(root),
+        root,
     )
 }
 
@@ -1349,18 +1285,7 @@ pub(super) fn build_palette(
         return;
     }
     if state.anchor.is_some() {
-        ui::ui!(ctx, {
-            Rect("palette-dialog-shell", rect) {
-                overlay;
-                opacity: opacity;
-                backdrop_blur: 28.0;
-                backdrop_tint: theme::popup_tint();
-                fill: theme::floating_bg();
-                border: 1;
-                border_color: theme::accent();
-                border_radius: 10.0;
-            }
-        });
+        dialog::build_panel_shell(ctx, "palette-dialog-shell", rect, opacity, |_| {});
     } else {
         dialog::build_shell(
             ctx,

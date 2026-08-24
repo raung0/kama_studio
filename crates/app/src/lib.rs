@@ -2562,6 +2562,10 @@ impl EditorApp {
     }
 
     fn pointer_pressed(&mut self) {
+        if self.gui.consume_popup_press(self.cursor) {
+            self.input.mouse_pressed = false;
+            return;
+        }
         if self.handle_modal_pointer() {
             return;
         }

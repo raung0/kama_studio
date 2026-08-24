@@ -10,7 +10,7 @@ use winit::{
     keyboard::ModifiersState,
 };
 
-use crate::{Align, BlockId, BuildCtx, Color, CursorShape, Rect, Renderer, Size, TextureId};
+use crate::{Align, BlockId, BuildCtx, Color, CursorShape, PopupState, Rect, Renderer, Size, TextureId};
 
 use super::{ease, ColorButton, Style, TextEdit};
 
@@ -59,7 +59,7 @@ pub struct ColorPicker {
     hue: f32,
     mode: Mode,
     hex: TextEdit,
-    open: bool,
+    open: PopupState,
     t: f32,
     drag: Option<Drag>,
     textures: Textures,
@@ -75,7 +75,7 @@ impl ColorPicker {
             hue,
             mode: Mode::Hsv,
             hex: TextEdit::single_line(rgba_hex(linear)),
-            open: false,
+            open: PopupState::default(),
             t: 0.0,
             drag: None,
             textures: Textures::default(),
@@ -103,30 +103,34 @@ impl ColorPicker {
         self.textures.signature = None;
     }
 
+    pub fn is_open(&self) -> bool {
+        self.open.is_open()
+    }
+
     pub fn close(&mut self) {
-        self.open = false;
+        self.open.close();
         self.drag = None;
         self.hex.set_focused(false);
     }
 
     pub fn open_and_focus_hex(&mut self) {
-        self.open = true;
+        self.open.set_open(true);
         self.t = self.t.max(0.05);
         self.drag = None;
         self.hex.set_focused(true);
     }
 
     pub fn tick(&mut self, dt: f32) {
-        ease(&mut self.t, self.open as u8 as f32, SPEED, dt);
+        ease(&mut self.t, self.open.is_open() as u8 as f32, SPEED, dt);
         self.hex.tick(dt);
     }
 
     pub fn is_animating(&self) -> bool {
-        (self.t - self.open as u8 as f32).abs() > 0.001 || self.hex.is_animating()
+        (self.t - self.open.is_open() as u8 as f32).abs() > 0.001 || self.hex.is_animating()
     }
 
     pub fn is_editing(&self) -> bool {
-        self.open && self.hex.is_focused()
+        self.open.is_open() && self.hex.is_focused()
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -155,7 +159,7 @@ impl ColorPicker {
     }
 
     fn popup_contains_bounded(&self, rect: Rect, bounds: Option<Rect>, point: [f32; 2]) -> bool {
-        self.open && self.layout(rect, bounds).popup.contains(point)
+        self.open.is_open() && self.layout(rect, bounds).popup.contains(point)
     }
 
     pub fn sync_textures(&mut self, renderer: &mut Renderer) -> Result<()> {
@@ -217,7 +221,7 @@ impl ColorPicker {
         modifiers: ModifiersState,
     ) -> bool {
         let layout = self.layout(rect, bounds);
-        if self.open && layout.popup.contains(point) {
+        if self.open.is_open() && layout.popup.contains(point) {
             for (index, tab) in layout.tabs.into_iter().enumerate() {
                 if tab.contains(point) {
                     self.mode = [Mode::Hsv, Mode::Rgb, Mode::Okhsl][index];
@@ -251,8 +255,8 @@ impl ColorPicker {
             return true;
         }
         if rect.contains(point) {
-            self.open = !self.open;
-            if self.open {
+            self.open.toggle();
+            if self.open.is_open() {
                 self.t = self.t.max(0.05);
             } else {
                 self.drag = None;
@@ -260,8 +264,9 @@ impl ColorPicker {
             }
             return true;
         }
+        let was_open = self.open.is_open();
         self.close();
-        false
+        was_open
     }
 
     pub fn pointer_moved(&mut self, rect: Rect, point: [f32; 2]) -> bool {
@@ -348,7 +353,7 @@ impl ColorPicker {
                 opacity: opacity; fill: shadow; border_radius: style.radius_md;
             }
             Rect(@format("color-picker-popup {id}"), layout.popup) {
-                top_overlay; backdrop_blur: 22.0; backdrop_tint: popup_tint;
+                top_overlay; dismissible_popup: self.open.clone(); backdrop_blur: 22.0; backdrop_tint: popup_tint;
                 opacity: opacity; fill: popup_bg;
                 border: 1; border_color: style.accent; border_radius: style.radius_md;
             }
