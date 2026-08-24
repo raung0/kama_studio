@@ -63,7 +63,7 @@ pub(crate) fn language_options() -> Vec<LanguageOption> {
         .map(|language| {
             let language = language.to_string();
             LanguageOption {
-                label: text(&format!("language-{language}")),
+                label: native_language_name(&language),
                 language: Some(language),
             }
         })
@@ -76,6 +76,19 @@ pub(crate) fn language_options() -> Vec<LanguageOption> {
         },
     );
     languages
+}
+
+fn native_language_name(language: &str) -> String {
+    let path = format!("{language}/kama.ftl");
+    Localizations::get(&path)
+        .and_then(|file| {
+            std::str::from_utf8(file.data.as_ref())
+                .ok()?
+                .lines()
+                .find_map(|line| line.strip_prefix("language-name = "))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| language.to_owned())
 }
 
 fn loader() -> &'static FluentLanguageLoader {
@@ -99,8 +112,18 @@ mod tests {
         assert_eq!(i18n_embed_fl::fl!(loader(), "menu-file"), "File");
         initialize(Some("ro-RO")).unwrap();
         assert_eq!(text("menu-file"), "Fișier");
+        initialize(Some("ja-JP")).unwrap();
+        assert_eq!(text("menu-file"), "ファイル");
         initialize(None).unwrap();
-        assert!(matches!(text("menu-file").as_str(), "File" | "Fișier"));
+        assert!(matches!(
+            text("menu-file").as_str(),
+            "File" | "Fișier" | "ファイル"
+        ));
         assert!(!loader().current_languages().is_empty());
+
+        let options = language_options();
+        assert!(options.iter().any(|option| option.label == "English"));
+        assert!(options.iter().any(|option| option.label == "Română"));
+        assert!(options.iter().any(|option| option.label == "日本語"));
     }
 }

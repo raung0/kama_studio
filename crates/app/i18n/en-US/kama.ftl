@@ -23,6 +23,7 @@ menu-open-project-name = Open {$name}
 
 settings-title = Settings
 settings-language = Language
+language-name = English
 settings-theme = Theme preset
 settings-dark-accent = Dark accent color
 settings-light-accent = Light accent color
@@ -37,8 +38,6 @@ settings-search-placeholder = Search settings…
 settings-no-results = No fuzzy matches
 settings-system = System
 settings-english = English
-language-en-US = English
-language-ro-RO = Romanian
 settings-light = Light
 settings-dark = Dark
 settings-on = On

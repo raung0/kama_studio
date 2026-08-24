@@ -23,6 +23,7 @@ menu-open-project-name = Deschide {$name}
 
 settings-title = Setări
 settings-language = Limbă
+language-name = Română
 settings-theme = Temă
 settings-dark-accent = Culoare accent închisă
 settings-light-accent = Culoare accent deschisă
@@ -37,8 +38,6 @@ settings-search-placeholder = Caută setări…
 settings-no-results = Nicio potrivire fuzzy
 settings-system = Sistem
 settings-english = Engleză
-language-en-US = Engleză
-language-ro-RO = Română
 settings-light = Deschisă
 settings-dark = Închisă
 settings-on = Activat
