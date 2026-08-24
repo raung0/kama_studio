@@ -614,7 +614,7 @@ impl MonitorState {
 
     pub(crate) fn captured_preview(&self) -> Option<([u32; 2], &[u8])> {
         self.show_captured_frame
-            .then(|| self.captured_frame.as_ref())
+            .then_some(self.captured_frame.as_ref())
             .flatten()
             .map(|(size, pixels)| (*size, pixels.as_slice()))
     }
@@ -886,7 +886,7 @@ impl MonitorState {
                 plugins,
                 graph_selection,
                 render_size: [render_width, render_height],
-                source_geometry: source_geometry,
+                source_geometry,
                 monitor_wasm: &self.monitor_wasm,
             }
             .context(project, timeline);
@@ -1043,7 +1043,7 @@ impl MonitorState {
             plugins,
             graph_selection,
             render_size: [render_width, render_height],
-            source_geometry: source_geometry,
+            source_geometry,
             monitor_wasm: &self.monitor_wasm,
         };
         let Some(mut setup) = pen_edit_setup(view.context(project, timeline)) else {
@@ -1166,7 +1166,7 @@ impl MonitorState {
             plugins,
             graph_selection,
             render_size: [preview_width, preview_height],
-            source_geometry: source_geometry,
+            source_geometry,
             monitor_wasm: &self.monitor_wasm,
         };
         let handle_snap = SnapSession {

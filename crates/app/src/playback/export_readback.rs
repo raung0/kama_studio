@@ -125,7 +125,7 @@ impl EncodeReadbackSurface {
         let row_bytes = format.row_bytes(width);
         let exact_plane_stride = row_bytes * u64::from(height);
         let exact_size = exact_plane_stride * format.plane_count() as u64;
-        let storage_limit = u64::from(device.limits().max_storage_buffer_binding_size);
+        let storage_limit = device.limits().max_storage_buffer_binding_size;
         let direct_mapped_storage = device
             .features()
             .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)

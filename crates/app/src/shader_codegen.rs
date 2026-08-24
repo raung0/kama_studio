@@ -27,10 +27,10 @@ pub fn build_fused_pointwise_shader(
         let namespace = effect.namespace_for_node(index as u64);
         let namespaced = namespace_effect(effect, &namespace)
             .with_context(|| format!("namespace pointwise node {node_type}"))?;
-        modules.push_str("\n");
+        modules.push('\n');
         modules.push_str("// ");
         modules.push_str(node_type);
-        modules.push_str("\n");
+        modules.push('\n');
         modules.push_str(&namespaced);
         modules.push('\n');
 
