@@ -339,16 +339,16 @@ fn draw_command(command: DrawCommand, point: vec2<f32>, color: vec4<f32>) -> vec
             let texture_aspect = texture_size.x / max(texture_size.y, 0.000001);
             let rect_aspect = command.rect.z / max(command.rect.w, 0.000001);
             if rect_aspect > texture_aspect {
-                let image_height = texture_aspect / rect_aspect;
-                fill_local_uv = vec2<f32>(
-                    local_uv.x,
-                    (local_uv.y - (1.0 - image_height) * 0.5) / image_height,
-                );
-            } else {
-                let image_width = rect_aspect / texture_aspect;
+                let image_width = texture_aspect / rect_aspect;
                 fill_local_uv = vec2<f32>(
                     (local_uv.x - (1.0 - image_width) * 0.5) / image_width,
                     local_uv.y,
+                );
+            } else {
+                let image_height = rect_aspect / texture_aspect;
+                fill_local_uv = vec2<f32>(
+                    local_uv.x,
+                    (local_uv.y - (1.0 - image_height) * 0.5) / image_height,
                 );
             }
         }

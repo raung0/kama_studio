@@ -1229,6 +1229,7 @@ fn build_command_palette_dialog(
                             id: @format("palette-entry-icon {}", index);
                             icon!: icons.get(entry.icon);
                             color!: if active { theme::popup_text() } else { theme::popup_muted() };
+                            texture_mode: ui::TEXTURE_MODE_CONTAIN;
                             bounds: (parts[0].x, parts[0].y, parts[0].width, parts[0].height);
                         }
                         Rect(("palette-entry-label", index), parts[1]) {
