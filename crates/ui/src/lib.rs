@@ -266,6 +266,12 @@ pub struct ScrollState {
     pub offset: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollRange {
+    pub horizontal: f32,
+    pub vertical: f32,
+}
+
 impl ScrollState {
     pub fn scroll_by(&mut self, delta: f32, max_offset: f32) -> bool {
         let offset = (self.offset + delta).clamp(0.0, max_offset.max(0.0));
@@ -383,6 +389,7 @@ pub struct Block {
     explicit_clips: Vec<ClipShape>,
     clips: Vec<ClipShape>,
     content_clips: Vec<ClipShape>,
+    scroll_range: ScrollRange,
     scope_seed: u64,
     hover_t: f32,
     press_t: f32,
@@ -442,6 +449,7 @@ impl Block {
             explicit_clips: Vec::new(),
             clips: Vec::new(),
             content_clips: Vec::new(),
+            scroll_range: ScrollRange::default(),
             scope_seed,
             hover_t: 0.0,
             press_t: 0.0,
@@ -464,11 +472,16 @@ pub struct BuildCtx {
 #[derive(Clone, Debug, Default)]
 pub struct LayoutRects {
     rects: HashMap<BlockId, Rect>,
+    scroll_ranges: HashMap<BlockId, ScrollRange>,
 }
 
 impl LayoutRects {
     pub fn rect(&self, id: BlockId) -> Option<Rect> {
         self.rects.get(&id).copied()
+    }
+
+    pub fn scroll_range(&self, id: BlockId) -> Option<ScrollRange> {
+        self.scroll_ranges.get(&id).copied()
     }
 }
 
@@ -481,16 +494,24 @@ pub fn measure_layout<R>(
     let mut blocks = ctx.blocks;
     layout_roots(&mut blocks, viewport);
 
-    fn collect(blocks: &[Block], rects: &mut HashMap<BlockId, Rect>) {
+    fn collect(
+        blocks: &[Block],
+        rects: &mut HashMap<BlockId, Rect>,
+        scroll_ranges: &mut HashMap<BlockId, ScrollRange>,
+    ) {
         for block in blocks {
             rects.insert(block.id, block.rect);
-            collect(&block.children, rects);
+            if block.horizontal_scroll.is_some() || block.vertical_scroll.is_some() {
+                scroll_ranges.insert(block.id, block.scroll_range);
+            }
+            collect(&block.children, rects, scroll_ranges);
         }
     }
 
     let mut rects = HashMap::new();
-    collect(&blocks, &mut rects);
-    (result, LayoutRects { rects })
+    let mut scroll_ranges = HashMap::new();
+    collect(&blocks, &mut rects, &mut scroll_ranges);
+    (result, LayoutRects { rects, scroll_ranges })
 }
 
 impl BuildCtx {
@@ -1199,7 +1220,8 @@ fn layout_block(
     if block.children.is_empty() {
         return;
     }
-    let mut content = rect.inset(block.padding + block.border_width);
+    let viewport_content = rect.inset(block.padding + block.border_width);
+    let mut content = viewport_content;
     content.x -= block
         .horizontal_scroll
         .map_or(0.0, |scroll| scroll.offset.max(0.0));
@@ -1252,6 +1274,29 @@ fn layout_block(
             [content.x, content.y],
         );
     }
+
+    let content_width = block
+        .children
+        .iter()
+        .map(|child| child.rect.right() - content.x)
+        .fold(0.0, f32::max);
+    let content_height = block
+        .children
+        .iter()
+        .map(|child| child.rect.bottom() - content.y)
+        .fold(0.0, f32::max);
+    block.scroll_range = ScrollRange {
+        horizontal: if block.horizontal_scroll.is_some() {
+            (content_width - viewport_content.width).max(0.0)
+        } else {
+            0.0
+        },
+        vertical: if block.vertical_scroll.is_some() {
+            (content_height - viewport_content.height).max(0.0)
+        } else {
+            0.0
+        },
+    };
 }
 
 fn is_flow(block: &Block) -> bool {
@@ -2283,6 +2328,35 @@ mod layout_tests {
 
         assert_eq!(measured.rect(scaled).unwrap().height, 20.0);
         assert_eq!(measured.rect(child).unwrap().height, 80.0);
+    }
+
+    #[test]
+    fn scroll_range_comes_from_laid_out_content() {
+        let (scroll, measured) = measure_layout(Rect::new(0.0, 0.0, 120.0, 70.0), |ctx| {
+            ctx.new()
+                .column()
+                .width(Size::Fill)
+                .height(Size::Fill)
+                .vertical_scroll(ScrollState::default())
+                .gap(5.0)
+                .children(|ctx| {
+                    for _ in 0..3 {
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(30.0))
+                            .build();
+                    }
+                })
+                .build()
+        });
+
+        assert_eq!(
+            measured.scroll_range(scroll),
+            Some(ScrollRange {
+                horizontal: 0.0,
+                vertical: 30.0,
+            })
+        );
     }
 
     #[test]

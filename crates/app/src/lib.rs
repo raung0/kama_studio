@@ -323,6 +323,28 @@ impl PaletteState {
         }
     }
 
+    fn is_command_dialog(&self) -> bool {
+        (matches!(self.kind, Some(PaletteKind::Commands)) && self.anchor.is_none())
+            || self.pending_open.is_some_and(|(kind, anchor)| {
+                matches!(kind, PaletteKind::Commands) && anchor.is_none()
+            })
+    }
+
+    fn close_immediately(&mut self) {
+        self.pending_open = None;
+        self.kind = None;
+        self.query.reset("");
+        self.query.set_focused(false);
+        self.selected = 0;
+        self.scroll.offset = 0.0;
+        self.hovered = None;
+        self.path.clear();
+        self.replacement_excluded_media.clear();
+        self.anchor = None;
+        self.opened_at = None;
+        self.closing = None;
+    }
+
     fn opacity(&self, now: Instant) -> f32 {
         fn eased(elapsed: Duration) -> f32 {
             let t = (elapsed.as_secs_f32() / POPUP_FADE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
@@ -696,7 +718,8 @@ impl Modal {
             Self::Composition(dialog) => dialog.animation.restart(),
             Self::SpeedDuration(dialog) => dialog.animation.restart(),
             Self::MissingMedia(dialog) => dialog.animation.restart(),
-            Self::Settings(_) | Self::Keybinds(_) => {}
+            Self::Settings(dialog) => dialog.restart_entry_animation(),
+            Self::Keybinds(dialog) => dialog.restart_entry_animation(),
         }
     }
 
@@ -2222,6 +2245,9 @@ impl EditorApp {
     }
 
     fn open_modal(&mut self, modal: Modal) {
+        if self.palette.is_command_dialog() {
+            self.palette.close_immediately();
+        }
         self.dismiss_transient_ui();
         if self.modal.is_some() {
             self.modal_queue.push_back(modal);
@@ -4612,7 +4638,9 @@ impl EditorApp {
                 DockCommand::ActivateTab { stack, tab } => self.dock.activate_tab(stack, tab),
             },
             EditorCommand::OpenCommandPalette => {
-                self.palette.pending_open = Some((PaletteKind::Commands, None));
+                if self.modal.is_none() && self.modal_queue.is_empty() {
+                    self.palette.pending_open = Some((PaletteKind::Commands, None));
+                }
             }
             EditorCommand::ToggleCurrentPanelMaximize => {
                 if let Some(stack) = self.dock.focused {

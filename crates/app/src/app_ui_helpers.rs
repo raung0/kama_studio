@@ -856,12 +856,12 @@ pub(super) fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
             } else {
                 360.0
             },
-            title_h: if replacement { 34.0 } else { 0.0 },
-            input_h: 30.0,
-            row_h: 31.0,
-            row_gap: 3.0,
+            title_h: if replacement { dialog::SEARCH_DIALOG_TITLE_HEIGHT } else { 0.0 },
+            input_h: dialog::SEARCH_DIALOG_INPUT_HEIGHT,
+            row_h: dialog::SEARCH_DIALOG_ROW_HEIGHT,
+            row_gap: dialog::SEARCH_DIALOG_GAP,
             breadcrumb_h: 0.0,
-            footer_h: if replacement { 0.0 } else { 18.0 },
+            footer_h: if replacement { 0.0 } else { dialog::SEARCH_DIALOG_FOOTER_HEIGHT },
         }
     }
 }
@@ -897,8 +897,8 @@ fn measure_palette_rects(
             .new()
             .width(Size::Fill)
             .height(if constrained { Size::Fill } else { Size::Fit })
-            .padding(6.0)
-            .gap(3.0)
+            .padding(dialog::SEARCH_DIALOG_PADDING)
+            .gap(dialog::SEARCH_DIALOG_GAP)
             .column()
             .children(|ctx| {
                 if metrics.title_h > 0.0 {
@@ -988,7 +988,7 @@ pub(super) fn palette_natural_height(state: &PaletteState, visible_rows: usize) 
 }
 
 pub(super) fn palette_max_height(state: &PaletteState, viewport_height: f32) -> f32 {
-    let viewport_limit = (viewport_height - 12.0).max(1.0);
+    let viewport_limit = (viewport_height - dialog::SEARCH_DIALOG_PADDING * 2.0).max(1.0);
     if state.kind.is_some_and(PaletteKind::is_add_menu) {
         ADD_MENU_MAX_HEIGHT.min(viewport_limit)
     } else {
@@ -1030,16 +1030,39 @@ pub(super) fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> V
 }
 
 pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_rows: usize) -> f32 {
-    if entries <= visible_rows {
+    if entries <= visible_rows || visible_rows == 0 {
         return 0.0;
     }
-    let extent = |count| {
-        let rows = palette_unscrolled_rows(state, count);
-        rows.last()
-            .zip(rows.first())
-            .map_or(0.0, |(last, first)| last.bottom() - first.y)
-    };
-    (extent(entries) - extent(visible_rows)).max(0.0)
+    let metrics = palette_metrics(state);
+    let visible_rects = palette_unscrolled_rows(state, visible_rows);
+    let visible_height = visible_rects
+        .last()
+        .zip(visible_rects.first())
+        .map_or(0.0, |(last, first)| last.bottom() - first.y);
+    let (scroll, measured) = kama_ui::measure_layout(
+        Rect::new(0.0, 0.0, metrics.width, visible_height.max(1.0)),
+        |ctx| {
+            ctx.new()
+                .column()
+                .width(Size::Fill)
+                .height(Size::Fill)
+                .vertical_scroll(ScrollState::default())
+                .gap(metrics.row_gap)
+                .children(|ctx| {
+                    for _ in 0..entries {
+                        ctx.new()
+                            .width(Size::Fill)
+                            .height(Size::Pixels(metrics.row_h))
+                            .build();
+                    }
+                })
+                .build()
+        },
+    );
+    measured
+        .scroll_range(scroll)
+        .expect("palette scroll range")
+        .vertical
 }
 
 pub(super) fn palette_rects(
@@ -1047,8 +1070,24 @@ pub(super) fn palette_rects(
     state: &PaletteState,
     visible_rows: usize,
 ) -> PaletteRects {
+    if matches!(state.kind, Some(PaletteKind::Commands)) && state.anchor.is_none() {
+        let layout = dialog::measure_search_dialog(
+            popup,
+            false,
+            visible_rows,
+            ScrollState::default(),
+        );
+        return PaletteRects {
+            title: None,
+            input: layout.search,
+            back: None,
+            body: layout.rows,
+            footer: Some(layout.footer),
+        };
+    }
     measure_palette_rects(popup, state, visible_rows, true).0
 }
+
 
 pub(super) fn palette_rect(
     viewport_width: f32,
@@ -1114,10 +1153,7 @@ pub(super) fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Op
     Some(
         kama_ui::layout::row(
             title,
-            &[
-                kama_ui::layout::Item::fill(),
-                kama_ui::layout::Item::width(27.0),
-            ],
+            &[kama_ui::layout::Item::fill(), kama_ui::layout::Item::width(27.0)],
             0.0,
             0.0,
             ui::Align::Start,
@@ -1130,13 +1166,24 @@ pub(super) fn palette_footer_close_rect(
     state: &PaletteState,
     visible_rows: usize,
 ) -> Option<Rect> {
+    if matches!(state.kind, Some(PaletteKind::Commands)) && state.anchor.is_none() {
+        return Some(
+            dialog::measure_search_dialog(
+                popup,
+                false,
+                visible_rows,
+                ScrollState::default(),
+            )
+            .close,
+        );
+    }
     let footer = palette_rects(popup, state, visible_rows).footer?;
     Some(
         kama_ui::layout::row(
             footer,
             &[
                 kama_ui::layout::Item::fill(),
-                kama_ui::layout::Item::width(44.0),
+                kama_ui::layout::Item::width(dialog::SEARCH_DIALOG_CLOSE_WIDTH),
             ],
             0.0,
             0.0,
@@ -1173,6 +1220,97 @@ pub(super) fn palette_row_at(
         .position(|row| row.contains(point))
 }
 
+fn build_command_palette_dialog(
+    ctx: &mut ui::Ui<'_>,
+    viewport_width: f32,
+    viewport_height: f32,
+    state: &mut PaletteState,
+    entries: &[PaletteEntry],
+    icons: Icons,
+    rect: Rect,
+    opacity: f32,
+) {
+    let layout = dialog::measure_search_dialog(rect, false, entries.len(), state.scroll);
+    dialog::build_search_dialog(
+        ctx,
+        "palette-scrim",
+        "palette-dialog-shell",
+        "command-palette",
+        Rect::new(0.0, 0.0, viewport_width, viewport_height),
+        rect,
+        opacity,
+        &layout,
+        None,
+        "↑↓ select    ↵ open    esc close",
+        |ctx, layout| {
+            state.query.build(
+                ctx,
+                "palette-input",
+                layout.search,
+                "Type to fuzzy-find a command…",
+                component_style(),
+            );
+            ctx.with_clip(layout.rows, |ctx| {
+                if entries.is_empty() {
+                    ui_text!(
+                        ctx,
+                        "palette-no-results",
+                        layout.empty,
+                        10.5,
+                        theme::popup_muted(),
+                        "No fuzzy matches",
+                    );
+                }
+                let selected = state.selected.min(entries.len().saturating_sub(1));
+                for (index, entry) in entries.iter().enumerate() {
+                    let row = layout.items[index];
+                    if row.bottom() < layout.rows.y || row.y > layout.rows.bottom() {
+                        continue;
+                    }
+                    let active = index == selected;
+                    let inner = kama_ui::layout::inset(row, 5.0);
+                    let parts = kama_ui::layout::row(
+                        inner,
+                        &[
+                            kama_ui::layout::Item::width(18.0),
+                            kama_ui::layout::Item::width(131.0),
+                            kama_ui::layout::Item::fill(),
+                        ],
+                        7.0,
+                        0.0,
+                        ui::Align::Center,
+                    );
+                    ui::ui!(ctx, {
+                        Rect(("palette-row", index), row) {
+                            fill: if active { theme::accent_hover() } else { Color::TRANSPARENT };
+                            border: 1;
+                            border_color: if active { theme::accent() } else { Color::TRANSPARENT };
+                            border_radius: RADIUS_SM;
+                            interactive;
+                        }
+                        Icon {
+                            id: @format("palette-entry-icon {}", index);
+                            icon!: icons.get(entry.icon);
+                            color!: if active { theme::popup_text() } else { theme::popup_muted() };
+                            bounds: (parts[0].x, parts[0].y, parts[0].width, parts[0].height);
+                        }
+                        Rect(("palette-entry-label", index), parts[1]) {
+                            font_size: 10.5;
+                            text_color: theme::popup_text();
+                            text: entry.label.clone();
+                        }
+                        Rect(("palette-entry-detail", index), parts[2]) {
+                            font_size: 9.5;
+                            text_color: theme::popup_muted();
+                            text: entry.detail.clone();
+                        }
+                    });
+                }
+            });
+        },
+    );
+}
+
 pub(super) fn build_palette(
     ctx: &mut ui::Ui<'_>,
     viewport_width: f32,
@@ -1197,6 +1335,19 @@ pub(super) fn build_palette(
     let (x, y) = (rect.x, rect.y);
     let breadcrumb = state.path.join(" ▶ ");
     let opacity = state.opacity(Instant::now());
+    if is_commands && state.anchor.is_none() {
+        build_command_palette_dialog(
+            ctx,
+            viewport_width,
+            viewport_height,
+            state,
+            entries,
+            icons,
+            rect,
+            opacity,
+        );
+        return;
+    }
     if state.anchor.is_some() {
         ui::ui!(ctx, {
             Rect("palette-dialog-shell", rect) {
@@ -1235,8 +1386,8 @@ pub(super) fn build_palette(
             overlay;
             bounds: (x, y, width, height);
             fill: Color::TRANSPARENT;
-            padding: 6.0;
-            gap: 3.0;
+            padding: dialog::SEARCH_DIALOG_PADDING;
+            gap: dialog::SEARCH_DIALOG_GAP;
             opacity: opacity;
 
             @if matches!(state.kind, Some(PaletteKind::ReplaceSelectedClips { .. })) {
@@ -1280,7 +1431,12 @@ pub(super) fn build_palette(
                     state.query.build(
                         ctx,
                         "palette-input",
-                        Rect::new(0.0, 0.0, (width - 12.0).max(0.0), metrics.input_h),
+                        Rect::new(
+                            0.0,
+                            0.0,
+                            (width - dialog::SEARCH_DIALOG_PADDING * 2.0).max(0.0),
+                            metrics.input_h,
+                        ),
                         match state.kind {
                             Some(PaletteKind::Commands) => "Type to fuzzy-find a command…",
                             Some(PaletteKind::AddPanel(_)) => "Add a panel…",
