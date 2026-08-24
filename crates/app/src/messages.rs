@@ -5,7 +5,7 @@ use std::{
 
 use kama_ui::{BuildCtx, Color, Rect, ScrollState, Size};
 
-use crate::theme;
+use crate::{i18n, theme};
 
 const MAX_MESSAGES: usize = 500;
 const ROW_HEIGHT: f32 = 46.0;
@@ -18,10 +18,10 @@ pub enum MessageSeverity {
 }
 
 impl MessageSeverity {
-    fn label(self) -> &'static str {
+    fn label_key(self) -> &'static str {
         match self {
-            Self::Warning => "WARNING",
-            Self::Error => "ERROR",
+            Self::Warning => "severity-warning",
+            Self::Error => "severity-error",
         }
     }
 
@@ -135,7 +135,7 @@ impl MessagesState {
                         height: Size::Pixels(30.0);
                         font_size: 10.5;
                         text_color: theme::muted();
-                        text: "No warnings or errors";
+                        text: i18n::text("messages-empty");
                     }
                 }
 
@@ -175,7 +175,7 @@ impl MessagesState {
                                 height: Size::Pixels(15.0);
                                 font_size: 8.5;
                                 text_color: severity_color;
-                                text: format!("{}: {}{}", entry.severity.label(), entry.source, repeat);
+                                text: format!("{}: {}{}", i18n::text(entry.severity.label_key()), entry.source, repeat);
                             }
                             Block {
                                 id: @format("message-text-{}", entry.id);

@@ -89,15 +89,15 @@ pub(super) fn default_dock() -> DockState {
     let top = DockLayoutSpec::split(
         Axis::Horizontal,
         0.20,
-        DockLayoutSpec::stack(PanelKind::Media.title()),
+        DockLayoutSpec::stack(PanelKind::Media.layout_title()),
         DockLayoutSpec::split(
             Axis::Horizontal,
             0.75,
-            DockLayoutSpec::stack(PanelKind::Monitor.title()),
+            DockLayoutSpec::stack(PanelKind::Monitor.layout_title()),
             DockLayoutSpec::Stack(vec![
-                PanelKind::Inspector.title().into(),
-                PanelKind::Render.title().into(),
-                PanelKind::History.title().into(),
+                PanelKind::Inspector.layout_title().into(),
+                PanelKind::Render.layout_title().into(),
+                PanelKind::History.layout_title().into(),
             ]),
         ),
     );
@@ -109,11 +109,11 @@ pub(super) fn default_dock() -> DockState {
             Axis::Horizontal,
             0.86,
             DockLayoutSpec::Stack(vec![
-                PanelKind::Timeline.title().into(),
-                PanelKind::Pipeline.title().into(),
-                PanelKind::Messages.title().into(),
+                PanelKind::Timeline.layout_title().into(),
+                PanelKind::Pipeline.layout_title().into(),
+                PanelKind::Messages.layout_title().into(),
             ]),
-            DockLayoutSpec::stack(PanelKind::Meters.title()),
+            DockLayoutSpec::stack(PanelKind::Meters.layout_title()),
         ),
     ))
 }

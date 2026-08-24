@@ -24,6 +24,7 @@ use crate::{
     assets::{AppIcon, Icons},
     effects::{GpuValue, PipelineKind},
     gradient::{colors_from_values, colors_to_values, default_color},
+    i18n,
     plugin::{InputType, PluginInput, PluginRegistry},
     project::{
         AlphaBlendMode, BlendMode, CompositionId, GeneratorSource, HostValue, MediaId, MediaKind,
@@ -2235,7 +2236,7 @@ impl InspectorState {
             )[1];
             kama_ui::ui!(ctx, {
                 Rect("inspector-empty", empty) {
-                    font_size: 10.5; text_color: theme::muted(); text: "Select a clip or track to edit it.";
+                    font_size: 10.5; text_color: theme::muted(); text: i18n::text("inspector-empty");
                 }
             });
             return;
@@ -4744,21 +4745,21 @@ fn draw_pipeline_selector(
         label,
         9.5,
         theme::text(),
-        "Pipeline"
+        i18n::text("inspector-pipeline")
     );
     if pipeline.is_some() {
         editor.build(
             ctx,
             "inspector-pipeline-name",
             name,
-            "Effect Pipeline",
+            &i18n::text("inspector-effect-pipeline"),
             crate::widgets::component_style(),
         );
     } else {
         kama_ui::ui!(ctx, {
             Rect(("inspector-pipeline-none", y.to_bits()), name) {
                 fill: theme::focused(); border_radius: RADIUS_SM;
-                font_size: 9.0; text_color: theme::muted(); text: "None";
+                font_size: 9.0; text_color: theme::muted(); text: i18n::text("inspector-none");
             }
         });
     }

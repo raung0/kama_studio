@@ -17,6 +17,7 @@ use crate::{
         changed_point_index, colors_from_values, colors_to_values, insert_midpoint, inserted_color,
         normalized_midpoints, remove_midpoint,
     },
+    i18n,
     plugin::{GeneratorDefinition, PluginRegistry},
     project::{
         remap_pipeline_selector_binding, CompositionId, GeneratorSource, HostBinding, HostValue,

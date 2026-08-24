@@ -919,7 +919,7 @@ impl TimelineState {
                     bounds: (keyframe_toggle.x, keyframe_toggle.y, keyframe_toggle.width, keyframe_toggle.height);
                     content_centered;
                     interactive;
-                    tooltip: "Show keyframed properties";
+                    tooltip: i18n::text("timeline-show-keyframes");
 
                     Icon {
                         id: @format("track-keyframe-chevron-icon-{}-{}", stack.0, track.id);
@@ -1032,10 +1032,10 @@ impl TimelineState {
                         height: Size::Fill;
                         reveal;
                         tooltip: match index {
-                            0 => "Jump to start",
-                            1 if self.playing => "Pause",
-                            1 => "Play",
-                            _ => "Jump to end",
+                            0 => i18n::text("timeline-jump-start"),
+                            1 if self.playing => i18n::text("timeline-pause"),
+                            1 => i18n::text("timeline-play"),
+                            _ => i18n::text("timeline-jump-end"),
                         };
                         content_centered;
 
@@ -1060,9 +1060,9 @@ impl TimelineState {
                     reveal;
                     interactive;
                     tooltip: if self.end_behavior == EndBehavior::Restart {
-                        "At timeline end: restart from beginning"
+                        i18n::text("timeline-end-restart")
                     } else {
-                        "At timeline end: stop"
+                        i18n::text("timeline-end-stop")
                     };
                     content_centered;
                     font_size: 10.0;
@@ -1140,42 +1140,42 @@ impl TimelineState {
         for (id, label, rect, active, icon) in [
             (
                 "timeline-frame-snap",
-                "Snap to frames",
+                &i18n::text("timeline-snap-frames"),
                 layout.frame_snap_button,
                 self.frame_snap,
                 AppIcon::SnapFrame,
             ),
             (
                 "timeline-grid-snap",
-                "Snap to grid",
+                &i18n::text("timeline-snap-grid"),
                 layout.grid_snap_button,
                 self.grid_snap,
                 AppIcon::SnapGrid,
             ),
             (
                 "timeline-clip-snap",
-                "Snap to clips",
+                &i18n::text("timeline-snap-clips"),
                 layout.clip_snap_button,
                 self.clip_snap,
                 AppIcon::SnapClips,
             ),
             (
                 "timeline-playhead-snap",
-                "Snap playhead to enabled grid and clip targets",
+                &i18n::text("timeline-snap-playhead"),
                 layout.playhead_snap_button,
                 self.playhead_snap,
                 AppIcon::SnapPlayhead,
             ),
             (
                 "timeline-follow-playhead",
-                "Follow playhead during playback",
+                &i18n::text("timeline-follow-playhead"),
                 layout.follow_playhead_button,
                 self.follow_playhead,
                 AppIcon::FollowPlayhead,
             ),
             (
                 "timeline-razor-tool",
-                "Razor tool (K)",
+                &i18n::text("timeline-razor-tool"),
                 layout.razor_tool_button,
                 self.tool == TimelineTool::Razor,
                 AppIcon::ClipCut,
@@ -1488,7 +1488,7 @@ impl TimelineState {
                 overlay;
                 font_size: 9.5;
                 text_color: theme::popup_muted();
-                text: "Edit keyframe value";
+                text: i18n::text("timeline-edit-keyframe-value");
             }
             Rect(("keyframe-value-field", stack.0), field) {
                 overlay;
@@ -1508,7 +1508,7 @@ impl TimelineState {
                 font_size: 9.5;
                 text_color: theme::timeline_bg();
                 text_centered;
-                text: "Set";
+                text: i18n::text("timeline-set");
             }
         });
     }

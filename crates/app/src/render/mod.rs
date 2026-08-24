@@ -12,6 +12,7 @@ use winit::{
 use crate::{
     assets::{AppIcon, Icons},
     file_io::{app_data_dir, atomic_write_json, read_json},
+    i18n,
     playback::RenderCachePreview,
     plugin::PluginRegistry,
     project::{CompositionId, Project},
@@ -670,15 +671,21 @@ impl RenderPanelState {
                 }
             });
         }
-        for (index, title) in ["Presets", "Video", "Audio", "Output", "Render Controls"]
-            .into_iter()
-            .enumerate()
+        for (index, title) in [
+            i18n::text("render-presets"),
+            i18n::text("render-video"),
+            i18n::text("render-audio"),
+            i18n::text("render-output"),
+            i18n::text("render-controls"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             self.sections[index].build_header(
                 ctx,
                 format!("render-section-{index}"),
                 layout.sections[index],
-                title,
+                &title,
                 chevron,
                 style,
             );
@@ -687,7 +694,12 @@ impl RenderPanelState {
         if self.sections[0].is_visible() {
             ctx.with_clip(layout.section_bodies[0], |ctx| {
                 let field = layout.combo_field(RenderCombo::Preset).unwrap();
-                label_at(ctx, field.label, "Preset", theme::text());
+                label_at(
+                    ctx,
+                    field.label,
+                    &i18n::text("render-preset"),
+                    theme::text(),
+                );
                 let preset_names = self
                     .builtins
                     .iter()
@@ -707,14 +719,14 @@ impl RenderPanelState {
                     ctx,
                     "render-preset-name",
                     layout.preset_name,
-                    "Preset name",
+                    &i18n::text("render-preset-name"),
                     style,
                 );
                 Button::build(
                     ctx,
                     "render-save-preset",
                     layout.preset_save,
-                    "Save preset",
+                    &i18n::text("render-save-preset"),
                     style,
                 );
             });
@@ -723,7 +735,12 @@ impl RenderPanelState {
         if self.sections[1].is_visible() {
             ctx.with_clip(layout.section_bodies[1], |ctx| {
                 let field = layout.combo_field(RenderCombo::Resolution).unwrap();
-                label_at(ctx, field.label, "Resolution", theme::text());
+                label_at(
+                    ctx,
+                    field.label,
+                    &i18n::text("render-resolution"),
+                    theme::text(),
+                );
                 let resolution_options = RenderResolution::ALL
                     .iter()
                     .map(|value| value.label())
@@ -737,7 +754,7 @@ impl RenderPanelState {
                     style,
                 );
                 let field = layout.combo_field(RenderCombo::VideoCodec).unwrap();
-                label_at(ctx, field.label, "Codec", theme::text());
+                label_at(ctx, field.label, &i18n::text("render-codec"), theme::text());
                 let video_options = VideoCodec::ALL
                     .iter()
                     .map(|value| value.label())
@@ -751,7 +768,12 @@ impl RenderPanelState {
                     style,
                 );
                 let field = layout.combo_field(RenderCombo::Container).unwrap();
-                label_at(ctx, field.label, "Container", theme::text());
+                label_at(
+                    ctx,
+                    field.label,
+                    &i18n::text("render-container"),
+                    theme::text(),
+                );
                 self.combo(RenderCombo::Container).build(
                     ctx,
                     "render-container",
@@ -763,7 +785,7 @@ impl RenderPanelState {
                 label_at(
                     ctx,
                     layout.number_field(RenderNumber::Quality).label,
-                    "Quality / CRF",
+                    &i18n::text("render-quality"),
                     theme::text(),
                 );
                 self.number_mut(RenderNumber::Quality).build(
@@ -781,11 +803,11 @@ impl RenderPanelState {
                 toggle_row_at(
                     ctx,
                     layout.include_audio,
-                    "Include audio",
+                    &i18n::text("render-include-audio"),
                     self.settings.preset.include_audio,
                 );
                 if let Some(field) = layout.combo_field(RenderCombo::AudioCodec) {
-                    label_at(ctx, field.label, "Codec", theme::text());
+                    label_at(ctx, field.label, &i18n::text("render-codec"), theme::text());
                     let labels = audio_codecs
                         .iter()
                         .map(|codec| codec.label())
@@ -800,7 +822,12 @@ impl RenderPanelState {
                     );
                 }
                 if let Some(field) = layout.combo_field(RenderCombo::SampleRate) {
-                    label_at(ctx, field.label, "Sample rate", theme::text());
+                    label_at(
+                        ctx,
+                        field.label,
+                        &i18n::text("render-sample-rate"),
+                        theme::text(),
+                    );
                     self.combo(RenderCombo::SampleRate).build(
                         ctx,
                         "render-sample-rate",
@@ -811,7 +838,12 @@ impl RenderPanelState {
                     );
                 }
                 if let Some(field) = layout.combo_field(RenderCombo::Bitrate) {
-                    label_at(ctx, field.label, "Bitrate", theme::text());
+                    label_at(
+                        ctx,
+                        field.label,
+                        &i18n::text("render-bitrate"),
+                        theme::text(),
+                    );
                     self.combo(RenderCombo::Bitrate).build(
                         ctx,
                         "render-audio-bitrate",
@@ -826,18 +858,18 @@ impl RenderPanelState {
 
         if self.sections[3].is_visible() {
             ctx.with_clip(layout.section_bodies[3], |ctx| {
-            label_at(ctx, layout.path_label, "Path", theme::text());
+            label_at(ctx, layout.path_label, &i18n::text("render-path"), theme::text());
             kama_ui::ui!(ctx, {
                 Rect("render-output-path", layout.path) {
                     fill: theme::control(); border: 1; border_color: theme::line(); border_radius: 5.0;
                     padding: 6.0; font_size: 10.0; text_color: theme::accent();
-                    text: self.settings.output.display().to_string(); interactive; tooltip: "Choose output file";
+                    text: self.settings.output.display().to_string(); interactive; tooltip: i18n::text("render-choose-output");
                 }
             });
             toggle_row_at(
                 ctx,
                 layout.overwrite,
-                "Overwrite existing",
+                &i18n::text("render-overwrite"),
                 self.settings.overwrite,
             );
             });
@@ -848,7 +880,7 @@ impl RenderPanelState {
             label_at(
                 ctx,
                 layout.number_field(RenderNumber::Begin).label,
-                "Begin frame",
+                &i18n::text("render-begin-frame"),
                 theme::text(),
             );
             if self.begin_set {
@@ -864,20 +896,20 @@ impl RenderPanelState {
                     ctx,
                     "render-begin-frame",
                     layout.number(RenderNumber::Begin),
-                    "Not set",
+                    &i18n::text("render-not-set"),
                     style,
                 );
             }
             two_buttons_at(
                 ctx,
                 layout.begin_buttons,
-                ["Playhead", "Start"],
+                [&i18n::text("render-playhead"), &i18n::text("render-start")],
                 "render-begin",
             );
             label_at(
                 ctx,
                 layout.number_field(RenderNumber::End).label,
-                "End frame",
+                &i18n::text("render-end-frame"),
                 theme::text(),
             );
             if self.end_set {
@@ -893,26 +925,26 @@ impl RenderPanelState {
                     ctx,
                     "render-end-frame",
                     layout.number(RenderNumber::End),
-                    "Not set",
+                    &i18n::text("render-not-set"),
                     style,
                 );
             }
             two_buttons_at(
                 ctx,
                 layout.end_buttons,
-                ["Playhead", "End"],
+                [&i18n::text("render-playhead"), &i18n::text("render-end")],
                 "render-end",
             );
             toggle_row_at(
                 ctx,
                 layout.background,
-                "Background task",
+                &i18n::text("render-background-task"),
                 self.settings.background,
             );
             toggle_row_at(
                 ctx,
                 layout.transcode,
-                "Transcode output",
+                &i18n::text("render-transcode-output"),
                 self.settings.transcode,
             );
 
@@ -920,16 +952,16 @@ impl RenderPanelState {
             let range_ready = self.render_range_ready();
             match phase {
                 RenderPhase::Rendering => {
-                    Button::build(ctx, "render-pause", layout.action, "Pause", style)
+                    Button::build(ctx, "render-pause", layout.action, &i18n::text("render-pause"), style)
                 }
                 RenderPhase::Paused => {
-                    Button::build(ctx, "render-resume", layout.action, "Resume", style)
+                    Button::build(ctx, "render-resume", layout.action, &i18n::text("render-resume"), style)
                 }
                 RenderPhase::Transcoding => Button::build_filled(
                     ctx,
                     "render-transcoding",
                     layout.action,
-                    "Transcoding…",
+                    &i18n::text("render-transcoding"),
                     theme::focused(),
                     style,
                 ),
@@ -938,7 +970,7 @@ impl RenderPanelState {
                         ctx,
                         "render-start",
                         layout.action,
-                        "Start Render",
+                        &i18n::text("render-start-render"),
                         theme::accent(),
                         style,
                     );
@@ -955,7 +987,7 @@ impl RenderPanelState {
                         Rect("render-start-disabled", layout.action) {
                             fill: theme::control(); border: 1; border_color: theme::line(); border_radius: style.radius_md;
                             font_size: 11.0 * style.text_scale; text_color: theme::muted().mix(theme::control(), 0.45);
-                            text_centered; text: "Start Render";
+                            text_centered; text: i18n::text("render-start-render");
                         }
                     });
                     render_button_icon(

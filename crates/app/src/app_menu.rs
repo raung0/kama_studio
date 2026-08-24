@@ -34,13 +34,13 @@ const APP_MENU_SECTIONS: [AppMenuSection; 5] = [
 ];
 
 impl AppMenuSection {
-    const fn label(self) -> &'static str {
+    const fn label_key(self) -> &'static str {
         match self {
-            Self::File => "File",
-            Self::Edit => "Edit",
-            Self::View => "View",
-            Self::Layout => "Layout",
-            Self::Help => "Help",
+            Self::File => "menu-file",
+            Self::Edit => "menu-edit",
+            Self::View => "menu-view",
+            Self::Layout => "menu-layout",
+            Self::Help => "menu-help",
         }
     }
 
@@ -59,52 +59,52 @@ impl AppMenuSection {
 #[derive(Clone, Copy)]
 struct MenuCommandSpec {
     id: &'static str,
-    label: &'static str,
+    label_key: &'static str,
 }
 
 const FILE_NEW_PROJECT: MenuCommandSpec = MenuCommandSpec {
     id: "project.new",
-    label: "New Project",
+    label_key: "menu-new-project",
 };
 const FILE_SAVE: MenuCommandSpec = MenuCommandSpec {
     id: "project.save",
-    label: "Save",
+    label_key: "menu-save",
 };
 const FILE_SAVE_AS: MenuCommandSpec = MenuCommandSpec {
     id: "project.save-as",
-    label: "Save As…",
+    label_key: "menu-save-as",
 };
 const FILE_OPEN_PROJECT: MenuCommandSpec = MenuCommandSpec {
     id: "project.open",
-    label: "Open Project…",
+    label_key: "menu-open-project",
 };
 const FILE_IMPORT_MEDIA: MenuCommandSpec = MenuCommandSpec {
     id: "media.import",
-    label: "Import Media…",
+    label_key: "menu-import-media",
 };
 const FILE_EXIT: MenuCommandSpec = MenuCommandSpec {
     id: "application.exit",
-    label: "Exit",
+    label_key: "menu-exit",
 };
 const VIEW_MENU_COMMAND: MenuCommandSpec = MenuCommandSpec {
     id: "application.command-palette",
-    label: "Command Palette…",
+    label_key: "menu-command-palette",
 };
 const HELP_MENU_COMMANDS: [MenuCommandSpec; 2] = [
     MenuCommandSpec {
         id: "application.report-issue",
-        label: "Report an issue / give feedback",
+        label_key: "menu-report-issue",
     },
     MenuCommandSpec {
         id: "application.get-help",
-        label: "Get help",
+        label_key: "menu-get-help",
     },
 ];
-const OPEN_RECENT_PROJECT_LABEL: &str = "Open Recent Project";
-const SAVE_LAYOUT_LABEL: &str = "Save Layout…";
-const RESTORE_DEFAULT_LAYOUT_LABEL: &str = "Restore Default Layout";
-const DELETE_LAYOUT_LABEL: &str = "Delete Layout";
-const ABOUT_MENU_LABEL: &str = "About Kama Studio…";
+const OPEN_RECENT_PROJECT_KEY: &str = "menu-open-recent-project";
+const SAVE_LAYOUT_KEY: &str = "menu-save-layout";
+const RESTORE_DEFAULT_LAYOUT_KEY: &str = "menu-restore-default-layout";
+const DELETE_LAYOUT_KEY: &str = "menu-delete-layout";
+const ABOUT_MENU_KEY: &str = "menu-about";
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -506,14 +506,14 @@ impl NativeMenu {
         let menu = Menu::new();
 
         let app_menu = Submenu::new("Kama Studio", true);
-        let about = MenuItem::new(ABOUT_MENU_LABEL, true, None);
+        let about = MenuItem::new(i18n::text(ABOUT_MENU_KEY), true, None);
         let settings = MenuItem::new(
-            "Settings…",
+            i18n::text("menu-settings"),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::Comma)),
         );
         let quit = MenuItem::new(
-            "Quit Kama Studio",
+            i18n::text("menu-quit"),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyQ)),
         );
@@ -535,19 +535,19 @@ impl NativeMenu {
         menu.append(&app_menu)
             .expect("append native application menu");
 
-        let file_menu = Submenu::new(AppMenuSection::File.label(), true);
+        let file_menu = Submenu::new(i18n::text(AppMenuSection::File.label_key()), true);
         let new_project = MenuItem::new(
-            FILE_NEW_PROJECT.label,
+            i18n::text(FILE_NEW_PROJECT.label_key),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyN)),
         );
         let save = MenuItem::new(
-            FILE_SAVE.label,
+            i18n::text(FILE_SAVE.label_key),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyS)),
         );
         let save_as = MenuItem::new(
-            FILE_SAVE_AS.label,
+            i18n::text(FILE_SAVE_AS.label_key),
             true,
             Some(Accelerator::new(
                 Some(Modifiers::META | Modifiers::SHIFT),
@@ -555,17 +555,17 @@ impl NativeMenu {
             )),
         );
         let load = MenuItem::new(
-            FILE_OPEN_PROJECT.label,
+            i18n::text(FILE_OPEN_PROJECT.label_key),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyO)),
         );
-        let recent_menu = Submenu::new(OPEN_RECENT_PROJECT_LABEL, false);
+        let recent_menu = Submenu::new(i18n::text(OPEN_RECENT_PROJECT_KEY), false);
         let import_media = MenuItem::new(
-            FILE_IMPORT_MEDIA.label,
+            i18n::text(FILE_IMPORT_MEDIA.label_key),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyI)),
         );
-        let exit = MenuItem::new(FILE_EXIT.label, true, None);
+        let exit = MenuItem::new(i18n::text(FILE_EXIT.label_key), true, None);
         file_menu
             .append_items(&[
                 &new_project,
@@ -581,7 +581,7 @@ impl NativeMenu {
             ])
             .expect("append native File menu items");
 
-        let edit_menu = Submenu::new(AppMenuSection::Edit.label(), true);
+        let edit_menu = Submenu::new(i18n::text(AppMenuSection::Edit.label_key()), true);
         let mut edit_items = Vec::with_capacity(EDIT_MENU_COMMANDS.len());
         for &command in EDIT_MENU_COMMANDS {
             let accelerator = match command {
@@ -609,9 +609,9 @@ impl NativeMenu {
             edit_items.push((item, command));
         }
 
-        let view_menu = Submenu::new(AppMenuSection::View.label(), true);
+        let view_menu = Submenu::new(i18n::text(AppMenuSection::View.label_key()), true);
         let view_palette = MenuItem::new(
-            VIEW_MENU_COMMAND.label,
+            i18n::text(VIEW_MENU_COMMAND.label_key),
             true,
             Some(Accelerator::new(Some(Modifiers::META), Code::KeyP)),
         );
@@ -619,20 +619,21 @@ impl NativeMenu {
             .append(&view_palette)
             .expect("append native View menu item");
 
-        let help_menu = Submenu::new(AppMenuSection::Help.label(), true);
+        let help_menu = Submenu::new(i18n::text(AppMenuSection::Help.label_key()), true);
         let mut help_items = Vec::with_capacity(HELP_MENU_COMMANDS.len());
         for command in HELP_MENU_COMMANDS {
-            let item = MenuItem::new(command.label, true, None);
+            let item = MenuItem::new(i18n::text(command.label_key), true, None);
             help_menu
                 .append(&item)
                 .expect("append native Help menu item");
             help_items.push((item, command.id));
         }
 
-        let layout_menu = Submenu::new(AppMenuSection::Layout.label(), true);
-        let save_layout = MenuItem::new(SAVE_LAYOUT_LABEL, true, None);
-        let restore_default_layout = MenuItem::new(RESTORE_DEFAULT_LAYOUT_LABEL, true, None);
-        let delete_layout_menu = Submenu::new(DELETE_LAYOUT_LABEL, false);
+        let layout_menu = Submenu::new(i18n::text(AppMenuSection::Layout.label_key()), true);
+        let save_layout = MenuItem::new(i18n::text(SAVE_LAYOUT_KEY), true, None);
+        let restore_default_layout =
+            MenuItem::new(i18n::text(RESTORE_DEFAULT_LAYOUT_KEY), true, None);
+        let delete_layout_menu = Submenu::new(i18n::text(DELETE_LAYOUT_KEY), false);
         layout_menu
             .append_items(&[
                 &save_layout,
@@ -766,7 +767,11 @@ impl NativeMenu {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Project");
-            let item = MenuItem::new(format!("Open {label}"), true, None);
+            let item = MenuItem::new(
+                i18n::text_with_name("menu-open-project-name", label),
+                true,
+                None,
+            );
             self.file_menu
                 .insert(&item, 5)
                 .expect("insert latest project menu item");
@@ -1321,7 +1326,7 @@ pub(super) fn build_app_menu(
             ctx,
             ("app-menu-button", index),
             rect,
-            section.label(),
+            &i18n::text(section.label_key()),
             open_section == Some(section),
             cursor,
         );
@@ -1334,31 +1339,35 @@ pub(super) fn build_app_menu(
 
         let mut items = vec![
             (
-                FILE_NEW_PROJECT.label.to_string(),
+                i18n::text(FILE_NEW_PROJECT.label_key),
                 Some(FILE_NEW_PROJECT.id),
                 true,
                 None,
             ),
-            (FILE_SAVE.label.to_string(), Some(FILE_SAVE.id), true, None),
             (
-                FILE_SAVE_AS.label.to_string(),
+                i18n::text(FILE_SAVE.label_key),
+                Some(FILE_SAVE.id),
+                true,
+                None,
+            ),
+            (
+                i18n::text(FILE_SAVE_AS.label_key),
                 Some(FILE_SAVE_AS.id),
                 true,
                 None,
             ),
             (
-                FILE_OPEN_PROJECT.label.to_string(),
+                i18n::text(FILE_OPEN_PROJECT.label_key),
                 Some(FILE_OPEN_PROJECT.id),
                 true,
                 None,
             ),
             (
                 if recent.is_empty() {
-                    OPEN_RECENT_PROJECT_LABEL
+                    i18n::text(OPEN_RECENT_PROJECT_KEY)
                 } else {
-                    "Open Recent Project  ▸"
-                }
-                .to_string(),
+                    format!("{}  ▸", i18n::text(OPEN_RECENT_PROJECT_KEY))
+                },
                 None,
                 !recent.is_empty(),
                 Some(AppIcon::Open),
@@ -1373,12 +1382,17 @@ pub(super) fn build_app_menu(
         }
         items.extend([
             (
-                FILE_IMPORT_MEDIA.label.to_string(),
+                i18n::text(FILE_IMPORT_MEDIA.label_key),
                 Some(FILE_IMPORT_MEDIA.id),
                 true,
                 None,
             ),
-            (FILE_EXIT.label.to_string(), Some(FILE_EXIT.id), true, None),
+            (
+                i18n::text(FILE_EXIT.label_key),
+                Some(FILE_EXIT.id),
+                true,
+                None,
+            ),
         ]);
 
         for (index, (label, command, enabled, fallback_icon)) in items.into_iter().enumerate() {
@@ -1465,7 +1479,7 @@ pub(super) fn build_app_menu(
             view_menu_item_rect(),
             cursor,
             keyboard.active && keyboard.item == 0,
-            VIEW_MENU_COMMAND.label,
+            &i18n::text(VIEW_MENU_COMMAND.label_key),
             shortcut.as_deref(),
             icon,
             true,
@@ -1480,18 +1494,18 @@ pub(super) fn build_app_menu(
         let count = layouts.len();
         let popup = saved_layout_menu_popup_rect(count);
         build_popup(ctx, "app-layout-menu-popup", popup);
-        let mut items = vec![(SAVE_LAYOUT_LABEL.to_string(), None, true)];
+        let mut items = vec![(i18n::text(SAVE_LAYOUT_KEY), None, true)];
         items.extend(
             layouts
                 .iter()
                 .map(|layout| (layout.name.clone(), Some(AppIcon::Open), true)),
         );
-        items.push((RESTORE_DEFAULT_LAYOUT_LABEL.to_string(), None, true));
+        items.push((i18n::text(RESTORE_DEFAULT_LAYOUT_KEY), None, true));
         items.push((
             if count == 0 {
-                DELETE_LAYOUT_LABEL
+                i18n::text(DELETE_LAYOUT_KEY)
             } else {
-                "Delete Layout  ▸"
+                format!("{}  ▸", i18n::text(DELETE_LAYOUT_KEY))
             }
             .into(),
             Some(AppIcon::Delete),
@@ -1564,7 +1578,7 @@ pub(super) fn build_app_menu(
             help_menu_item_rect(about_index),
             cursor,
             keyboard.active && keyboard.item == about_index,
-            ABOUT_MENU_LABEL,
+            &i18n::text(ABOUT_MENU_KEY),
             None,
             Some(AppIcon::Inspector),
             true,

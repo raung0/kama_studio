@@ -17,6 +17,9 @@ asset-importer = { version = "0.8", features = ["static-link"] }
 arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
 ctrlc = "3"
 rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path"] }
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+unic-langid = "0.9"
 vfs = { version = "0.13", features = ["embedded-fs"] }
 kama-ui = { path = "../ui" }
 kama-editor-core = { path = "../editor-core" }

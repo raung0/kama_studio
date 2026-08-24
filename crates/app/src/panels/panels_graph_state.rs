@@ -723,7 +723,7 @@ fn graph_cards(graph: GraphModel<'_>, plugins: &PluginRegistry) -> Vec<GraphCard
     }
     cards.push(GraphCard {
         kind: GraphNodeTarget::Output,
-        label: "Output".into(),
+        label: i18n::text("graph-output"),
         image_inputs: Vec::new(),
         inputs: Vec::new(),
         host_inputs: Vec::new(),

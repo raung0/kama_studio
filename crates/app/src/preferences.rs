@@ -45,6 +45,8 @@ struct PreferencesFile {
     reveal_accent_mix: f32,
     #[serde(default = "default_hardware_decoding")]
     hardware_decoding: bool,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 fn default_dark_accent() -> [u8; 4] {
@@ -111,6 +113,7 @@ impl Default for PreferencesFile {
             reveal_strength: default_reveal_strength(),
             reveal_accent_mix: default_reveal_accent_mix(),
             hardware_decoding: default_hardware_decoding(),
+            language: None,
         }
     }
 }
@@ -127,6 +130,7 @@ pub(crate) fn load_plugin_paths() -> String {
 
 pub(crate) fn load(registry: &mut CommandRegistry) {
     let preferences = read_json::<PreferencesFile>(&path()).unwrap_or_default();
+    let _ = crate::i18n::initialize(preferences.language.as_deref());
     theme::set_theme_immediate(preferences.theme);
     let dark_accent = if preferences.dark_accent == [0xf0, 0xa2, 0x15, 0xff] {
         default_dark_accent()
@@ -173,6 +177,7 @@ pub(crate) fn save(registry: &CommandRegistry, plugin_paths: &str) {
         reveal_strength: kama_ui::reveal_strength(),
         reveal_accent_mix: kama_ui::reveal_accent_mix(),
         hardware_decoding: hardware_decoding_enabled(),
+        language: crate::i18n::preference(),
     };
     let _ = atomic_write_json(&path(), &preferences);
 }
@@ -277,6 +282,7 @@ fn preference_dialog_rects(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingEntry {
+    Language,
     Theme,
     DarkAccent,
     LightAccent,
@@ -291,6 +297,10 @@ enum SettingEntry {
 
 fn filtered_settings(query: &str) -> Vec<SettingEntry> {
     let entries = [
+        (
+            SettingEntry::Language,
+            "Language System English locale translation i18n",
+        ),
         (
             SettingEntry::Theme,
             "Theme preset System Light Dark appearance",
@@ -480,6 +490,7 @@ pub(crate) struct SettingsDialog {
     dark_accent: ColorPicker,
     light_accent: ColorPicker,
     theme_combo: ComboBox,
+    language_combo: ComboBox,
     brightness: Slider,
     accent_mixing: Slider,
     reveal_strength: Slider,
@@ -505,6 +516,12 @@ impl SettingsDialog {
                 theme::light_accent_rgba8()[3],
             )),
             theme_combo: ComboBox::new(theme_index(theme::theme())),
+            language_combo: ComboBox::new(
+                crate::i18n::language_options()
+                    .iter()
+                    .position(|option| option.language == crate::i18n::preference())
+                    .unwrap_or_default(),
+            ),
             brightness: Slider::new(theme::brightness()),
             accent_mixing: Slider::new(theme::accent_mixing()),
             reveal_strength: Slider::new(kama_ui::reveal_strength()),
@@ -523,6 +540,7 @@ impl SettingsDialog {
         self.dark_accent.tick(dt);
         self.light_accent.tick(dt);
         self.theme_combo.tick(dt);
+        self.language_combo.tick(dt);
         self.brightness.tick(dt);
         self.accent_mixing.tick(dt);
         self.reveal_strength.tick(dt);
@@ -535,6 +553,7 @@ impl SettingsDialog {
             || self.dark_accent.is_animating()
             || self.light_accent.is_animating()
             || self.theme_combo.is_animating()
+            || self.language_combo.is_animating()
             || self.brightness.is_animating()
             || self.accent_mixing.is_animating()
             || self.reveal_strength.is_animating()
@@ -559,6 +578,11 @@ impl SettingsDialog {
     ) {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
+        let language_options = crate::i18n::language_options();
+        let language_labels = language_options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect::<Vec<_>>();
         let layout = self.search.rects(rect, entries.len(), 0.57);
         dialog::build_search_dialog(
             ctx,
@@ -569,14 +593,14 @@ impl SettingsDialog {
             rect,
             self.animation.opacity(std::time::Instant::now()),
             &layout.shell,
-            Some("Settings"),
-            "↑↓ select    ↵ change    esc close",
+            Some(&crate::i18n::text("settings-title")),
+            &crate::i18n::text("settings-hint"),
             |ctx, _shell| {
                 self.search.query.build(
                     ctx,
                     "settings-search",
                     layout.shell.search,
-                    "Search settings…",
+                    &crate::i18n::text("settings-search-placeholder"),
                     component_style(),
                 );
                 let mut dark_accent_swatch = None;
@@ -589,7 +613,7 @@ impl SettingsDialog {
                             layout.shell.empty,
                             10.5,
                             theme::popup_muted(),
-                            "No fuzzy matches",
+                            crate::i18n::text("settings-no-results"),
                         );
                     } else {
                         let selected = self.search.selected.min(entries.len() - 1);
@@ -604,41 +628,48 @@ impl SettingsDialog {
                             }
                         });
                         let (name, value) = match entry {
+                            SettingEntry::Language => (
+                                crate::i18n::text("settings-language"),
+                                language_options
+                                    .get(self.language_combo.selected())
+                                    .map(|option| option.label.clone())
+                                    .unwrap_or_default(),
+                            ),
                             SettingEntry::Theme => (
-                                "Theme preset",
+                                crate::i18n::text("settings-theme"),
                                 match theme::theme() {
-                                    ThemePreset::System => "System".to_string(),
-                                    ThemePreset::Light => "Light".to_string(),
-                                    ThemePreset::Dark => "Dark".to_string(),
+                                    ThemePreset::System => crate::i18n::text("settings-system"),
+                                    ThemePreset::Light => crate::i18n::text("settings-light"),
+                                    ThemePreset::Dark => crate::i18n::text("settings-dark"),
                                 },
                             ),
                             SettingEntry::DarkAccent => {
                                 let rgba = theme::dark_accent_rgba8();
                                 (
-                                    "Dark accent color",
+                                    crate::i18n::text("settings-dark-accent"),
                                     format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
                                 )
                             }
                             SettingEntry::LightAccent => {
                                 let rgba = theme::light_accent_rgba8();
                                 (
-                                    "Light accent color",
+                                    crate::i18n::text("settings-light-accent"),
                                     format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3]),
                                 )
                             }
-                            SettingEntry::Brightness => ("Brightness", String::new()),
-                            SettingEntry::AccentMixing => ("Accent mixing", String::new()),
-                            SettingEntry::RevealStrength => ("Reveal strength", String::new()),
-                            SettingEntry::RevealAccentMix => ("Reveal accent mix", String::new()),
+                            SettingEntry::Brightness => (crate::i18n::text("settings-brightness"), String::new()),
+                            SettingEntry::AccentMixing => (crate::i18n::text("settings-accent-mixing"), String::new()),
+                            SettingEntry::RevealStrength => (crate::i18n::text("settings-reveal-strength"), String::new()),
+                            SettingEntry::RevealAccentMix => (crate::i18n::text("settings-reveal-accent-mix"), String::new()),
                             SettingEntry::RoundedCorners => (
-                                "Rounded corners",
-                                if kama_ui::rounded_corners_enabled() { "On" } else { "Off" }.to_string(),
+                                crate::i18n::text("settings-rounded-corners"),
+                                crate::i18n::text(if kama_ui::rounded_corners_enabled() { "settings-on" } else { "settings-off" }),
                             ),
                             SettingEntry::HardwareDecoding => (
-                                "Hardware decoding",
-                                if hardware_decoding_enabled() { "On" } else { "Off" }.to_string(),
+                                crate::i18n::text("settings-hardware-decoding"),
+                                crate::i18n::text(if hardware_decoding_enabled() { "settings-on" } else { "settings-off" }),
                             ),
-                            SettingEntry::PluginPaths => ("Plugin paths", String::new()),
+                            SettingEntry::PluginPaths => (crate::i18n::text("settings-plugin-paths"), String::new()),
                         };
                         kama_ui::ui!(ctx, {
                             Rect(("settings-name", index), row.label) {
@@ -648,6 +679,16 @@ impl SettingsDialog {
                             }
                         });
                         match entry {
+                            SettingEntry::Language => {
+                                self.language_combo.build_control(
+                                    ctx,
+                                    "settings-language-value",
+                                    row.value,
+                                    &language_labels,
+                                    chevron,
+                                    component_style(),
+                                );
+                            }
                             SettingEntry::Theme => {
                                 self.theme_combo.set_selected(theme_index(theme::theme()));
                                 self.theme_combo.build_control(
@@ -769,18 +810,38 @@ impl SettingsDialog {
                         component_style(),
                     );
                 }
+                if let Some(index) = entries
+                    .iter()
+                    .position(|entry| *entry == SettingEntry::Language)
+                {
+                    self.language_combo.build_popup(
+                        ctx,
+                        "settings-language-value",
+                        layout.items[index].value,
+                        &language_labels,
+                        component_style(),
+                    );
+                }
             },
         );
     }
 
     fn activate(&mut self, entry: SettingEntry) {
         match entry {
+            SettingEntry::Language => {
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                self.theme_combo.close();
+                self.language_combo.toggle();
+            }
             SettingEntry::Theme => {
+                self.language_combo.close();
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
                 self.theme_combo.toggle();
             }
             SettingEntry::DarkAccent => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -788,6 +849,7 @@ impl SettingsDialog {
                 self.dark_accent.open_and_focus_hex();
             }
             SettingEntry::LightAccent => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -798,6 +860,7 @@ impl SettingsDialog {
             | SettingEntry::AccentMixing
             | SettingEntry::RevealStrength
             | SettingEntry::RevealAccentMix => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -805,6 +868,7 @@ impl SettingsDialog {
                 self.light_accent.close();
             }
             SettingEntry::RoundedCorners => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -813,6 +877,7 @@ impl SettingsDialog {
                 kama_ui::set_rounded_corners_enabled(!kama_ui::rounded_corners_enabled());
             }
             SettingEntry::HardwareDecoding => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -821,6 +886,7 @@ impl SettingsDialog {
                 set_hardware_decoding_enabled(!hardware_decoding_enabled());
             }
             SettingEntry::PluginPaths => {
+                self.language_combo.close();
                 self.theme_combo.close();
                 self.search.query.set_focused(false);
                 self.dark_accent.close();
@@ -839,7 +905,41 @@ impl SettingsDialog {
     ) -> bool {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
+        let language_options = crate::i18n::language_options();
         let layout = self.search.rects(rect, entries.len(), 0.57);
+        if let Some(index) = entries
+            .iter()
+            .position(|entry| *entry == SettingEntry::Language)
+        {
+            let value = layout.items[index].value;
+            if let Some(option) =
+                self.language_combo
+                    .option_at(value, point, language_options.len())
+            {
+                self.language_combo.select(option, true);
+                let _ = crate::i18n::set_language(language_options[option].language.as_deref());
+                self.search.selected = index;
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                return true;
+            }
+            if value.contains(point) {
+                self.search.selected = index;
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                self.language_combo.toggle();
+                return true;
+            }
+            if self.language_combo.is_open()
+                && !self
+                    .language_combo
+                    .popup_contains(value, point, language_options.len())
+            {
+                self.language_combo.close();
+            }
+        }
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::Theme)
@@ -1079,6 +1179,32 @@ impl SettingsDialog {
             return true;
         }
         let entries = filtered_settings(self.search.query.text());
+        let language_options = crate::i18n::language_options();
+        if self.language_combo.is_open() {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
+                    self.language_combo.close();
+                    return true;
+                }
+                Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) => {
+                    let selected = match event.logical_key {
+                        Key::Named(NamedKey::ArrowDown) => {
+                            (self.language_combo.selected() + 1) % language_options.len()
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            (self.language_combo.selected() + language_options.len() - 1)
+                                % language_options.len()
+                        }
+                        _ => unreachable!(),
+                    };
+                    self.language_combo.set_selected(selected);
+                    let _ =
+                        crate::i18n::set_language(language_options[selected].language.as_deref());
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if self.theme_combo.is_open() {
             match &event.logical_key {
                 Key::Named(NamedKey::Escape | NamedKey::Enter) => {
@@ -1218,6 +1344,19 @@ impl SettingsDialog {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::PreferencesFile;
+
+    #[test]
+    fn existing_preferences_without_language_use_system_default() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"plugin_paths\": \"plugins\"}")
+            .expect("existing settings JSON should deserialize");
+        assert_eq!(preferences.language, None);
+        assert_eq!(preferences.plugin_paths, "plugins");
+    }
+}
+
 fn filtered_keybind_indices(registry: &CommandRegistry, query: &str) -> Vec<usize> {
     if query.trim().is_empty() {
         return (0..registry.definitions().len()).collect();
@@ -1297,14 +1436,14 @@ impl KeybindsDialog {
             rect,
             self.animation.opacity(std::time::Instant::now()),
             &layout.shell,
-            Some("Keybinds"),
-            "↑↓ select    ↵ rebind    esc cancel/close",
+            Some(&crate::i18n::text("keybinds-title")),
+            &crate::i18n::text("keybinds-hint"),
             |ctx, _shell| {
                 self.search.query.build(
                     ctx,
                     "keybinds-search",
                     layout.shell.search,
-                    "Search commands…",
+                    &crate::i18n::text("keybinds-search-placeholder"),
                     component_style(),
                 );
                 ctx.with_clip(layout.shell.rows, |ctx| {
@@ -1315,7 +1454,7 @@ impl KeybindsDialog {
                             layout.shell.empty,
                             10.5,
                             theme::popup_muted(),
-                            "No fuzzy matches",
+                            crate::i18n::text("settings-no-results"),
                         );
                     }
                     for (visible_index, definition_index) in indices.into_iter().enumerate() {
@@ -1338,11 +1477,11 @@ impl KeybindsDialog {
                         }
                     });
                     let value = if self.capturing.as_deref() == Some(definition.id.as_str()) {
-                        "Press shortcut…  (⌫ unbind)".to_string()
+                        crate::i18n::text("keybinds-capture")
                     } else {
                         definition
                             .shortcut
-                            .map_or_else(|| "Unbound".into(), |binding| binding.to_string())
+                            .map_or_else(|| crate::i18n::text("keybinds-unbound"), |binding| binding.to_string())
                     };
                     kama_ui::ui!(ctx, {
                         Rect(("keybind-value", &definition.id), row.value) {

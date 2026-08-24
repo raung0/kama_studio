@@ -2,7 +2,7 @@ use std::{hash::Hash, sync::Arc};
 
 use kama_ui::{BlockId, Color, CursorShape, Rect, ScrollState, Size};
 
-use crate::theme;
+use crate::{i18n, theme};
 
 pub(crate) const SEARCH_DIALOG_PADDING: f32 = 6.0;
 pub(crate) const SEARCH_DIALOG_GAP: f32 = 3.0;
@@ -339,7 +339,7 @@ pub(crate) fn build_search_dialog<K1, K2, K3, F>(
                         text_centered;
                         text: "×";
                         interactive;
-                        tooltip: "Close";
+                        tooltip: i18n::text("dialog-close");
                     }
                 });
             }

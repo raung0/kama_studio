@@ -576,10 +576,10 @@ impl CommandRegistry {
             registry.register_hidden_editor_command(
                 format!(
                     "panel.open.{}",
-                    info.title.to_ascii_lowercase().replace(' ', "-")
+                    info.layout_title.to_ascii_lowercase().replace(' ', "-")
                 ),
-                format!("Open {}", info.title),
-                info.description,
+                format!("Open {}", info.layout_title),
+                info.description_key,
                 info.icon,
                 EditorCommand::Action(PaletteAction::AddPanel(panel, None)),
             );

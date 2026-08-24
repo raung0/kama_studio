@@ -63,6 +63,7 @@ mod embedded_vfs;
 mod file_io;
 mod gradient;
 mod history;
+mod i18n;
 mod messages;
 mod meters;
 mod model3d;
@@ -183,21 +184,24 @@ enum PanelKind {
 
 #[derive(Clone, Copy)]
 struct PanelInfo {
-    title: &'static str,
-    description: &'static str,
+    layout_title: &'static str,
+    title_key: &'static str,
+    description_key: &'static str,
     icon: AppIcon,
 }
 
 macro_rules! panel_info {
-    ($($variant:ident => ($title:expr, $description:expr, $icon:expr)),+ $(,)?) => {
+    ($($variant:ident => ($layout_title:expr, $title_key:expr, $description_key:expr, $icon:expr)),+ $(,)?) => {
         impl PanelKind {
-            const INFO: &'static [PanelInfo] = &[$(PanelInfo { title: $title, description: $description, icon: $icon }),+];
+            const INFO: &'static [PanelInfo] = &[$(PanelInfo { layout_title: $layout_title, title_key: $title_key, description_key: $description_key, icon: $icon }),+];
             fn info(self) -> PanelInfo { Self::INFO[self as usize] }
-            fn title(self) -> &'static str { self.info().title }
+            fn layout_title(self) -> &'static str { self.info().layout_title }
+            fn display_title(self) -> String { i18n::text(self.info().title_key) }
+            fn display_description(self) -> String { i18n::text(self.info().description_key) }
             fn from_title(title: &str) -> Option<Self> {
                 [$(Self::$variant),+].into_iter().find(|panel| {
                     if !cfg!(debug_assertions) && *panel == Self::Widgets { return false; }
-                    panel.title() == title
+                    panel.layout_title() == title
                 })
             }
         }
@@ -205,17 +209,17 @@ macro_rules! panel_info {
 }
 
 panel_info! {
-    Media => ("Media", "Project media", AppIcon::Media),
-    Monitor => ("Monitor", "Timeline output monitor", AppIcon::Monitor),
-    Inspector => ("Inspector", "Clip, track and pipeline properties", AppIcon::Inspector),
-    ProjectOptions => ("Composition Settings", "Canvas, frame rate and composition background", AppIcon::Composition),
-    History => ("History", "Branching undo history", AppIcon::History),
-    Pipeline => ("Graph", "Audio and video Effect Pipeline graph editor", AppIcon::Graph),
-    Render => ("Render", "Presets, output settings and background rendering", AppIcon::Render),
-    Timeline => ("Timeline", "Video and audio editing timeline", AppIcon::Timeline),
-    Messages => ("Messages", "Plugin, render and runtime warnings and errors", AppIcon::Messages),
-    Widgets => ("Widgets", "Interactive UI widget gallery", AppIcon::Widgets),
-    Meters => ("Meters", "Final stereo master output levels", AppIcon::Meters),
+    Media => ("Media", "panel-media", "panel-media-description", AppIcon::Media),
+    Monitor => ("Monitor", "panel-monitor", "panel-monitor-description", AppIcon::Monitor),
+    Inspector => ("Inspector", "panel-inspector", "panel-inspector-description", AppIcon::Inspector),
+    ProjectOptions => ("Composition Settings", "panel-project-options", "panel-project-options-description", AppIcon::Composition),
+    History => ("History", "panel-history", "panel-history-description", AppIcon::History),
+    Pipeline => ("Graph", "panel-pipeline", "panel-pipeline-description", AppIcon::Graph),
+    Render => ("Render", "panel-render", "panel-render-description", AppIcon::Render),
+    Timeline => ("Timeline", "panel-timeline", "panel-timeline-description", AppIcon::Timeline),
+    Messages => ("Messages", "panel-messages", "panel-messages-description", AppIcon::Messages),
+    Widgets => ("Widgets", "panel-widgets", "panel-widgets-description", AppIcon::Widgets),
+    Meters => ("Meters", "panel-meters", "panel-meters-description", AppIcon::Meters),
 }
 
 impl PanelKind {
@@ -4070,7 +4074,7 @@ impl EditorApp {
                 .stack
                 .tabs
                 .iter()
-                .find(|tab| tab.title == panel.title())
+                .find(|tab| tab.title == panel.layout_title())
                 .map(|tab| (stack.stack.id, tab.id))
         }) {
             self.dock.activate_tab(stack_id, tab_id);
@@ -4091,12 +4095,12 @@ impl EditorApp {
                     .stack
                     .tabs
                     .iter()
-                    .any(|tab| tab.title == neighbor.title())
+                    .any(|tab| tab.title == neighbor.layout_title())
             })
             .map(|stack| stack.stack.id)
             .or(self.dock.focused);
         if let Some(stack) = target {
-            self.dock.add_tab(stack, panel.title());
+            self.dock.add_tab(stack, panel.layout_title());
             self.set_panel_focus(stack, panel);
         }
     }
@@ -4857,7 +4861,7 @@ impl EditorApp {
             PaletteAction::ResetLayout => self.dock = default_dock(),
             PaletteAction::AddPanel(panel, stack) => {
                 if let Some(stack) = stack.or(self.dock.focused) {
-                    self.dock.add_tab(stack, panel.title());
+                    self.dock.add_tab(stack, panel.layout_title());
                 }
             }
             PaletteAction::InsertGenerator {
@@ -5259,7 +5263,9 @@ fn build_stack(
                             height: Size::Fill;
                             font_size: 10.5;
                             text_color: if selected { theme::text() } else { theme::muted() };
-                            text: tab.title.clone();
+                            text: PanelKind::from_title(&tab.title)
+                                .map(|panel| panel.display_title())
+                                .unwrap_or_else(|| tab.title.clone());
                         }
                     }
                 }
@@ -5277,7 +5283,7 @@ fn build_stack(
                     border_color: theme::line_soft();
                     border_radius: RADIUS_SM;
                     interactive;
-                    tooltip: "Add panel";
+                    tooltip: i18n::text("dock-add-panel");
                     content_centered;
 
                     Icon {
@@ -5304,9 +5310,9 @@ fn build_stack(
                         border_radius: RADIUS_SM;
                         interactive;
                         tooltip: if maximized {
-                            "Restore panel"
+                            i18n::text("dock-restore-panel")
                         } else {
-                            "Maximize panel"
+                            i18n::text("dock-maximize-panel")
                         };
                         content_centered;
 

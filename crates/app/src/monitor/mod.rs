@@ -7,6 +7,7 @@ use crate::{
         colors_from_values, colors_to_values, insert_midpoint, inserted_color,
         normalized_midpoints, remove_midpoint,
     },
+    i18n,
     panels::GraphMonitorSelection,
     playback::{
         generator_content_bounds, tight_generator_source_geometry, PreviewOutput, SourceGeometry,
@@ -811,7 +812,7 @@ impl MonitorState {
                 AppIcon::ViewportSnap,
                 self.viewport_snap,
                 true,
-                "Viewport Snap",
+                &i18n::text("monitor-viewport-snap"),
             ),
             (
                 "monitor-clip-snap",
@@ -819,7 +820,7 @@ impl MonitorState {
                 AppIcon::MonitorClipSnap,
                 self.clip_snap,
                 true,
-                "Clip Snap",
+                &i18n::text("monitor-clip-snap"),
             ),
             (
                 "monitor-pen-tool",
@@ -827,7 +828,7 @@ impl MonitorState {
                 AppIcon::Pen,
                 self.pen_tool,
                 true,
-                "Pen tool",
+                &i18n::text("monitor-pen-tool"),
             ),
             (
                 "monitor-master-mute",
@@ -835,7 +836,7 @@ impl MonitorState {
                 AppIcon::MasterMute,
                 self.master_muted,
                 true,
-                "Master Mute",
+                &i18n::text("monitor-master-mute"),
             ),
             (
                 "monitor-capture-frame",
@@ -843,7 +844,7 @@ impl MonitorState {
                 AppIcon::CaptureFrame,
                 false,
                 true,
-                "Capture frame to Media",
+                &i18n::text("monitor-capture-frame"),
             ),
             (
                 "monitor-capture-temp",
@@ -851,7 +852,7 @@ impl MonitorState {
                 AppIcon::CaptureTemp,
                 self.captured_frame.is_some(),
                 true,
-                "Temporary frame capture",
+                &i18n::text("monitor-temporary-capture"),
             ),
             (
                 "monitor-show-capture",
@@ -859,7 +860,7 @@ impl MonitorState {
                 AppIcon::ShowCapture,
                 self.show_captured_frame,
                 self.captured_frame.is_some(),
-                "Show captured frame",
+                &i18n::text("monitor-show-capture"),
             ),
         ] {
             monitor_icon_toggle(ctx, id, rect, icons.get(icon), active, enabled, tooltip);

@@ -253,29 +253,29 @@ pub(super) fn build_modal_button<K: Hash>(
 #[derive(Clone, Copy)]
 pub(super) struct ActionModalSpec {
     id: &'static str,
-    title: &'static str,
+    title_key: &'static str,
     size: [f32; 2],
     description_height: f32,
-    primary_label: &'static str,
+    primary_label_key: &'static str,
     primary_width: f32,
     secondary_offset: f32,
 }
 
 const DISCARD_MODAL: ActionModalSpec = ActionModalSpec {
     id: "discard",
-    title: "Discard unsaved changes?",
+    title_key: "dialog-discard-title",
     size: [390.0, 132.0],
     description_height: 38.0,
-    primary_label: "Discard",
+    primary_label_key: "dialog-discard",
     primary_width: 80.0,
     secondary_offset: 174.0,
 };
 const BUSY_MODAL: ActionModalSpec = ActionModalSpec {
     id: "busy-project",
-    title: "Render in progress",
+    title_key: "dialog-render-in-progress",
     size: [390.0, 128.0],
     description_height: 44.0,
-    primary_label: "Stop & Continue",
+    primary_label_key: "dialog-stop-and-continue",
     primary_width: 114.0,
     secondary_offset: 206.0,
 };
@@ -359,18 +359,26 @@ pub(super) fn build_action_dialog(
         (viewport, rect),
         opacity,
         |ctx| {
-            build_modal_title(ctx, (spec.id, "title"), title_rect, spec.title);
+            build_modal_title(
+                ctx,
+                (spec.id, "title"),
+                title_rect,
+                &i18n::text(spec.title_key),
+            );
             ui::ui!(ctx, {
                 Rect((spec.id, "description"), description_rect) {
                     font_size: 10.5; text_color: theme::popup_muted(); text: description.into();
                 }
             });
-            for (primary, label) in [(false, "Cancel"), (true, spec.primary_label)] {
+            for (primary, label) in [
+                (false, i18n::text("dialog-cancel")),
+                (true, i18n::text(spec.primary_label_key)),
+            ] {
                 build_modal_button(
                     ctx,
                     (spec.id, "button", primary),
                     action_button_rect(local, primary, spec),
-                    label,
+                    &label,
                     if primary {
                         ModalButtonRole::Danger
                     } else {
@@ -507,7 +515,12 @@ pub(super) fn build_missing_media_dialog(
         (viewport, rect),
         dialog.opacity(Instant::now()),
         |ctx| {
-            build_modal_title(ctx, "missing-media-title", title_rect, "Missing media");
+            build_modal_title(
+                ctx,
+                "missing-media-title",
+                title_rect,
+                &i18n::text("dialog-missing-media"),
+            );
             ui::ui!(ctx, {
                 Rect("missing-media-message", body_rect) {
                     font_size: 10.5;
@@ -519,14 +532,14 @@ pub(super) fn build_missing_media_dialog(
                 ctx,
                 "missing-media-cancel",
                 missing_media_button_rect(local, false),
-                "Cancel",
+                &i18n::text("dialog-cancel"),
                 ModalButtonRole::Secondary,
             );
             build_modal_button(
                 ctx,
                 "missing-media-confirm",
                 missing_media_button_rect(local, true),
-                "Load Project",
+                &i18n::text("dialog-load-project"),
                 ModalButtonRole::Danger,
             );
         },
@@ -538,7 +551,7 @@ pub(super) struct TextModalSpec {
     id: &'static str,
     size: [f32; 2],
     input_y: f32,
-    placeholder: &'static str,
+    placeholder_key: &'static str,
     confirm: &'static str,
 }
 
@@ -633,22 +646,22 @@ pub(super) const NEW_COMPOSITION_MODAL: TextModalSpec = TextModalSpec {
     id: "new-composition",
     size: [360.0, 112.0],
     input_y: 34.0,
-    placeholder: "Composition name…",
-    confirm: "Create",
+    placeholder_key: "dialog-composition-name",
+    confirm: "dialog-create",
 };
 pub(super) const SPEED_DURATION_MODAL: TextModalSpec = TextModalSpec {
     id: "speed-duration",
     size: [420.0, 176.0],
     input_y: 82.0,
-    placeholder: "Value…",
-    confirm: "Apply",
+    placeholder_key: "dialog-value",
+    confirm: "dialog-apply",
 };
 pub(super) const LAYOUT_SAVE_MODAL: TextModalSpec = TextModalSpec {
     id: "layout-save",
     size: [340.0, 112.0],
     input_y: 34.0,
-    placeholder: "Layout name…",
-    confirm: "Save",
+    placeholder_key: "dialog-layout-name",
+    confirm: "dialog-save",
 };
 
 pub(super) fn build_text_modal(
@@ -679,15 +692,18 @@ pub(super) fn build_text_modal(
                 ctx,
                 format_args!("{}-input", spec.id),
                 spec.input(local),
-                spec.placeholder,
+                &i18n::text(spec.placeholder_key),
                 input_style,
             );
-            for (confirm, label) in [(false, "Cancel"), (true, spec.confirm)] {
+            for (confirm, label) in [
+                (false, i18n::text("dialog-cancel")),
+                (true, i18n::text(spec.confirm)),
+            ] {
                 build_modal_button(
                     ctx,
                     (spec.id, "button", confirm),
                     spec.button(local, confirm),
-                    label,
+                    &label,
                     if confirm {
                         ModalButtonRole::Primary
                     } else {
@@ -1178,13 +1194,13 @@ fn build_command_palette_dialog(
         opacity,
         &layout,
         None,
-        "↑↓ select    ↵ open    esc close",
+        &i18n::text("palette-hint"),
         |ctx, layout| {
             state.query.build(
                 ctx,
                 "palette-input",
                 layout.search,
-                "Type to fuzzy-find a command…",
+                &i18n::text("palette-command-search"),
                 component_style(),
             );
             ctx.with_clip(layout.rows, |ctx| {
@@ -1195,7 +1211,7 @@ fn build_command_palette_dialog(
                         layout.empty,
                         10.5,
                         theme::popup_muted(),
-                        "No fuzzy matches",
+                        i18n::text("settings-no-results"),
                     );
                 }
                 let selected = state.selected.min(entries.len().saturating_sub(1));
@@ -1329,7 +1345,7 @@ pub(super) fn build_palette(
                         height: Size::Fill;
                         font_size: 14.0;
                         text_color: theme::popup_text();
-                        text: "Replace Selected Clips";
+                        text: i18n::text("palette-replace-selected-clips");
                     }
                     Block {
                         id: "replacement-picker-close";
@@ -1344,7 +1360,7 @@ pub(super) fn build_palette(
                         text_centered;
                         text: "×";
                         interactive;
-                        tooltip: "Close";
+                        tooltip: i18n::text("dialog-close");
                     }
                 }
             }
@@ -1364,23 +1380,23 @@ pub(super) fn build_palette(
                             (width - dialog::SEARCH_DIALOG_PADDING * 2.0).max(0.0),
                             metrics.input_h,
                         ),
-                        match state.kind {
-                            Some(PaletteKind::Commands) => "Type to fuzzy-find a command…",
-                            Some(PaletteKind::AddPanel(_)) => "Add a panel…",
-                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Video, .. }) => "Search video clips… (@ media)",
-                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Audio, .. }) => "Search audio clips…",
-                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Effect, .. }) => "Search effect clips…",
-                            Some(PaletteKind::VideoClip { .. }) => "Search generators… (@ media)",
-                            Some(PaletteKind::PipelineAssignment(PipelineKind::Audio)) => "Assign an Audio Pipeline…",
-                            Some(PaletteKind::NewPipeline) => "Choose pipeline type…",
-                            Some(PaletteKind::PipelineAssignment(PipelineKind::Video)) => "Assign an Effect Pipeline…",
-                            Some(PaletteKind::AddEffect { audio: true }) => "Search audio effects…",
-                            Some(PaletteKind::AddEffect { audio: false }) => "Search effects…",
-                            Some(PaletteKind::FontFamily) => "Search fonts…",
-                            Some(PaletteKind::NodeInsert { .. }) => "Search nodes…",
-                            Some(PaletteKind::EffectClip { .. }) => "Search effect clips…",
-                            Some(PaletteKind::ReplaceSelectedClips { .. }) => "Search replacement media…",
-                            None => "Search…",
+                        &match state.kind {
+                            Some(PaletteKind::Commands) => i18n::text("palette-command-search"),
+                            Some(PaletteKind::AddPanel(_)) => i18n::text("palette-add-panel-search"),
+                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Video, .. }) => i18n::text("palette-video-search"),
+                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Audio, .. }) => i18n::text("palette-audio-search"),
+                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Effect, .. }) => i18n::text("palette-effect-search"),
+                            Some(PaletteKind::VideoClip { .. }) => i18n::text("palette-generators-search"),
+                            Some(PaletteKind::PipelineAssignment(PipelineKind::Audio)) => i18n::text("palette-audio-pipeline-search"),
+                            Some(PaletteKind::NewPipeline) => i18n::text("palette-pipeline-type-search"),
+                            Some(PaletteKind::PipelineAssignment(PipelineKind::Video)) => i18n::text("palette-effect-pipeline-search"),
+                            Some(PaletteKind::AddEffect { audio: true }) => i18n::text("palette-audio-effects-search"),
+                            Some(PaletteKind::AddEffect { audio: false }) => i18n::text("palette-effects-search"),
+                            Some(PaletteKind::FontFamily) => i18n::text("palette-fonts-search"),
+                            Some(PaletteKind::NodeInsert { .. }) => i18n::text("palette-nodes-search"),
+                            Some(PaletteKind::EffectClip { .. }) => i18n::text("palette-effect-search"),
+                            Some(PaletteKind::ReplaceSelectedClips { .. }) => i18n::text("palette-replacement-search"),
+                            None => i18n::text("palette-search"),
                         },
                         component_style(),
                     );
@@ -1430,7 +1446,7 @@ pub(super) fn build_palette(
                         padding: 6.0;
                         font_size: 10.5;
                         text_color: theme::popup_muted();
-                        text: "No fuzzy matches";
+                        text: i18n::text("settings-no-results");
                     }
                 }
 
@@ -1542,14 +1558,14 @@ pub(super) fn build_palette(
                         height: Size::Fill;
                         font_size: 9.0;
                         text_color: theme::popup_dim();
-                        text: "↑↓ select    ↵ open    esc close";
+                        text: i18n::text("palette-hint");
                     }
                     Block {
                         id: "palette-close";
                         width: Size::Pixels(44.0);
                         height: Size::Fill;
                         interactive;
-                        tooltip: "Close";
+                        tooltip: i18n::text("dialog-close");
                         content_centered;
 
                         Icon {
@@ -1877,8 +1893,8 @@ pub(super) fn palette_entries(
             for panel in PanelKind::ALL {
                 let info = panel.info();
                 entries.push(e(
-                    info.title,
-                    info.description,
+                    &panel.display_title(),
+                    &panel.display_description(),
                     info.icon,
                     PaletteAction::AddPanel(panel, Some(stack)),
                 ));
