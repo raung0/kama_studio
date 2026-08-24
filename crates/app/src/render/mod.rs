@@ -609,6 +609,7 @@ impl RenderPanelState {
         project: &Project,
         timeline: &TimelineState,
         icons: Icons,
+        popup_bounds: Rect,
     ) {
         let chevron = icons.get(AppIcon::Chevron);
         if !self.begin_set {
@@ -707,12 +708,13 @@ impl RenderPanelState {
                     .map(|preset| format!("{}: {}", preset.category, preset.name))
                     .collect::<Vec<_>>();
                 let preset_options = preset_names.iter().map(String::as_str).collect::<Vec<_>>();
-                self.combo(RenderCombo::Preset).build(
+                self.combo(RenderCombo::Preset).build_in(
                     ctx,
                     "render-preset-combo",
                     layout.combo(RenderCombo::Preset).unwrap(),
                     &preset_options,
                     chevron,
+                    popup_bounds,
                     style,
                 );
                 self.preset_name.build(
@@ -745,12 +747,13 @@ impl RenderPanelState {
                     .iter()
                     .map(|value| value.label())
                     .collect::<Vec<_>>();
-                self.combo(RenderCombo::Resolution).build(
+                self.combo(RenderCombo::Resolution).build_in(
                     ctx,
                     "render-resolution",
                     layout.combo(RenderCombo::Resolution).unwrap(),
                     &resolution_options,
                     chevron,
+                    popup_bounds,
                     style,
                 );
                 let field = layout.combo_field(RenderCombo::VideoCodec).unwrap();
@@ -759,12 +762,13 @@ impl RenderPanelState {
                     .iter()
                     .map(|value| value.label())
                     .collect::<Vec<_>>();
-                self.combo(RenderCombo::VideoCodec).build(
+                self.combo(RenderCombo::VideoCodec).build_in(
                     ctx,
                     "render-video-codec",
                     layout.combo(RenderCombo::VideoCodec).unwrap(),
                     &video_options,
                     chevron,
+                    popup_bounds,
                     style,
                 );
                 let field = layout.combo_field(RenderCombo::Container).unwrap();
@@ -774,12 +778,13 @@ impl RenderPanelState {
                     &i18n::text("render-container"),
                     theme::text(),
                 );
-                self.combo(RenderCombo::Container).build(
+                self.combo(RenderCombo::Container).build_in(
                     ctx,
                     "render-container",
                     layout.combo(RenderCombo::Container).unwrap(),
                     containers,
                     chevron,
+                    popup_bounds,
                     style,
                 );
                 label_at(
@@ -812,12 +817,13 @@ impl RenderPanelState {
                         .iter()
                         .map(|codec| codec.label())
                         .collect::<Vec<_>>();
-                    self.combo(RenderCombo::AudioCodec).build(
+                    self.combo(RenderCombo::AudioCodec).build_in(
                         ctx,
                         "render-audio-codec",
                         field.control,
                         &labels,
                         chevron,
+                        popup_bounds,
                         style,
                     );
                 }
@@ -828,12 +834,13 @@ impl RenderPanelState {
                         &i18n::text("render-sample-rate"),
                         theme::text(),
                     );
-                    self.combo(RenderCombo::SampleRate).build(
+                    self.combo(RenderCombo::SampleRate).build_in(
                         ctx,
                         "render-sample-rate",
                         field.control,
                         &["44100 Hz", "48000 Hz", "96000 Hz"],
                         chevron,
+                        popup_bounds,
                         style,
                     );
                 }
@@ -844,12 +851,13 @@ impl RenderPanelState {
                         &i18n::text("render-bitrate"),
                         theme::text(),
                     );
-                    self.combo(RenderCombo::Bitrate).build(
+                    self.combo(RenderCombo::Bitrate).build_in(
                         ctx,
                         "render-audio-bitrate",
                         field.control,
                         &["128 kb/s", "192 kb/s", "256 kb/s", "320 kb/s"],
                         chevron,
+                        popup_bounds,
                         style,
                     );
                 }

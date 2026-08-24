@@ -1,6 +1,6 @@
 use std::{cell::Cell, fmt::Display};
 
-use crate::{Align, BuildCtx, Color, IconId, PopupState, Rect, ScrollState, Size};
+use crate::{Align, BuildCtx, Color, IconId, PopupDirection, PopupState, Rect, ScrollState, Size};
 
 use super::{ease, Style};
 
@@ -22,6 +22,8 @@ pub struct ComboBox {
     open_direction: ComboBoxOpenDirection,
     scroll: Cell<f32>,
     ui_scale: Cell<f32>,
+    built_rect: Cell<Option<Rect>>,
+    window_bounds: Cell<Option<Rect>>,
 }
 
 impl ComboBox {
@@ -33,6 +35,8 @@ impl ComboBox {
             open_direction: ComboBoxOpenDirection::Down,
             scroll: Cell::new(0.0),
             ui_scale: Cell::new(1.0),
+            built_rect: Cell::new(None),
+            window_bounds: Cell::new(None),
         }
     }
 
@@ -97,7 +101,8 @@ impl ComboBox {
             return false;
         };
         let scale = self.ui_scale.get().clamp(0.25, 4.0);
-        let max = (len.saturating_sub(MAX_VISIBLE_OPTIONS) as f32 * OPTION_H * scale).max(0.0);
+        let viewport_height = popup.height / self.t.max(0.001);
+        let max = (len as f32 * OPTION_H * scale - viewport_height).max(0.0);
         let axis = if delta[1].abs() >= delta[0].abs() {
             delta[1]
         } else {
@@ -123,9 +128,29 @@ impl ComboBox {
         chevron: IconId,
         style: Style,
     ) {
+        self.built_rect.set(Some(rect));
+        self.window_bounds.set(None);
         let id = id.to_string();
         self.build_control(ctx, &id, rect, options, chevron, style);
-        self.build_popup(ctx, &id, rect, options, style);
+        self.build_popup_inner(ctx, &id, rect, options, None, style);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_in(
+        &self,
+        ctx: &mut BuildCtx,
+        id: impl Display,
+        rect: Rect,
+        options: &[&str],
+        chevron: IconId,
+        window_bounds: Rect,
+        style: Style,
+    ) {
+        self.built_rect.set(Some(rect));
+        self.window_bounds.set(Some(window_bounds));
+        let id = id.to_string();
+        self.build_control(ctx, &id, rect, options, chevron, style);
+        self.build_popup_inner(ctx, &id, rect, options, Some(window_bounds), style);
     }
 
     pub fn build_control(
@@ -191,6 +216,32 @@ impl ComboBox {
         options: &[&str],
         style: Style,
     ) {
+        self.build_popup_inner(ctx, id, rect, options, None, style);
+    }
+
+    pub fn build_popup_in(
+        &self,
+        ctx: &mut BuildCtx,
+        id: impl Display,
+        rect: Rect,
+        options: &[&str],
+        window_bounds: Rect,
+        style: Style,
+    ) {
+        self.build_popup_inner(ctx, id, rect, options, Some(window_bounds), style);
+    }
+
+    fn build_popup_inner(
+        &self,
+        ctx: &mut BuildCtx,
+        id: impl Display,
+        rect: Rect,
+        options: &[&str],
+        window_bounds: Option<Rect>,
+        style: Style,
+    ) {
+        self.built_rect.set(Some(rect));
+        self.window_bounds.set(window_bounds);
         let selected = self.selected.min(options.len().saturating_sub(1));
         let ui_scale = style.ui_scale.clamp(0.25, 4.0);
         self.ui_scale.set(ui_scale);
@@ -248,18 +299,49 @@ impl ComboBox {
         }
         let scale = self.ui_scale.get().clamp(0.25, 4.0);
         let visible = len.min(MAX_VISIBLE_OPTIONS);
-        let max_scroll = len.saturating_sub(visible) as f32 * OPTION_H * scale;
+        let desired_height = visible as f32 * OPTION_H * scale;
+        let placement = self.effective_window_bounds(rect).map_or_else(
+            || crate::PopupPlacement {
+                rect: Rect::new(
+                    rect.x,
+                    match self.open_direction {
+                        ComboBoxOpenDirection::Down => rect.bottom() + 4.0 * scale,
+                        ComboBoxOpenDirection::Up => rect.y - 4.0 * scale - desired_height,
+                    },
+                    rect.width,
+                    desired_height,
+                ),
+                direction: match self.open_direction {
+                    ComboBoxOpenDirection::Down => PopupDirection::Down,
+                    ComboBoxOpenDirection::Up => PopupDirection::Up,
+                },
+            },
+            |bounds| {
+                crate::place_popup_with_direction(
+                    rect,
+                    [rect.width, desired_height],
+                    bounds,
+                    self.open_direction == ComboBoxOpenDirection::Up,
+                    4.0 * scale,
+                )
+            },
+        );
+        let max_scroll = (len as f32 * OPTION_H * scale - placement.rect.height).max(0.0);
         self.scroll.set(self.scroll.get().clamp(0.0, max_scroll));
-        let height = visible as f32 * OPTION_H * scale * self.t;
-        let y = match self.open_direction {
-            ComboBoxOpenDirection::Down => {
-                rect.bottom() + 4.0 * scale - (1.0 - self.t) * 5.0 * scale
-            }
-            ComboBoxOpenDirection::Up => {
-                rect.y - 4.0 * scale - height + (1.0 - self.t) * 5.0 * scale
-            }
+        let height = placement.rect.height * self.t;
+        let y = match placement.direction {
+            PopupDirection::Down => placement.rect.y - (1.0 - self.t) * 5.0 * scale,
+            PopupDirection::Up => placement.rect.bottom() - height + (1.0 - self.t) * 5.0 * scale,
         };
-        Some(Rect::new(rect.x, y, rect.width, height))
+        Some(Rect::new(placement.rect.x, y, placement.rect.width, height))
+    }
+
+    fn effective_window_bounds(&self, rect: Rect) -> Option<Rect> {
+        let built = self.built_rect.get()?;
+        let mut bounds = self.window_bounds.get()?;
+        bounds.x += rect.x - built.x;
+        bounds.y += rect.y - built.y;
+        Some(bounds)
     }
 
     fn option_rects(&self, popup: Rect, len: usize) -> Vec<Rect> {
@@ -326,6 +408,24 @@ mod tests {
     }
 
     #[test]
+    fn popup_uses_window_bounds_after_anchor_is_translated() {
+        let mut combo = ComboBox::new(0);
+        combo.toggle();
+        combo.t = 1.0;
+        combo
+            .built_rect
+            .set(Some(crate::Rect::new(10.0, 180.0, 120.0, 28.0)));
+        combo
+            .window_bounds
+            .set(Some(crate::Rect::new(-200.0, -100.0, 800.0, 340.0)));
+
+        let absolute = crate::Rect::new(210.0, 280.0, 120.0, 28.0);
+        let popup = combo.popup_rect(absolute, 3).expect("open popup");
+        assert!(popup.y >= 0.0);
+        assert!(popup.bottom() < absolute.y);
+    }
+
+    #[test]
     fn scrolled_popup_hit_tests_visible_option() {
         use crate::Rect;
 
@@ -348,10 +448,10 @@ mod tests {
         combo.select(2, false);
 
         assert_eq!(combo.selected(), 2);
-        assert!(combo.open);
+        assert!(combo.is_open());
 
         combo.select(1, true);
         assert_eq!(combo.selected(), 1);
-        assert!(!combo.open);
+        assert!(!combo.is_open());
     }
 }

@@ -603,7 +603,14 @@ impl WidgetGallery {
         self.color.sync_textures(renderer)
     }
 
-    pub fn build(&mut self, ctx: &mut ui::BuildCtx, stack: StackId, content: Rect, icons: Icons) {
+    pub fn build(
+        &mut self,
+        ctx: &mut ui::BuildCtx,
+        stack: StackId,
+        content: Rect,
+        icons: Icons,
+        popup_bounds: Rect,
+    ) {
         let layout = GalleryRects::new(
             Rect::new(0.0, 0.0, content.width, content.height),
             self.accordion.open_amount(),
@@ -678,10 +685,11 @@ impl WidgetGallery {
                         "",
                         style,
                     );
-                    self.color.build(
+                    self.color.build_in(
                         ctx,
                         format_args!("{} color", stack.0),
                         layout.color.control,
+                        popup_bounds,
                         style,
                     );
                     let button = layout.button();
@@ -715,12 +723,13 @@ impl WidgetGallery {
                         self.toggled,
                         style,
                     );
-                    self.combo.build(
+                    self.combo.build_in(
                         ctx,
                         format_args!("{} combo", stack.0),
                         layout.combo(),
                         &OPTIONS,
                         icons.get(AppIcon::Chevron),
+                        popup_bounds,
                         style,
                     );
                     self.accordion.build(

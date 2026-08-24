@@ -566,6 +566,7 @@ pub(crate) struct MonitorBuildContext<'a> {
     pub plugins: &'a PluginRegistry,
     pub graph_selection: Option<GraphMonitorSelection>,
     pub output: PreviewOutput<'a>,
+    pub popup_bounds: Rect,
     pub icons: Icons,
 }
 
@@ -740,6 +741,7 @@ impl MonitorState {
             plugins,
             graph_selection,
             output,
+            popup_bounds,
             icons,
         } = view;
         let source_geometry = output.source_geometry;
@@ -797,12 +799,13 @@ impl MonitorState {
             })
             .collect::<Vec<_>>();
         let options = option_names.iter().map(String::as_str).collect::<Vec<_>>();
-        self.preview_combo.build(
+        self.preview_combo.build_in(
             ctx,
             "monitor-preview-resolution",
             combo,
             &options,
             chevron,
+            popup_bounds,
             crate::widgets::component_style(),
         );
         for (id, rect, icon, active, enabled, tooltip) in [

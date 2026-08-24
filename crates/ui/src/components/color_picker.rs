@@ -72,6 +72,8 @@ pub struct ColorPicker {
     t: f32,
     drag: Option<Drag>,
     textures: Textures,
+    built_rect: Option<Rect>,
+    window_bounds: Option<Rect>,
 }
 
 impl ColorPicker {
@@ -88,6 +90,8 @@ impl ColorPicker {
             t: 0.0,
             drag: None,
             textures: Textures::default(),
+            built_rect: None,
+            window_bounds: None,
         }
     }
 
@@ -147,7 +151,7 @@ impl ColorPicker {
     }
 
     pub fn caret_rect(&self, rect: Rect) -> Option<Rect> {
-        self.caret_rect_bounded(rect, None)
+        self.caret_rect_bounded(rect, self.effective_window_bounds(rect))
     }
 
     pub fn caret_rect_in(&self, rect: Rect, bounds: Rect) -> Option<Rect> {
@@ -160,7 +164,7 @@ impl ColorPicker {
     }
 
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
-        self.popup_contains_bounded(rect, None, point)
+        self.popup_contains_bounded(rect, self.effective_window_bounds(rect), point)
     }
 
     pub fn popup_contains_in(&self, rect: Rect, bounds: Rect, point: [f32; 2]) -> bool {
@@ -205,7 +209,7 @@ impl ColorPicker {
         point: [f32; 2],
         modifiers: ModifiersState,
     ) -> bool {
-        self.pointer_pressed_bounded(rect, None, point, modifiers)
+        self.pointer_pressed_bounded(rect, self.effective_window_bounds(rect), point, modifiers)
     }
 
     pub fn pointer_pressed_in(
@@ -275,7 +279,7 @@ impl ColorPicker {
     }
 
     pub fn pointer_moved(&mut self, rect: Rect, point: [f32; 2]) -> bool {
-        self.pointer_moved_bounded(rect, None, point)
+        self.pointer_moved_bounded(rect, self.effective_window_bounds(rect), point)
     }
 
     pub fn pointer_moved_in(&mut self, rect: Rect, bounds: Rect, point: [f32; 2]) -> bool {
@@ -340,6 +344,8 @@ impl ColorPicker {
         bounds: Option<Rect>,
         style: Style,
     ) {
+        self.built_rect = Some(rect);
+        self.window_bounds = bounds;
         ColorButton::build(ctx, &id, rect, self.color(), style);
         if self.t <= 0.001 {
             return;
@@ -534,6 +540,14 @@ impl ColorPicker {
             alpha,
             hex: measured.rect(ids.hex).expect("color picker hex layout"),
         }
+    }
+
+    fn effective_window_bounds(&self, rect: Rect) -> Option<Rect> {
+        let built = self.built_rect?;
+        let mut bounds = self.window_bounds?;
+        bounds.x += rect.x - built.x;
+        bounds.y += rect.y - built.y;
+        Some(bounds)
     }
 
     fn measure_content(
@@ -1220,5 +1234,19 @@ mod tests {
         assert!(rgb.popup.height > hsv.popup.height);
         assert!(hsv.popup.y >= control.bottom() + 4.0 - f32::EPSILON);
         assert!(rgb.popup.y >= control.bottom() + 4.0 - f32::EPSILON);
+    }
+
+    #[test]
+    fn popup_can_extend_past_panel_inside_window() {
+        let mut picker = ColorPicker::new(Color::WHITE);
+        picker.t = 1.0;
+        let control = Rect::new(40.0, 170.0, 120.0, 24.0);
+        let window_bounds = Rect::new(-300.0, -100.0, 900.0, 700.0);
+
+        let popup = picker.layout(control, Some(window_bounds)).popup;
+
+        assert!(popup.y >= control.bottom());
+        assert!(popup.bottom() > 200.0);
+        assert!(popup.bottom() <= window_bounds.bottom());
     }
 }

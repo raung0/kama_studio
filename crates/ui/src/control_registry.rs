@@ -297,6 +297,7 @@ impl<K: Clone + Eq + Hash> NumberControlsExt<K> for ControlRegistry<K, NumberInp
 }
 
 pub trait EnumControlsExt<K> {
+    #[allow(clippy::too_many_arguments)]
     fn build<T: AsRef<str>>(
         &mut self,
         ctx: &mut BuildCtx,
@@ -305,6 +306,7 @@ pub trait EnumControlsExt<K> {
         selection: (Rect, usize),
         options: &[T],
         chrome: (IconId, Style),
+        window_bounds: Rect,
     );
     fn close(&mut self);
     fn popup_contains(&self, panel: Rect, point: [f32; 2]) -> bool;
@@ -314,6 +316,7 @@ pub trait EnumControlsExt<K> {
 }
 
 impl<K: Clone + Eq + Hash> EnumControlsExt<K> for ControlRegistry<K, ComboControl> {
+    #[allow(clippy::too_many_arguments)]
     fn build<T: AsRef<str>>(
         &mut self,
         ctx: &mut BuildCtx,
@@ -322,6 +325,7 @@ impl<K: Clone + Eq + Hash> EnumControlsExt<K> for ControlRegistry<K, ComboContro
         selection: (Rect, usize),
         options: &[T],
         chrome: (IconId, Style),
+        window_bounds: Rect,
     ) {
         let (rect, selected) = selection;
         let (chevron, style) = chrome;
@@ -334,7 +338,9 @@ impl<K: Clone + Eq + Hash> EnumControlsExt<K> for ControlRegistry<K, ComboContro
             input.combo.set_selected(selected);
         }
         let options = options.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-        input.combo.build(ctx, id, rect, &options, chevron, style);
+        input
+            .combo
+            .build_in(ctx, id, rect, &options, chevron, window_bounds, style);
     }
 
     fn close(&mut self) {

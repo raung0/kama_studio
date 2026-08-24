@@ -785,7 +785,7 @@ impl SettingsDialog {
                         ctx,
                         "settings-dark-accent",
                         swatch,
-                        rect,
+                        Rect::new(0.0, 0.0, width, height),
                         component_style(),
                     );
                 }
@@ -794,7 +794,7 @@ impl SettingsDialog {
                         ctx,
                         "settings-light-accent",
                         swatch,
-                        rect,
+                        Rect::new(0.0, 0.0, width, height),
                         component_style(),
                     );
                 }
@@ -802,11 +802,12 @@ impl SettingsDialog {
                     .iter()
                     .position(|entry| *entry == SettingEntry::Theme)
                 {
-                    self.theme_combo.build_popup(
+                    self.theme_combo.build_popup_in(
                         ctx,
                         "settings-theme-value",
                         layout.items[index].value,
                         &THEME_OPTIONS,
+                        Rect::new(0.0, 0.0, width, height),
                         component_style(),
                     );
                 }
@@ -814,11 +815,12 @@ impl SettingsDialog {
                     .iter()
                     .position(|entry| *entry == SettingEntry::Language)
                 {
-                    self.language_combo.build_popup(
+                    self.language_combo.build_popup_in(
                         ctx,
                         "settings-language-value",
                         layout.items[index].value,
                         &language_labels,
+                        Rect::new(0.0, 0.0, width, height),
                         component_style(),
                     );
                 }
@@ -980,12 +982,12 @@ impl SettingsDialog {
             };
             let swatch = layout.items[index].accent_swatch;
             let handled = match entry {
-                SettingEntry::DarkAccent => self
-                    .dark_accent
-                    .pointer_pressed_in(swatch, rect, point, modifiers),
-                SettingEntry::LightAccent => self
-                    .light_accent
-                    .pointer_pressed_in(swatch, rect, point, modifiers),
+                SettingEntry::DarkAccent => {
+                    self.dark_accent.pointer_pressed(swatch, point, modifiers)
+                }
+                SettingEntry::LightAccent => {
+                    self.light_accent.pointer_pressed(swatch, point, modifiers)
+                }
                 _ => unreachable!(),
             };
             if handled {
@@ -1117,10 +1119,8 @@ impl SettingsDialog {
             };
             let swatch = layout.items[index].accent_swatch;
             let accent_changed = match entry {
-                SettingEntry::DarkAccent => self.dark_accent.pointer_moved_in(swatch, rect, point),
-                SettingEntry::LightAccent => {
-                    self.light_accent.pointer_moved_in(swatch, rect, point)
-                }
+                SettingEntry::DarkAccent => self.dark_accent.pointer_moved(swatch, point),
+                SettingEntry::LightAccent => self.light_accent.pointer_moved(swatch, point),
                 _ => unreachable!(),
             };
             if accent_changed {
@@ -1287,8 +1287,7 @@ impl SettingsDialog {
         handled
     }
 
-    pub(crate) fn caret_rect(&self, width: f32, height: f32) -> Option<Rect> {
-        let rect = settings_rect(width, height);
+    pub(crate) fn caret_rect(&self, _width: f32, _height: f32) -> Option<Rect> {
         let entries = filtered_settings(self.search.query.text());
         let layout = self.search.cached_rects()?;
         if let Some(index) = entries
@@ -1305,8 +1304,8 @@ impl SettingsDialog {
             };
             let swatch = layout.items[index].accent_swatch;
             let caret = match entry {
-                SettingEntry::DarkAccent => self.dark_accent.caret_rect_in(swatch, rect),
-                SettingEntry::LightAccent => self.light_accent.caret_rect_in(swatch, rect),
+                SettingEntry::DarkAccent => self.dark_accent.caret_rect(swatch),
+                SettingEntry::LightAccent => self.light_accent.caret_rect(swatch),
                 _ => unreachable!(),
             };
             if caret.is_some() {

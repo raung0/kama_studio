@@ -2193,7 +2193,7 @@ impl PipelineGraphState {
         id: impl std::fmt::Display,
         style: Style,
     ) {
-        let (swatch, bounds) = layout;
+        let (swatch, _bounds) = layout;
         ColorButton::build(ctx, id, swatch, ui_color(color), style);
         self.color_swatch_rects.insert(target.clone(), swatch);
         if self.controls.color_target.as_ref() == Some(&target) {
@@ -2201,9 +2201,13 @@ impl PipelineGraphState {
             if !self.controls.color_picker.is_dragging() {
                 self.controls.color_picker.set_linear(color);
             }
-            self.controls
-                .color_picker
-                .build_in(ctx, "graph-color-picker", swatch, bounds, style);
+            self.controls.color_picker.build_in(
+                ctx,
+                "graph-color-picker",
+                swatch,
+                self.controls.popup_bounds,
+                style,
+            );
         }
     }
 
@@ -2297,6 +2301,7 @@ impl PipelineGraphState {
                     ),
                     &options,
                     (chevron, style),
+                    self.controls.popup_bounds,
                 );
             }
             Some(InputType::Color) => self.build_graph_color(
@@ -2353,6 +2358,7 @@ impl PipelineGraphState {
         timeline: &TimelineState,
         plugins: &PluginRegistry,
         icons: Icons,
+        popup_bounds: Rect,
     ) {
         let chevron = icons.get(AppIcon::Chevron);
         let graph = GraphModel::new(project, timeline, self.pinned_pipeline);
@@ -2360,6 +2366,7 @@ impl PipelineGraphState {
         self.last_rect = Some(rect);
         self.last_pipeline_count = project.pipelines.len();
         self.controls.clear_layout();
+        self.controls.popup_bounds = popup_bounds;
         self.property_link_rects.clear();
         self.controls.color_rect = None;
         self.color_swatch_rects.clear();
@@ -2402,12 +2409,13 @@ impl PipelineGraphState {
                         toolbar_style,
                     );
                 } else {
-                    self.pipeline_combo.build(
+                    self.pipeline_combo.build_in(
                         ctx,
                         "graph-pipeline-combo",
                         toolbar.combo,
                         &option_refs,
                         chevron,
+                        popup_bounds,
                         toolbar_style,
                     );
                 }
@@ -3007,7 +3015,7 @@ impl PipelineGraphState {
         self.pipeline_combo.close();
 
         let local_point = [point[0] - rect.x, point[1] - rect.y];
-        let local_bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
+        let local_bounds = self.controls.popup_bounds;
 
         if let (Some(target), Some(swatch)) =
             (self.controls.color_target.clone(), self.controls.color_rect)
@@ -4032,8 +4040,11 @@ impl PipelineGraphState {
 
     pub fn ime_area(&self, rect: Rect) -> Option<Rect> {
         if let Some(swatch) = self.controls.color_rect {
-            let bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
-            if let Some(caret) = self.controls.color_picker.caret_rect_in(swatch, bounds) {
+            if let Some(caret) = self
+                .controls
+                .color_picker
+                .caret_rect_in(swatch, self.controls.popup_bounds)
+            {
                 return Some(offset_rect(caret, rect.x, rect.y));
             }
         }

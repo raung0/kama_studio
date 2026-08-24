@@ -412,6 +412,7 @@ struct PropertyControls<N, E, A, S, C> {
     color_picker: ColorPicker,
     color_target: Option<C>,
     color_rect: Option<Rect>,
+    popup_bounds: Rect,
 }
 
 impl<N, E, A, S, C> Default for PropertyControls<N, E, A, S, C> {
@@ -424,6 +425,7 @@ impl<N, E, A, S, C> Default for PropertyControls<N, E, A, S, C> {
             color_picker: ColorPicker::new(Color::BLACK),
             color_target: None,
             color_rect: None,
+            popup_bounds: Rect::default(),
         }
     }
 }
@@ -484,7 +486,7 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
         };
         self.color_picker.popup_contains_in(
             swatch,
-            Rect::new(0.0, 0.0, rect.width, rect.height),
+            self.popup_bounds,
             [point[0] - rect.x, point[1] - rect.y],
         )
     }
@@ -768,6 +770,7 @@ pub(crate) struct InspectorBuildContext<'a> {
     pub timeline: &'a TimelineState,
     pub media_selection: Option<(MediaId, MediaStream)>,
     pub plugins: &'a PluginRegistry,
+    pub popup_bounds: Rect,
     pub icons: Icons,
 }
 
@@ -1405,6 +1408,7 @@ impl InspectorState {
             (combo, selected),
             options,
             (chevron, crate::widgets::component_style()),
+            self.controls.popup_bounds,
         );
     }
 
@@ -2151,6 +2155,7 @@ impl InspectorState {
             timeline,
             media_selection,
             plugins,
+            popup_bounds,
             icons,
         } = view;
         let chevron = icons.get(AppIcon::Chevron);
@@ -2158,6 +2163,7 @@ impl InspectorState {
         self.sync_effect_sections(project, timeline);
         self.last_rect = Some(rect);
         self.controls.clear_layout();
+        self.controls.popup_bounds = popup_bounds;
         self.eq_scroll_rects.clear();
         self.vector_link_rects.clear();
         self.reset_targets.clear();
@@ -2545,6 +2551,7 @@ impl InspectorState {
                         (combo, shading.index()),
                         &crate::project::Model3dShading::OPTIONS,
                         (chevron, crate::widgets::component_style()),
+                        self.controls.popup_bounds,
                     );
                 }
             });
@@ -2739,10 +2746,9 @@ impl InspectorState {
         if self.controls.color_target.as_ref() != Some(&target) {
             return;
         }
-        let Some(panel) = self.last_rect else {
+        if self.last_rect.is_none() {
             return;
-        };
-        let bounds = Rect::new(0.0, 0.0, panel.width, panel.height);
+        }
         let swatch = color_swatch_rect(rect, y);
         self.controls.color_rect = Some(swatch);
         self.controls.color_picker.set_linear(color);
@@ -2750,7 +2756,7 @@ impl InspectorState {
             ctx,
             id,
             swatch,
-            bounds,
+            self.controls.popup_bounds,
             crate::widgets::component_style(),
         );
     }
@@ -3835,13 +3841,14 @@ impl InspectorState {
         let Some(swatch) = self.controls.color_rect else {
             return false;
         };
-        let bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
         let point = [point[0] - rect.x, point[1] - rect.y];
         let before = self.controls.color_picker.linear();
-        let handled = self
-            .controls
-            .color_picker
-            .pointer_pressed_in(swatch, bounds, point, modifiers);
+        let handled = self.controls.color_picker.pointer_pressed_in(
+            swatch,
+            self.controls.popup_bounds,
+            point,
+            modifiers,
+        );
         if handled {
             if self.controls.color_picker.linear() != before {
                 if let Some(target) = self.controls.color_target.as_ref() {
@@ -3876,15 +3883,16 @@ impl InspectorState {
         self.pipeline_name.set_focused(false);
         self.controls.blur();
         let local_swatch = offset_rect(swatch, -panel.x, -panel.y);
-        let bounds = Rect::new(0.0, 0.0, panel.width, panel.height);
         let point = [point[0] - panel.x, point[1] - panel.y];
         self.controls.color_target = Some(target);
         self.controls.color_rect = Some(local_swatch);
         self.controls.color_picker.set_linear(color);
-        let _ =
-            self.controls
-                .color_picker
-                .pointer_pressed_in(local_swatch, bounds, point, modifiers);
+        let _ = self.controls.color_picker.pointer_pressed_in(
+            local_swatch,
+            self.controls.popup_bounds,
+            point,
+            modifiers,
+        );
     }
 
     pub fn scroll_popup(&self, rect: Rect, point: [f32; 2], delta: [f32; 2]) -> bool {
@@ -4113,8 +4121,11 @@ impl InspectorState {
             return Some(caret);
         }
         if let Some(swatch) = self.controls.color_rect {
-            let bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
-            if let Some(caret) = self.controls.color_picker.caret_rect_in(swatch, bounds) {
+            if let Some(caret) = self
+                .controls
+                .color_picker
+                .caret_rect_in(swatch, self.controls.popup_bounds)
+            {
                 return Some(offset_rect(caret, rect.x, rect.y));
             }
         }

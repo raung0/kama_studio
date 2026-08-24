@@ -1819,6 +1819,7 @@ impl EditorApp {
                                     .get(&stack.stack.id)
                                     .copied()
                                     .unwrap_or(0.0),
+                                window_bounds: Rect::new(0.0, 0.0, width, height),
                                 icons,
                             },
                             StackBuildState {
@@ -5115,6 +5116,7 @@ struct StackBuildContext<'a> {
     maximized: bool,
     focused: bool,
     focus: f32,
+    window_bounds: Rect,
     icons: Icons,
 }
 
@@ -5168,10 +5170,17 @@ fn build_stack(
         maximized,
         focused,
         focus,
+        window_bounds,
         icons,
     } = view;
     let stack = &layout.stack;
     let active_tab = stack.active_tab().map(|tab| tab.id);
+    let popup_bounds = Rect::new(
+        -layout.content.x,
+        -layout.content.y,
+        window_bounds.width,
+        window_bounds.height,
+    );
 
     ui::ui!(ctx, {
         Block {
@@ -5364,6 +5373,7 @@ fn build_stack(
                                     plugins,
                                     graph_selection: pipeline_graph.monitor_selection(timeline),
                                     output: playback.preview_output(),
+                                    popup_bounds,
                                     icons,
                                 },
                             ),
@@ -5375,6 +5385,7 @@ fn build_stack(
                                         project,
                                         composition,
                                         icons.get(AppIcon::Chevron),
+                                        popup_bounds,
                                     );
                                 } else {
                                     inspector.build(
@@ -5385,6 +5396,7 @@ fn build_stack(
                                             timeline,
                                             media_selection: media.selected_with_stream(),
                                             plugins,
+                                            popup_bounds,
                                             icons,
                                         },
                                     );
@@ -5396,10 +5408,11 @@ fn build_stack(
                                 project,
                                 project.active_composition,
                                 icons.get(AppIcon::Chevron),
+                                popup_bounds,
                             ),
                             PanelKind::History => history_panel.build(history, ctx, layout.content),
-                            PanelKind::Pipeline => pipeline_graph.build(ctx, layout.content, project, timeline, plugins, icons),
-                            PanelKind::Render => render_panel.build(ctx, layout.content, project, timeline, icons),
+                            PanelKind::Pipeline => pipeline_graph.build(ctx, layout.content, project, timeline, plugins, icons, popup_bounds),
+                            PanelKind::Render => render_panel.build(ctx, layout.content, project, timeline, icons, popup_bounds),
                             PanelKind::Timeline => {
                                 timeline.build(
                                     ctx,
@@ -5411,7 +5424,7 @@ fn build_stack(
                                 )
                             }
                             PanelKind::Widgets => {
-                                widgets.build(ctx, stack.id, layout.content, icons)
+                                widgets.build(ctx, stack.id, layout.content, icons, popup_bounds)
                             }
                             PanelKind::Meters => meters.build(ctx, layout.content),
                             PanelKind::Messages => messages.build(ctx, layout.content),

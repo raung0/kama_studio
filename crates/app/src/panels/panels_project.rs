@@ -226,6 +226,7 @@ default_state! {
         resolution_preset: ComboBox = ComboBox::new(0),
         background_color: ColorPicker = ColorPicker::new(Color::BLACK),
         last_rect: Option<Rect>,
+        popup_bounds: Rect,
     }
 }
 
@@ -303,8 +304,11 @@ impl ProjectOptionsState {
         }
         let local = Rect::new(0.0, 0.0, rect.width, rect.height);
         let point = [point[0] - rect.x, point[1] - rect.y];
-        self.background_color
-            .popup_contains_in(project_background_color_rect(local), local, point)
+        self.background_color.popup_contains_in(
+            project_background_color_rect(local),
+            self.popup_bounds,
+            point,
+        )
     }
 
     pub fn build(
@@ -314,8 +318,10 @@ impl ProjectOptionsState {
         project: &Project,
         composition: CompositionId,
         chevron: IconId,
+        popup_bounds: Rect,
     ) {
         self.last_rect = Some(rect);
+        self.popup_bounds = popup_bounds;
         self.numbers.clear_layout();
 
         let selected = project
@@ -383,12 +389,13 @@ impl ProjectOptionsState {
             self.resolution_preset
                 .set_selected(ResolutionPreset::index_for(selected.settings.canvas_size));
         }
-        self.resolution_preset.build(
+        self.resolution_preset.build_in(
             ctx,
             "project-resolution-preset",
             project_option_control_rect(local, preset_y),
             &preset_options,
             chevron,
+            popup_bounds,
             crate::widgets::component_style(),
         );
 
@@ -447,7 +454,7 @@ impl ProjectOptionsState {
                 ctx,
                 "project-background-color",
                 swatch,
-                local,
+                popup_bounds,
                 crate::widgets::component_style(),
             );
         }
@@ -488,7 +495,7 @@ impl ProjectOptionsState {
             ProjectBackground::Solid { .. }
         ) && self.background_color.pointer_pressed_in(
             project_background_color_rect(local),
-            local,
+            self.popup_bounds,
             local_point,
             modifiers,
         ) {
@@ -602,7 +609,7 @@ impl ProjectOptionsState {
         let local = Rect::new(0.0, 0.0, rect.width, rect.height);
         if let Some(caret) = self
             .background_color
-            .caret_rect_in(project_background_color_rect(local), local)
+            .caret_rect_in(project_background_color_rect(local), self.popup_bounds)
         {
             return Some(offset_rect(caret, rect.x, rect.y));
         }
