@@ -13,6 +13,8 @@ const APP_MENU_LAYOUT_WIDTH: f32 = 66.0;
 const APP_MENU_HELP_WIDTH: f32 = 52.0;
 #[cfg(not(target_os = "macos"))]
 const APP_MENU_ITEM_HEIGHT: f32 = 27.0;
+#[cfg(not(target_os = "macos"))]
+const APP_MENU_ITEM_PADDING: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AppMenuSection {
@@ -432,7 +434,7 @@ pub(super) fn build_item<K: Hash>(
     };
     let item = ctx.rect(key, rect).overlay().row()
         .fill(if highlighted { theme::accent_hover() } else { Color::TRANSPARENT })
-        .border_radius(RADIUS_SM).padding(6.0).gap(7.0).interactive_if(enabled)
+        .border_radius(RADIUS_SM).padding(APP_MENU_ITEM_PADDING).gap(7.0).interactive_if(enabled)
         .cursor(if enabled { CursorShape::Pointer } else { CursorShape::Passthrough })
         .children(|ctx| {
             ctx.new().width(Size::Pixels(20.0)).height(Size::Fill).content_centered().children(|ctx| {

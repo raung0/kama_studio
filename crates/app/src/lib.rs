@@ -791,6 +791,7 @@ struct EditorWindowState {
     touch_gesture_cursor: Option<CursorIcon>,
     value_drag_cursor_locked: bool,
     value_drag_cursor_anchor: Option<[f64; 2]>,
+    ime_sync: ImeSyncState,
 }
 
 impl EditorWindowState {
@@ -863,7 +864,33 @@ impl EditorWindowState {
             touch_gesture_cursor: None,
             value_drag_cursor_locked: false,
             value_drag_cursor_anchor: None,
+            ime_sync: ImeSyncState::default(),
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ImeSyncState {
+    allowed: bool,
+    area: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ImeSyncUpdate {
+    allowed: Option<bool>,
+    area: Option<Rect>,
+}
+
+impl ImeSyncState {
+    fn update(&mut self, area: Option<Rect>) -> ImeSyncUpdate {
+        let allowed = area.is_some();
+        let update = ImeSyncUpdate {
+            allowed: (allowed != self.allowed).then_some(allowed),
+            area: (area != self.area).then_some(area).flatten(),
+        };
+        self.allowed = allowed;
+        self.area = area;
+        update
     }
 }
 
@@ -921,6 +948,7 @@ struct EditorApp {
     touch_gesture_cursor: Option<CursorIcon>,
     value_drag_cursor_locked: bool,
     value_drag_cursor_anchor: Option<[f64; 2]>,
+    ime_sync: ImeSyncState,
     secondary_windows: HashMap<WindowId, EditorWindowState>,
 }
 
@@ -1028,6 +1056,7 @@ impl EditorApp {
             touch_gesture_cursor: None,
             value_drag_cursor_locked: false,
             value_drag_cursor_anchor: None,
+            ime_sync: ImeSyncState::default(),
             secondary_windows: HashMap::new(),
         };
         editor_app.update_window_title();
@@ -1095,6 +1124,7 @@ impl EditorApp {
             &mut self.value_drag_cursor_anchor,
             &mut state.value_drag_cursor_anchor,
         );
+        std::mem::swap(&mut self.ime_sync, &mut state.ime_sync);
     }
 
     fn activate_window(&mut self, window_id: WindowId) -> bool {
@@ -4020,10 +4050,13 @@ impl EditorApp {
         }
     }
 
-    fn sync_ime(&self) {
+    fn sync_ime(&mut self) {
         let area = self.ime_area();
-        self.window.set_ime_allowed(area.is_some());
-        if let Some(area) = area {
+        let update = self.ime_sync.update(area);
+        if let Some(allowed) = update.allowed {
+            self.window.set_ime_allowed(allowed);
+        }
+        if let Some(area) = update.area {
             self.window.set_ime_cursor_area(
                 LogicalPosition::new(area.x as f64, area.y as f64),
                 LogicalSize::new(area.width.max(1.0) as f64, area.height.max(1.0) as f64),
@@ -6194,4 +6227,41 @@ pub fn run() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::default())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_sync_only_updates_changed_platform_state() {
+        let mut state = ImeSyncState::default();
+        let first = Rect::new(10.0, 20.0, 2.0, 14.0);
+        let moved = Rect::new(24.0, 20.0, 2.0, 14.0);
+
+        assert_eq!(state.update(None), ImeSyncUpdate::default());
+        assert_eq!(
+            state.update(Some(first)),
+            ImeSyncUpdate {
+                allowed: Some(true),
+                area: Some(first),
+            }
+        );
+        assert_eq!(state.update(Some(first)), ImeSyncUpdate::default());
+        assert_eq!(
+            state.update(Some(moved)),
+            ImeSyncUpdate {
+                allowed: None,
+                area: Some(moved),
+            }
+        );
+        assert_eq!(
+            state.update(None),
+            ImeSyncUpdate {
+                allowed: Some(false),
+                area: None,
+            }
+        );
+        assert_eq!(state.update(None), ImeSyncUpdate::default());
+    }
 }
