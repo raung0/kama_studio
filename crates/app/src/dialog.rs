@@ -1,6 +1,6 @@
 use std::{hash::Hash, sync::Arc};
 
-use kama_ui::{BlockId, Color, Rect, ScrollState, Size};
+use kama_ui::{BlockId, Color, CursorShape, Rect, ScrollState, Size};
 
 use crate::theme;
 
@@ -163,6 +163,7 @@ pub(crate) fn build_shell<K1: Hash, K2: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>
             opacity: opacity;
             fill: scrim();
             interactive_no_reveal;
+            cursor: CursorShape::Passthrough;
             animate_interaction: false;
         }
         Rect(panel_key, panel) {

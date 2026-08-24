@@ -344,11 +344,11 @@ impl ColorPicker {
                 layout.popup.x - 4.0, layout.popup.y - 4.0,
                 layout.popup.width + 8.0, layout.popup.height + 8.0,
             )) {
-                overlay; backdrop_blur: 30.0; backdrop_tint: popup_tint;
+                top_overlay; backdrop_blur: 30.0; backdrop_tint: popup_tint;
                 opacity: opacity; fill: shadow; border_radius: style.radius_md;
             }
             Rect(@format("color-picker-popup {id}"), layout.popup) {
-                overlay; backdrop_blur: 22.0; backdrop_tint: popup_tint;
+                top_overlay; backdrop_blur: 22.0; backdrop_tint: popup_tint;
                 opacity: opacity; fill: popup_bg;
                 border: 1; border_color: style.accent; border_radius: style.radius_md;
             }
@@ -359,7 +359,7 @@ impl ColorPicker {
             ].into_iter().enumerate() {
                 @let selected = self.mode == mode;
                 Rect(@format("color-picker-tab {id} {index}"), tab) {
-                    overlay; opacity: opacity; fill: if selected { style.focused } else { style.control };
+                    top_overlay; opacity: opacity; fill: if selected { style.focused } else { style.control };
                     border: 1; border_color: if selected { style.accent } else { style.border };
                     border_radius: style.radius_sm; font_size: 9.0;
                     text_color: if selected { style.text } else { style.muted };
@@ -367,12 +367,12 @@ impl ColorPicker {
                 }
             }
             Rect(@format("color-picker-preview-bg {id}"), layout.preview) {
-                overlay; opacity: opacity; fill: Color::WHITE; border: 1;
+                top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                 border_color: style.border; border_radius: style.radius_sm;
                 fill_texture_opt: self.textures.checker;
             }
             Rect(@format("color-picker-preview {id}"), layout.preview) {
-                overlay; opacity: opacity; fill: self.color(); border: 1;
+                top_overlay; opacity: opacity; fill: self.color(); border: 1;
                 border_color: style.border; border_radius: style.radius_sm;
             }
         });
@@ -380,7 +380,7 @@ impl ColorPicker {
         if self.mode == Mode::Rgb {
             crate::ui!(ctx, {
                 Rect(@format("color-picker-plane {id}"), layout.plane) {
-                    overlay; opacity: opacity; fill: Color::WHITE; border: 1;
+                    top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                     border_color: style.border; border_radius: style.radius_sm;
                     interactive; border_reveal;
                     fill_texture_opt: self.textures.plane;
@@ -389,7 +389,7 @@ impl ColorPicker {
         } else {
             crate::ui!(ctx, {
                 Rect(@format("color-picker-wheel {id}"), layout.plane) {
-                    overlay; opacity: opacity; fill: Color::WHITE;
+                    top_overlay; opacity: opacity; fill: Color::WHITE;
                     border_radius: layout.plane.width * 0.5; cursor: CursorShape::Pointer;
                     fill_texture_opt: self.textures.plane;
                 }
@@ -433,11 +433,11 @@ impl ColorPicker {
                         Rect(@format("color-picker-rgb-handle {id} {channel}"), Rect::new(
                             x - 2.0, y - row.height * 0.36, 4.0, row.height * 0.72,
                         )) {
-                            overlay; opacity: opacity; fill: Color::WHITE; border: 1;
+                            top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                             border_color: Color::BLACK; border_radius: 2.0;
                         }
                         Rect(@format("color-picker-rgb-label {id} {channel}"), labels[channel]) {
-                            overlay; opacity: opacity; font_size: 8.5;
+                            top_overlay; opacity: opacity; font_size: 8.5;
                             text_color: if srgb[channel] > 0.62 { Color::BLACK } else { Color::WHITE };
                             text_centered; text: ["R", "G", "B"][channel];
                         }
@@ -445,7 +445,7 @@ impl ColorPicker {
                 });
                 crate::ui!(ctx, {
                     Rect(@format("color-picker-rgb-values {id}"), layout.hue) {
-                        overlay; opacity: opacity; font_size: 8.5; text_color: style.muted; text_centered;
+                        top_overlay; opacity: opacity; font_size: 8.5; text_color: style.muted; text_centered;
                         text: format!("R {:03}   G {:03}   B {:03}",
                             (srgb[0] * 255.0).round() as u8,
                             (srgb[1] * 255.0).round() as u8,
@@ -458,12 +458,12 @@ impl ColorPicker {
 
         crate::ui!(ctx, {
             Rect(@format("color-picker-alpha {id}"), layout.alpha) {
-                overlay; opacity: opacity; fill: Color::WHITE; border: 1;
+                top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                 border_color: style.border; border_radius: style.radius_sm; interactive; border_reveal;
                 fill_texture_opt: self.textures.alpha;
             }
             Rect(@format("color-picker-hex {id}"), layout.hex) {
-                overlay; opacity: opacity;
+                top_overlay; opacity: opacity;
                 fill: if self.hex.is_focused() { style.focused } else { style.control };
                 border: 1; border_color: if self.hex.is_focused() { style.accent } else { style.border };
                 border_radius: style.radius_sm; padding: 7.0; font_size: 10.5;
@@ -471,7 +471,7 @@ impl ColorPicker {
             }
             @if self.hex.is_focused() {
                 Rect(@format("color-picker-hex-caret {id}"), self.hex.caret_rect(layout.hex)) {
-                    overlay; opacity: opacity; fill: style.text;
+                    top_overlay; opacity: opacity; fill: style.text;
                 }
             }
         });
@@ -999,25 +999,25 @@ fn wheel_handles(
         Rect(@format("color-picker-hue-marker-outer {id} {suffix}"), Rect::new(
             hue_point[0] - 5.5, hue_point[1] - 5.5, 11.0, 11.0,
         )) {
-            overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 2;
+            top_overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 2;
             border_color: Color::BLACK; border_radius: 5.5;
         }
         Rect(@format("color-picker-hue-marker-inner {id} {suffix}"), Rect::new(
             hue_point[0] - 4.0, hue_point[1] - 4.0, 8.0, 8.0,
         )) {
-            overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 1;
+            top_overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 1;
             border_color: Color::WHITE; border_radius: 4.0;
         }
         Rect(@format("color-picker-triangle-marker-outer {id} {suffix}"), Rect::new(
             selection[0] - 5.0, selection[1] - 5.0, 10.0, 10.0,
         )) {
-            overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 2;
+            top_overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 2;
             border_color: Color::BLACK; border_radius: 5.0;
         }
         Rect(@format("color-picker-triangle-marker-inner {id} {suffix}"), Rect::new(
             selection[0] - 3.5, selection[1] - 3.5, 7.0, 7.0,
         )) {
-            overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 1;
+            top_overlay; opacity: opacity; fill: Color::TRANSPARENT; border: 1;
             border_color: Color::WHITE; border_radius: 3.5;
         }
     });
@@ -1034,7 +1034,7 @@ fn strip_handle(
     let x = rect.x + value.clamp(0.0, 1.0) * rect.width;
     crate::ui!(ctx, {
         Rect(@format("color-picker-strip-handle {id} {suffix}"), Rect::new(x - 2.0, rect.y - 2.0, 4.0, rect.height + 4.0)) {
-            overlay; opacity: opacity; fill: Color::WHITE; border: 1;
+            top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
             border_color: Color::BLACK; border_radius: 2.0;
         }
     });

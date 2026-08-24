@@ -194,11 +194,12 @@ pub enum Direction {
     #[default]
     Column,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Layer {
     #[default]
     Base,
     Overlay,
+    Popup,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FontKind {
@@ -660,6 +661,7 @@ impl BlockBuilder<'_> {
     builder_flags! {
         overflow_visible, overflow_visible_if => clip_children = false;
         overlay, overlay_if => layer = Layer::Overlay;
+        top_overlay, top_overlay_if => layer = Layer::Popup;
         centered, centered_if => centered = true;
     }
 
@@ -683,7 +685,7 @@ impl BlockBuilder<'_> {
 
     pub fn popup(self) -> Self {
         let block = &mut *self.block;
-        block.layer = Layer::Overlay;
+        block.layer = Layer::Popup;
         block.centered = true;
         block.animate_entry = true;
         self
@@ -934,6 +936,7 @@ impl Ui<'_> {
         let (base_commands, overlay_commands, vertices) = loop {
             let mut base_commands = Vec::new();
             let mut overlay_commands = Vec::new();
+            let mut popup_commands = Vec::new();
             let mut vertices = Vec::new();
             let mut error = None;
             {
@@ -942,6 +945,7 @@ impl Ui<'_> {
                     renderer: &mut *self.renderer,
                     base_commands: &mut base_commands,
                     overlay_commands: &mut overlay_commands,
+                    popup_commands: &mut popup_commands,
                     vertices: &mut vertices,
                 };
                 for block in &roots {
@@ -955,7 +959,10 @@ impl Ui<'_> {
             }
 
             match error {
-                None => break (base_commands, overlay_commands, vertices),
+                None => {
+                    overlay_commands.extend(popup_commands);
+                    break (base_commands, overlay_commands, vertices);
+                },
                 Some(err) if !retried_glyph_atlas && err.downcast_ref::<AtlasFull>().is_some() => {
                     self.gui.glyphs.clear();
                     self.renderer.reset_glyph_atlas();
@@ -1196,16 +1203,14 @@ fn layout_block(
         }
     }
     block.clips = inherited_clips.to_vec();
-    if !(block.layer == Layer::Overlay && inherited_layer == Layer::Base) {
+    if block.layer <= inherited_layer {
         for mut clip in block.explicit_clips.iter().copied() {
             clip.rect.x += explicit_clip_origin[0];
             clip.rect.y += explicit_clip_origin[1];
             push_clip(&mut block.clips, clip);
         }
     }
-    if inherited_layer == Layer::Overlay {
-        block.layer = Layer::Overlay;
-    }
+    block.layer = block.layer.max(inherited_layer);
     block.content_clips = block.clips.clone();
     if block.clip_children {
         push_clip(
@@ -1240,7 +1245,7 @@ fn layout_block(
         if !is_flow(child) {
             let rect = absolute_rect(child, content);
 
-            let child_clips = if child.layer == Layer::Overlay && block.layer == Layer::Base {
+            let child_clips = if child.layer > block.layer {
                 &[][..]
             } else {
                 block.content_clips.as_slice()
@@ -1509,7 +1514,8 @@ fn preferred_size(block: &Block, horizontal: bool) -> f32 {
 }
 
 fn cursor_at(blocks: &[Block], position: [f32; 2]) -> CursorShape {
-    cursor_at_layer(blocks, position, Layer::Overlay, Layer::Base)
+    cursor_at_layer(blocks, position, Layer::Popup, Layer::Base)
+        .or_else(|| cursor_at_layer(blocks, position, Layer::Overlay, Layer::Base))
         .or_else(|| cursor_at_layer(blocks, position, Layer::Base, Layer::Base))
         .unwrap_or(CursorShape::Arrow)
 }
@@ -1521,11 +1527,7 @@ fn cursor_at_layer(
     inherited: Layer,
 ) -> Option<CursorShape> {
     for block in blocks.iter().rev() {
-        let effective = if inherited == Layer::Overlay || block.layer == Layer::Overlay {
-            Layer::Overlay
-        } else {
-            Layer::Base
-        };
+        let effective = inherited.max(block.layer);
         if let Some(shape) = cursor_at_layer(&block.children, position, desired, effective) {
             return Some(shape);
         }
@@ -1549,7 +1551,8 @@ fn cursor_at_layer(
 }
 
 fn hit_test(blocks: &[Block], position: [f32; 2]) -> Option<BlockId> {
-    hit_test_layer(blocks, position, Layer::Overlay, Layer::Base)
+    hit_test_layer(blocks, position, Layer::Popup, Layer::Base)
+        .or_else(|| hit_test_layer(blocks, position, Layer::Overlay, Layer::Base))
         .or_else(|| hit_test_layer(blocks, position, Layer::Base, Layer::Base))
 }
 
@@ -1560,11 +1563,7 @@ fn hit_test_layer(
     inherited: Layer,
 ) -> Option<BlockId> {
     for block in blocks.iter().rev() {
-        let effective = if inherited == Layer::Overlay || block.layer == Layer::Overlay {
-            Layer::Overlay
-        } else {
-            Layer::Base
-        };
+        let effective = inherited.max(block.layer);
         if let Some(id) = hit_test_layer(&block.children, position, desired, effective) {
             return Some(id);
         }
@@ -1726,6 +1725,7 @@ struct EmitContext<'a> {
     renderer: &'a mut Renderer,
     base_commands: &'a mut Vec<DrawCommand>,
     overlay_commands: &'a mut Vec<DrawCommand>,
+    popup_commands: &'a mut Vec<DrawCommand>,
     vertices: &'a mut Vec<GpuVertex>,
 }
 
@@ -1738,14 +1738,11 @@ fn emit_block(
     inherited_foreground: Option<ColorKind>,
 ) -> Result<()> {
     let scale = emit.renderer.scale_factor();
-    let effective_layer = if inherited_layer == Layer::Overlay || block.layer == Layer::Overlay {
-        Layer::Overlay
-    } else {
-        Layer::Base
-    };
+    let effective_layer = inherited_layer.max(block.layer);
     let commands = match effective_layer {
         Layer::Base => &mut *emit.base_commands,
         Layer::Overlay => &mut *emit.overlay_commands,
+        Layer::Popup => &mut *emit.popup_commands,
     };
 
     let opacity = inherited_opacity * block.opacity * block.appear_t;
@@ -1783,7 +1780,7 @@ fn emit_block(
     let (physical_clips, clip_count) = scaled_clips(&block.clips, scale);
     let physical_clips = &physical_clips[..clip_count];
 
-    if effective_layer == Layer::Overlay && block.backdrop_blur > 0.0 {
+    if effective_layer != Layer::Base && block.backdrop_blur > 0.0 {
         commands.push(DrawCommand::backdrop_blur(
             block.id.0 ^ 0xb10b_b10b_b10b_b10b,
             block.rect.scaled(scale),
@@ -2419,6 +2416,18 @@ mod cursor_tests {
         assert_eq!(
             cursor_at(&[behind, front], [10.0, 10.0]),
             CursorShape::EwResize
+        );
+    }
+
+    #[test]
+    fn popup_cursor_wins_over_later_overlay() {
+        let mut popup = block(1, CursorShape::Pointer, true);
+        popup.layer = Layer::Popup;
+        let mut overlay = block(2, CursorShape::EwResize, true);
+        overlay.layer = Layer::Overlay;
+        assert_eq!(
+            cursor_at(&[popup, overlay], [10.0, 10.0]),
+            CursorShape::Pointer
         );
     }
 }

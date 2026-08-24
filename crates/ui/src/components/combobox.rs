@@ -200,7 +200,7 @@ impl ComboBox {
         crate::ui!(ctx, {
             Block {
                 id: @format("combobox-popup {}", id);
-                overlay;
+                top_overlay;
                 bounds: (popup.x, popup.y, popup.width, popup.height);
                 fill: Color::TRANSPARENT;
                 backdrop_blur: 22.0;
