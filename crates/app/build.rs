@@ -73,12 +73,12 @@ fn main() {
         let mut pixmap = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
         resvg::render(&tree, transform, &mut pixmap.as_mut());
         for pixel in pixmap.data_mut().chunks_exact_mut(4) {
-            let alpha = pixel[3] as u32;
+            let alpha = u32::from(pixel[3]);
             if alpha == 0 {
                 continue;
             }
             for channel in &mut pixel[..3] {
-                *channel = ((*channel as u32 * 255 + alpha / 2) / alpha).min(255) as u8;
+                *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
             }
         }
         atlas.extend_from_slice(pixmap.data());
@@ -162,11 +162,9 @@ fn embed_builtin_plugin(out_dir: &Path) {
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
             .unwrap_or_else(|error| panic!("launch builtin {crate_name} WASM build: {error}"));
-        if !status.success() {
-            panic!(
-                "builtin {crate_name} WASM build failed; ensure wasm32-unknown-unknown is installed (the Nix flake includes it)"
-            );
-        }
+        assert!(status.success(),
+            "builtin {crate_name} WASM build failed; ensure wasm32-unknown-unknown is installed (the Nix flake includes it)"
+        );
         let wasm = target
             .join("wasm32-unknown-unknown")
             .join("release")

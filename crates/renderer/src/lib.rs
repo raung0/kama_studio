@@ -76,7 +76,7 @@ pub struct ResolvedTexture {
 }
 
 impl ResolvedTexture {
-    fn none() -> Self {
+    const fn none() -> Self {
         Self {
             kind: TextureKind::None as u32,
             uv: [0.0, 0.0, 1.0, 1.0],
@@ -95,10 +95,10 @@ fn crop_uv(atlas: [f32; 4], crop: [f32; 4]) -> [f32; 4] {
     let width = atlas[2] - atlas[0];
     let height = atlas[3] - atlas[1];
     [
-        atlas[0] + width * crop[0],
-        atlas[1] + height * crop[1],
-        atlas[0] + width * crop[2],
-        atlas[1] + height * crop[3],
+        width.mul_add(crop[0], atlas[0]),
+        height.mul_add(crop[1], atlas[1]),
+        width.mul_add(crop[2], atlas[0]),
+        height.mul_add(crop[3], atlas[1]),
     ]
 }
 
@@ -154,6 +154,7 @@ impl DrawCommand {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn rounded_block(
         id: u64,
         rect: Rect,
@@ -189,6 +190,7 @@ impl DrawCommand {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn mesh(
         id: u64,
         rect: Rect,
@@ -212,6 +214,7 @@ impl DrawCommand {
         command
     }
 
+    #[must_use]
     pub fn backdrop_blur(
         id: u64,
         rect: Rect,
@@ -226,6 +229,7 @@ impl DrawCommand {
         command
     }
 
+    #[must_use]
     pub fn glyph(
         id: u64,
         rect: Rect,
@@ -385,7 +389,7 @@ impl Renderer {
             .formats
             .iter()
             .copied()
-            .find(|format| format.is_srgb())
+            .find(wgpu::TextureFormat::is_srgb)
             .unwrap_or(caps.formats[0]);
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
             wgpu::PresentMode::Fifo
@@ -584,14 +588,14 @@ impl Renderer {
     pub fn logical_height(&self) -> f32 {
         self.config.height as f32 / self.scale_factor
     }
-    pub fn scale_factor(&self) -> f32 {
+    pub const fn scale_factor(&self) -> f32 {
         self.scale_factor
     }
-    pub fn builtin_icon(&self) -> IconId {
+    pub const fn builtin_icon(&self) -> IconId {
         IconId(0)
     }
 
-    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+    pub const fn set_scale_factor(&mut self, scale_factor: f64) {
         let scale_factor = scale_factor as f32;
         self.scale_factor = if scale_factor.is_finite() {
             scale_factor.max(0.25)
@@ -688,7 +692,7 @@ impl Renderer {
         self.glyph_atlas.upload(&self.queue, width, height, rgba)
     }
 
-    pub fn reset_glyph_atlas(&mut self) {
+    pub const fn reset_glyph_atlas(&mut self) {
         self.glyph_atlas.reset();
     }
 
@@ -1120,12 +1124,11 @@ fn register_atlas(
 fn resolve_atlas(entries: &[ManagedEntry], id: u32, kind: TextureKind) -> ResolvedTexture {
     entries
         .get(id as usize)
-        .map(|entry| ResolvedTexture {
+        .map_or_else(ResolvedTexture::none, |entry| ResolvedTexture {
             kind: kind as u32,
             uv: entry.atlas.uv,
             revision: entry.revision,
         })
-        .unwrap_or_else(ResolvedTexture::none)
 }
 
 fn write_bytes(queue: &wgpu::Queue, buffer: &wgpu::Buffer, bytes: &[u8]) {
@@ -1134,7 +1137,7 @@ fn write_bytes(queue: &wgpu::Queue, buffer: &wgpu::Buffer, bytes: &[u8]) {
     }
 }
 
-fn image_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
+const fn image_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
     wgpu::TexelCopyTextureInfo {
         texture,
         mip_level: 0,
@@ -1219,14 +1222,14 @@ fn buffer_entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_>
     }
 }
 
-fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+const fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::TextureView(view),
     }
 }
 
-fn sampler_entry(binding: u32, sampler: &wgpu::Sampler) -> wgpu::BindGroupEntry<'_> {
+const fn sampler_entry(binding: u32, sampler: &wgpu::Sampler) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::Sampler(sampler),
@@ -1406,7 +1409,7 @@ fn make_builtin_icon(size: u32) -> Vec<u8> {
         for x in 0..size {
             let dx = x as f32 - center;
             let dy = y as f32 - center;
-            let edge = radius - (dx * dx + dy * dy).sqrt();
+            let edge = radius - dx.hypot(dy);
             let alpha = ((edge + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
             let i = ((y * size + x) * 4) as usize;
             pixels[i] = 255;

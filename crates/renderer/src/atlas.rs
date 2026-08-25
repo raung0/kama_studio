@@ -8,7 +8,7 @@ pub struct AtlasFull {
 }
 
 impl AtlasFull {
-    fn new(width: u32, height: u32) -> Self {
+    const fn new(width: u32, height: u32) -> Self {
         Self { width, height }
     }
 }
@@ -77,11 +77,11 @@ impl TextureAtlas {
         }
     }
 
-    pub fn view(&self) -> &wgpu::TextureView {
+    pub const fn view(&self) -> &wgpu::TextureView {
         &self.view
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.next_x = 1;
         self.next_y = 1;
         self.row_height = 0;

@@ -10,15 +10,19 @@ impl Color {
     pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
+    #[must_use]
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
         Self::rgba(r, g, b, 1.0)
     }
+    #[must_use]
     pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
+    #[must_use]
     pub const fn rgb8(r: u8, g: u8, b: u8) -> Self {
         Self::rgba8(r, g, b, 0xff)
     }
+    #[must_use]
     pub const fn rgba8(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self::rgba(
             r as f32 / 255.0,
@@ -27,22 +31,24 @@ impl Color {
             a as f32 / 255.0,
         )
     }
+    #[must_use]
     pub fn mix(self, other: Self, amount: f32) -> Self {
         let t = amount.clamp(0.0, 1.0);
         Self::rgba(
-            self.r + (other.r - self.r) * t,
-            self.g + (other.g - self.g) * t,
-            self.b + (other.b - self.b) * t,
-            self.a + (other.a - self.a) * t,
+            (other.r - self.r).mul_add(t, self.r),
+            (other.g - self.g).mul_add(t, self.g),
+            (other.b - self.b).mul_add(t, self.b),
+            (other.a - self.a).mul_add(t, self.a),
         )
     }
 
+    #[must_use]
     pub fn from_linear(value: [f32; 4]) -> Self {
         fn linear_to_srgb(value: f32) -> f32 {
             if value <= 0.003_130_8 {
                 value * 12.92
             } else {
-                1.055 * value.max(0.0).powf(1.0 / 2.4) - 0.055
+                1.055f32.mul_add(value.max(0.0).powf(1.0 / 2.4), -0.055)
             }
         }
         Self::rgba(
@@ -53,6 +59,7 @@ impl Color {
         )
     }
 
+    #[must_use]
     pub fn to_array(self) -> [f32; 4] {
         fn srgb_to_linear(value: f32) -> f32 {
             if value <= 0.04045 {
@@ -78,6 +85,7 @@ pub struct Rect {
     pub height: f32,
 }
 impl Rect {
+    #[must_use]
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             x,
@@ -87,34 +95,40 @@ impl Rect {
         }
     }
 
+    #[must_use]
     pub fn contains(self, p: [f32; 2]) -> bool {
         p[0] >= self.x
             && p[1] >= self.y
             && p[0] < self.x + self.width
             && p[1] < self.y + self.height
     }
+    #[must_use]
     pub fn right(self) -> f32 {
         self.x + self.width
     }
+    #[must_use]
     pub fn bottom(self) -> f32 {
         self.y + self.height
     }
+    #[must_use]
     pub fn inset(self, amount: f32) -> Self {
         Self {
             x: self.x + amount,
             y: self.y + amount,
-            width: (self.width - amount * 2.0).max(0.0),
-            height: (self.height - amount * 2.0).max(0.0),
+            width: amount.mul_add(-2.0, self.width).max(0.0),
+            height: amount.mul_add(-2.0, self.height).max(0.0),
         }
     }
+    #[must_use]
     pub fn lerp(self, to: Self, t: f32) -> Self {
         Self {
-            x: self.x + (to.x - self.x) * t,
-            y: self.y + (to.y - self.y) * t,
-            width: self.width + (to.width - self.width) * t,
-            height: self.height + (to.height - self.height) * t,
+            x: (to.x - self.x).mul_add(t, self.x),
+            y: (to.y - self.y).mul_add(t, self.y),
+            width: (to.width - self.width).mul_add(t, self.width),
+            height: (to.height - self.height).mul_add(t, self.height),
         }
     }
+    #[must_use]
     pub fn intersect(self, other: Self) -> Self {
         let x0 = self.x.max(other.x);
         let y0 = self.y.max(other.y);
@@ -127,6 +141,7 @@ impl Rect {
             height: (y1 - y0).max(0.0),
         }
     }
+    #[must_use]
     pub fn scaled(self, scale: f32) -> Self {
         Self {
             x: self.x * scale,
@@ -135,14 +150,16 @@ impl Rect {
             height: self.height * scale,
         }
     }
+    #[must_use]
     pub fn centered_in(self, parent: Self) -> Self {
         Self {
-            x: parent.x + (parent.width - self.width) * 0.5,
-            y: parent.y + (parent.height - self.height) * 0.5,
+            x: (parent.width - self.width).mul_add(0.5, parent.x),
+            y: (parent.height - self.height).mul_add(0.5, parent.y),
             ..self
         }
     }
-    pub fn as_array(self) -> [f32; 4] {
+    #[must_use]
+    pub const fn as_array(self) -> [f32; 4] {
         [self.x, self.y, self.width, self.height]
     }
 }
@@ -159,7 +176,7 @@ pub struct TextureId(pub u32);
 pub struct ExternalTextureId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct IconId(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureSource {
     Atlas(TextureId),
     Icon(IconId),

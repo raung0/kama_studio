@@ -15,6 +15,7 @@ pub enum HostValue {
 }
 
 impl HostValue {
+    #[must_use]
     pub fn compatible(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Gpu(a), Self::Gpu(b)) => a.compatible(*b),
@@ -22,7 +23,8 @@ impl HostValue {
         }
     }
 
-    pub fn scalar_count(&self) -> usize {
+    #[must_use]
+    pub const fn scalar_count(&self) -> usize {
         match self {
             Self::Vec2Array(values) => values.len() * 2,
             Self::F32List(values) => values.len(),
@@ -31,6 +33,7 @@ impl HostValue {
         }
     }
 
+    #[must_use]
     pub fn scalar(&self, channel: usize) -> Option<f32> {
         match self {
             Self::Vec2Array(values) => values
@@ -45,6 +48,7 @@ impl HostValue {
         }
     }
 
+    #[must_use]
     pub fn with_scalar(mut self, channel: usize, next: f32) -> Option<Self> {
         match &mut self {
             Self::Vec2Array(values) => *values.get_mut(channel / 2)?.get_mut(channel % 2)? = next,
@@ -84,6 +88,7 @@ impl KeyTrack<HostKeyframe> {
         self.key_index_within(time, Self::KEY_EPSILON)
     }
 
+    #[must_use]
     pub fn evaluate(&self, time: f64) -> Option<HostValue> {
         let first = self.keys.first()?;
         let split = self.keys.partition_point(|key| key.time <= time + 1e-9);
@@ -102,6 +107,7 @@ impl KeyTrack<HostKeyframe> {
         Some(interpolate_host_value(&previous.value, &next.value, t))
     }
 
+    #[must_use]
     pub fn has_keyframe(&self, time: f64) -> bool {
         self.key_index(time).is_some()
     }
@@ -126,7 +132,12 @@ fn interpolate_host_value(a: &HostValue, b: &HostValue, t: f32) -> HostValue {
             HostValue::Vec2Array(
                 a.iter()
                     .zip(b)
-                    .map(|(a, b)| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+                    .map(|(a, b)| {
+                        [
+                            (b[0] - a[0]).mul_add(t, a[0]),
+                            (b[1] - a[1]).mul_add(t, a[1]),
+                        ]
+                    })
                     .collect(),
             )
         }
@@ -145,7 +156,7 @@ pub struct HostComponentKeyframes {
 }
 
 impl HostComponentKeyframes {
-    fn scalar_count(value: &HostValue) -> usize {
+    const fn scalar_count(value: &HostValue) -> usize {
         value.scalar_count()
     }
 
@@ -198,14 +209,15 @@ impl HostBinding {
         }
     }
 
-    pub fn gpu(&self) -> Option<&Binding> {
+    #[must_use]
+    pub const fn gpu(&self) -> Option<&Binding> {
         match self {
             Self::Gpu(binding) => Some(binding),
             _ => None,
         }
     }
 
-    pub fn gpu_mut(&mut self) -> Option<&mut Binding> {
+    pub const fn gpu_mut(&mut self) -> Option<&mut Binding> {
         match self {
             Self::Gpu(binding) => Some(binding),
             _ => None,
@@ -221,6 +233,7 @@ impl HostBinding {
         }
     }
 
+    #[must_use]
     pub fn has_keyframe(&self, time: f64) -> bool {
         match self {
             Self::Constant(_) => false,
@@ -230,6 +243,7 @@ impl HostBinding {
         }
     }
 
+    #[must_use]
     pub fn has_keyframes(&self) -> bool {
         match self {
             Self::Constant(_) => false,
@@ -361,6 +375,7 @@ impl HostBinding {
             || self.ensure_components().is_some()
     }
 
+    #[must_use]
     pub fn scalar_keys(&self, channel: usize) -> Vec<ScalarKeyframe> {
         match self {
             Self::Gpu(binding) => binding.scalar_keys(channel),
@@ -414,16 +429,12 @@ impl HostBinding {
 
     pub fn scalar_count(&self) -> usize {
         match self {
-            Self::Gpu(binding) => binding
-                .evaluate(0.0)
-                .map(GpuValue::component_count)
-                .unwrap_or(0),
+            Self::Gpu(binding) => binding.evaluate(0.0).map_or(0, GpuValue::component_count),
             Self::Constant(value) => HostComponentKeyframes::scalar_count(value),
             Self::Keyframes(track) => track
                 .keys
                 .first()
-                .map(|key| HostComponentKeyframes::scalar_count(&key.value))
-                .unwrap_or(0),
+                .map_or(0, |key| HostComponentKeyframes::scalar_count(&key.value)),
             Self::Components(channels) => channels.tracks.len(),
         }
     }

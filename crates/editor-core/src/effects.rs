@@ -25,34 +25,39 @@ pub enum GpuValue {
 }
 
 impl GpuValue {
-    pub fn f32(self) -> Option<f32> {
+    #[must_use]
+    pub const fn f32(self) -> Option<f32> {
         match self {
             Self::F32(value) => Some(value),
             _ => None,
         }
     }
 
-    pub fn bool(self) -> Option<bool> {
+    #[must_use]
+    pub const fn bool(self) -> Option<bool> {
         match self {
             Self::Bool(value) => Some(value),
             _ => None,
         }
     }
 
-    pub fn vec2(self) -> Option<[f32; 2]> {
+    #[must_use]
+    pub const fn vec2(self) -> Option<[f32; 2]> {
         match self {
             Self::Vec2(value) => Some(value),
             _ => None,
         }
     }
 
-    pub fn enum_index(self) -> Option<u32> {
+    #[must_use]
+    pub const fn enum_index(self) -> Option<u32> {
         match self {
             Self::Enum(value) => Some(value),
             _ => None,
         }
     }
 
+    #[must_use]
     pub fn numeric_count(self) -> Option<usize> {
         Some(match self {
             Self::U32(value) | Self::Enum(value) => value as usize,
@@ -62,14 +67,16 @@ impl GpuValue {
         })
     }
 
-    pub fn color(self) -> Option<[f32; 4]> {
+    #[must_use]
+    pub const fn color(self) -> Option<[f32; 4]> {
         match self {
             Self::Color(value) => Some(value),
             _ => None,
         }
     }
 
-    pub fn zeroed(self) -> Self {
+    #[must_use]
+    pub const fn zeroed(self) -> Self {
         match self {
             Self::F32(_) => Self::F32(0.0),
             Self::I32(_) => Self::I32(0),
@@ -83,11 +90,13 @@ impl GpuValue {
         }
     }
 
+    #[must_use]
     pub fn compatible(self, other: Self) -> bool {
         std::mem::discriminant(&self) == std::mem::discriminant(&other)
     }
 
-    pub fn component_count(self) -> usize {
+    #[must_use]
+    pub const fn component_count(self) -> usize {
         match self {
             Self::F32(_) | Self::I32(_) | Self::U32(_) | Self::Bool(_) | Self::Enum(_) => 1,
             Self::Vec2(_) => 2,
@@ -96,26 +105,29 @@ impl GpuValue {
         }
     }
 
-    pub fn components_linkable(self) -> bool {
+    #[must_use]
+    pub const fn components_linkable(self) -> bool {
         matches!(self, Self::Vec2(_) | Self::Vec3(_) | Self::Vec4(_))
     }
 
+    #[must_use]
     pub fn numeric(self, component: Option<usize>) -> Option<f64> {
         Some(match (self, component) {
-            (Self::F32(value), None | Some(0)) => value as f64,
-            (Self::I32(value), None | Some(0)) => value as f64,
-            (Self::U32(value), None | Some(0)) => value as f64,
-            (Self::Bool(value), None | Some(0)) => u8::from(value) as f64,
-            (Self::Enum(value), None | Some(0)) => value as f64,
-            (Self::Vec2(value), Some(component)) => *value.get(component)? as f64,
-            (Self::Vec3(value), Some(component)) => *value.get(component)? as f64,
-            (Self::Vec4(value), Some(component)) | (Self::Color(value), Some(component)) => {
-                *value.get(component)? as f64
+            (Self::F32(value), None | Some(0)) => f64::from(value),
+            (Self::I32(value), None | Some(0)) => f64::from(value),
+            (Self::U32(value), None | Some(0)) => f64::from(value),
+            (Self::Bool(value), None | Some(0)) => f64::from(u8::from(value)),
+            (Self::Enum(value), None | Some(0)) => f64::from(value),
+            (Self::Vec2(value), Some(component)) => f64::from(*value.get(component)?),
+            (Self::Vec3(value), Some(component)) => f64::from(*value.get(component)?),
+            (Self::Vec4(value) | Self::Color(value), Some(component)) => {
+                f64::from(*value.get(component)?)
             }
             _ => return None,
         })
     }
 
+    #[must_use]
     pub fn with_numeric(self, component: Option<usize>, next: f32) -> Option<Self> {
         Some(match (self, component) {
             (Self::F32(_), None | Some(0)) => Self::F32(next),
@@ -143,6 +155,7 @@ impl GpuValue {
         })
     }
 
+    #[must_use]
     pub fn with_component(self, component: usize, next: f32, linked: bool) -> Option<Self> {
         fn update(values: &mut [f32], component: usize, next: f32, linked: bool) -> bool {
             let Some(current) = values.get(component).copied() else {
@@ -218,7 +231,7 @@ impl EasingHandle {
         y: 1.0 / 3.0,
     };
 
-    pub(crate) fn clamped(self) -> Self {
+    pub(crate) const fn clamped(self) -> Self {
         Self {
             x: self.x.clamp(0.001, 0.999),
             y: self.y.clamp(-4.0, 4.0),
@@ -226,10 +239,11 @@ impl EasingHandle {
     }
 }
 
-fn default_easing_handle() -> EasingHandle {
+const fn default_easing_handle() -> EasingHandle {
     EasingHandle::LINEAR
 }
 
+#[must_use]
 pub fn preset_out_handle(interpolation: Interpolation) -> EasingHandle {
     match interpolation {
         Interpolation::Cubic | Interpolation::EaseOut | Interpolation::EaseInOut => EasingHandle {
@@ -240,6 +254,7 @@ pub fn preset_out_handle(interpolation: Interpolation) -> EasingHandle {
     }
 }
 
+#[must_use]
 pub fn preset_in_handle(interpolation: Interpolation) -> EasingHandle {
     match interpolation {
         Interpolation::Cubic | Interpolation::EaseIn | Interpolation::EaseInOut => EasingHandle {
@@ -252,9 +267,10 @@ pub fn preset_in_handle(interpolation: Interpolation) -> EasingHandle {
 
 fn cubic_bezier(a: f32, b: f32, t: f32) -> f32 {
     let inv = 1.0 - t;
-    3.0 * inv * inv * t * a + 3.0 * inv * t * t * b + t * t * t
+    (t * t).mul_add(t, (3.0 * inv * t * t).mul_add(b, 3.0 * inv * inv * t * a))
 }
 
+#[must_use]
 pub fn bezier_easing_amount(out: EasingHandle, incoming: EasingHandle, x: f32) -> f32 {
     let out = out.clamped();
     let incoming = incoming.clamped();
@@ -277,6 +293,7 @@ pub fn bezier_easing_amount(out: EasingHandle, incoming: EasingHandle, x: f32) -
     cubic_bezier(p1y, p2y, (lo + hi) * 0.5)
 }
 
+#[must_use]
 pub fn interpolation_amount(left: Interpolation, right: Interpolation, t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     if left == Interpolation::Step {
@@ -299,7 +316,10 @@ pub fn interpolation_amount(left: Interpolation, right: Interpolation, t: f32) -
     let t3 = t2 * t;
     let start_slope = if ease_out { 0.0 } else { 1.0 };
     let end_slope = if ease_in { 0.0 } else { 1.0 };
-    (-2.0 * t3 + 3.0 * t2) + (t3 - 2.0 * t2 + t) * start_slope + (t3 - t2) * end_slope
+    (t3 - t2).mul_add(
+        end_slope,
+        (2.0f32.mul_add(-t2, t3) + t).mul_add(start_slope, 3.0f32.mul_add(t2, -2.0 * t3)),
+    )
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -382,7 +402,7 @@ pub trait AnimatedValue: Copy {
 
 impl AnimatedValue for f32 {
     fn interpolate(self, other: Self, amount: f32) -> Self {
-        self + (other - self) * amount
+        (other - self).mul_add(amount, self)
     }
 }
 
@@ -395,6 +415,7 @@ impl AnimatedValue for GpuValue {
 impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
     const EPSILON: f64 = 1.0 / 24_000.0;
 
+    #[must_use]
     pub fn evaluate(&self, time: f64) -> Option<T> {
         let first = self.keys.first()?;
         if time <= first.time {
@@ -488,10 +509,12 @@ impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
         true
     }
 
+    #[must_use]
     pub fn key_index(&self, time: f64) -> Option<usize> {
         self.key_index_within(time, Self::EPSILON)
     }
 
+    #[must_use]
     pub fn has_key(&self, time: f64) -> bool {
         self.key_index(time).is_some()
     }
@@ -517,6 +540,7 @@ impl ComponentKeyframes {
         (self.base.component_count() > 1).then_some(component)
     }
 
+    #[must_use]
     pub fn evaluate(&self, time: f64) -> Option<GpuValue> {
         let mut value = self.base;
         for (component, track) in self.tracks.iter().enumerate() {
@@ -530,7 +554,7 @@ impl ComponentKeyframes {
 }
 
 fn interpolate(a: GpuValue, b: GpuValue, amount: f32) -> GpuValue {
-    let lerp = |a: f32, b: f32| a + (b - a) * amount;
+    let lerp = |a: f32, b: f32| (b - a).mul_add(amount, a);
     match (a, b) {
         (GpuValue::F32(a), GpuValue::F32(b)) => GpuValue::F32(lerp(a, b)),
         (GpuValue::I32(a), GpuValue::I32(b)) => {
@@ -604,6 +628,7 @@ impl Binding {
         }
     }
 
+    #[must_use]
     pub fn evaluate(&self, time: f64) -> Option<GpuValue> {
         match self {
             Self::Constant(value) => Some(*value),
@@ -668,8 +693,7 @@ impl Binding {
                         let interpolation = channels.tracks[component]
                             .keys
                             .last()
-                            .map(|key| key.interpolation)
-                            .unwrap_or_else(|| default_interpolation(value));
+                            .map_or_else(|| default_interpolation(value), |key| key.interpolation);
                         channels.tracks[component].set_key(time, next as f32, interpolation);
                     }
                 }
@@ -724,8 +748,7 @@ impl Binding {
                         let interpolation = channels.tracks[index]
                             .keys
                             .last()
-                            .map(|key| key.interpolation)
-                            .unwrap_or_else(|| default_interpolation(next));
+                            .map_or_else(|| default_interpolation(next), |key| key.interpolation);
                         channels.tracks[index].set_key(time, value as f32, interpolation);
                     }
                 }
@@ -803,14 +826,14 @@ impl Binding {
         }
     }
 
+    #[must_use]
     pub fn scalar_keys(&self, component: usize) -> Vec<ScalarKeyframe> {
         match self {
             Self::Keyframes(track) => {
                 let count = track
                     .keys
                     .first()
-                    .map(|key| key.value.component_count())
-                    .unwrap_or(0);
+                    .map_or(0, |key| key.value.component_count());
                 let arg = (count > 1).then_some(component);
                 track
                     .keys
@@ -937,6 +960,7 @@ impl Binding {
         }
     }
 
+    #[must_use]
     pub fn has_keyframe(&self, time: f64) -> bool {
         match self {
             Self::Keyframes(track) => track.has_key(time),
@@ -945,6 +969,7 @@ impl Binding {
         }
     }
 
+    #[must_use]
     pub fn has_keyframes(&self) -> bool {
         match self {
             Self::Keyframes(track) => !track.keys.is_empty(),
@@ -956,7 +981,8 @@ impl Binding {
     }
 }
 
-pub fn default_interpolation(value: GpuValue) -> Interpolation {
+#[must_use]
+pub const fn default_interpolation(value: GpuValue) -> Interpolation {
     match value {
         GpuValue::Bool(_) | GpuValue::Enum(_) => Interpolation::Step,
         _ => Interpolation::Linear,
@@ -1008,6 +1034,7 @@ pub enum BuiltinNodePreset {
 }
 
 impl EffectNode {
+    #[must_use]
     pub fn stack_image_input(&self) -> Option<(&str, &ImageBinding)> {
         self.stack_input
             .as_deref()
@@ -1017,6 +1044,7 @@ impl EffectNode {
             .map(|(name, binding)| (name.as_str(), binding))
     }
 
+    #[must_use]
     pub fn stack_image_input_name(&self) -> Option<&str> {
         self.stack_image_input().map(|(name, _)| name)
     }
@@ -1079,6 +1107,7 @@ impl EffectNode {
         true
     }
 
+    #[must_use]
     pub fn builtin(id: NodeId, preset: BuiltinNodePreset) -> Self {
         let mut inputs =
             BTreeMap::from([("enabled".into(), Binding::Constant(GpuValue::Bool(true)))]);
@@ -1135,7 +1164,7 @@ enum ValueNodeOp {
     Ternary(fn(f32, f32, f32) -> f32),
 }
 
-fn finite_or_zero(value: f32) -> f32 {
+const fn finite_or_zero(value: f32) -> f32 {
     if value.is_finite() {
         value
     } else {
@@ -1150,11 +1179,11 @@ macro_rules! value_node_kinds {
 
         impl ValueNodeKind {
             pub const INSERTABLE: [Self; value_node_kinds!(@count $($variant),+)] = [$(Self::$variant),+];
-            pub fn label(self) -> &'static str { match self { $(Self::$variant => $label),+ } }
-            pub fn detail(self) -> &'static str { match self { $(Self::$variant => $detail),+ } }
-            pub fn is_constant(self) -> bool { match self { $(Self::$variant => $constant),+ } }
-            pub fn is_runtime_source(self) -> bool { match self { $(Self::$variant => $runtime),+ } }
-            pub fn input_names(self) -> &'static [&'static str] { match self { $(Self::$variant => $inputs),+ } }
+            pub const fn label(self) -> &'static str { match self { $(Self::$variant => $label),+ } }
+            pub const fn detail(self) -> &'static str { match self { $(Self::$variant => $detail),+ } }
+            pub const fn is_constant(self) -> bool { match self { $(Self::$variant => $constant),+ } }
+            pub const fn is_runtime_source(self) -> bool { match self { $(Self::$variant => $runtime),+ } }
+            pub const fn input_names(self) -> &'static [&'static str] { match self { $(Self::$variant => $inputs),+ } }
             fn operation(self) -> ValueNodeOp { match self { $(Self::$variant => $op),+ } }
         }
     };
@@ -1182,7 +1211,7 @@ value_node_kinds! {
     Min => ("Minimum", "Component-wise math value", &["A", "B"], false, false, ValueNodeOp::Binary(f32::min)),
     Max => ("Maximum", "Component-wise math value", &["A", "B"], false, false, ValueNodeOp::Binary(f32::max)),
     Clamp => ("Clamp", "Clamp Value between Min and Max", &["Value", "Min", "Max"], false, false, ValueNodeOp::Ternary(|value, min, max| value.clamp(min.min(max), min.max(max)))),
-    Lerp => ("Lerp", "Interpolate A to B by T", &["A", "B", "T"], false, false, ValueNodeOp::Ternary(|a, b, t| a + (b - a) * t)),
+    Lerp => ("Lerp", "Interpolate A to B by T", &["A", "B", "T"], false, false, ValueNodeOp::Ternary(|a, b, t| (b - a).mul_add(t, a))),
     Negate => ("Negate", "Unary math value", &["Value"], false, false, ValueNodeOp::Unary(|value| -value)),
     Abs => ("Absolute", "Unary math value", &["Value"], false, false, ValueNodeOp::Unary(f32::abs)),
     Sqrt => ("Square Root", "Unary math value", &["Value"], false, false, ValueNodeOp::Unary(|value| value.max(0.0).sqrt())),
@@ -1293,7 +1322,7 @@ fn evaluate_value_node_in(
         Color,
     }
 
-    fn lanes(value: GpuValue) -> ([f32; 4], usize, Shape) {
+    const fn lanes(value: GpuValue) -> ([f32; 4], usize, Shape) {
         match value {
             GpuValue::F32(value) => ([value, value, value, value], 1, Shape::Scalar),
             GpuValue::I32(value) => ([value as f32; 4], 1, Shape::Scalar),
@@ -1306,7 +1335,7 @@ fn evaluate_value_node_in(
         }
     }
 
-    fn result_shape(a: GpuValue, b: GpuValue) -> (usize, Shape) {
+    const fn result_shape(a: GpuValue, b: GpuValue) -> (usize, Shape) {
         let (_, ac, ashape) = lanes(a);
         let (_, bc, bshape) = lanes(b);
         if ac >= bc {
@@ -1316,7 +1345,7 @@ fn evaluate_value_node_in(
         }
     }
 
-    fn from_lanes(values: [f32; 4], count: usize, shape: Shape) -> GpuValue {
+    const fn from_lanes(values: [f32; 4], count: usize, shape: Shape) -> GpuValue {
         match (count, shape) {
             (1, _) => GpuValue::F32(values[0]),
             (2, _) => GpuValue::Vec2([values[0], values[1]]),
@@ -1385,6 +1414,7 @@ pub struct ValueEvaluator<'a> {
 }
 
 impl<'a> ValueEvaluator<'a> {
+    #[must_use]
     pub fn new(nodes: &'a [ValueNode], context: ValueEvalContext) -> Self {
         Self {
             nodes: nodes.iter().map(|node| (node.id, node)).collect(),
@@ -1405,6 +1435,7 @@ impl<'a> ValueEvaluator<'a> {
     }
 }
 
+#[must_use]
 pub fn evaluate_value_node(
     nodes: &[ValueNode],
     node: NodeId,
@@ -1476,14 +1507,17 @@ impl<'a, N: DependencyNode> DependencyGraph<'a, N> {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, id: NodeId) -> bool {
         self.indices.contains_key(&id)
     }
 
+    #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&'a N> {
         self.indices.get(&id).map(|&index| &self.nodes[index])
     }
 
+    #[must_use]
     pub fn depends_on(&self, start: NodeId, target: NodeId) -> bool {
         let mut stack = vec![start];
         let mut seen = HashSet::new();
@@ -1522,6 +1556,7 @@ impl<'a> DependencyGraph<'a, EffectNode> {
         false
     }
 
+    #[must_use]
     pub fn main_path(&self, output: &ImageBinding) -> Vec<&'a EffectNode> {
         let mut path = Vec::new();
         let mut cursor = image_source(output);
@@ -1537,6 +1572,7 @@ impl<'a> DependencyGraph<'a, EffectNode> {
         path
     }
 
+    #[must_use]
     pub fn stack_evaluation_order(&self, output: &ImageBinding) -> Vec<usize> {
         fn visit(
             index: &DependencyGraph<'_, EffectNode>,
@@ -1567,7 +1603,7 @@ impl<'a> DependencyGraph<'a, EffectNode> {
     }
 }
 
-fn image_source(binding: &ImageBinding) -> Option<NodeId> {
+const fn image_source(binding: &ImageBinding) -> Option<NodeId> {
     match binding {
         ImageBinding::Node(socket) => Some(socket.node),
         ImageBinding::Disconnected | ImageBinding::PipelineInput => None,
@@ -1575,6 +1611,7 @@ fn image_source(binding: &ImageBinding) -> Option<NodeId> {
 }
 
 impl EffectPipeline {
+    #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&EffectNode> {
         self.nodes.iter().find(|node| node.id == id)
     }
@@ -1583,6 +1620,7 @@ impl EffectPipeline {
         self.nodes.iter_mut().find(|node| node.id == id)
     }
 
+    #[must_use]
     pub fn value_node(&self, id: NodeId) -> Option<&ValueNode> {
         self.value_nodes.iter().find(|node| node.id == id)
     }
@@ -1591,6 +1629,7 @@ impl EffectPipeline {
         self.value_nodes.iter_mut().find(|node| node.id == id)
     }
 
+    #[must_use]
     pub fn main_path(&self) -> Vec<&EffectNode> {
         ImageGraphIndex::new(&self.nodes).main_path(&self.output)
     }
@@ -1608,6 +1647,7 @@ pub struct BindingOverrides {
 }
 
 impl BindingOverrides {
+    #[must_use]
     pub fn get(&self, node: NodeId, input: &str) -> Option<&Binding> {
         self.values.get(&node)?.get(input)
     }
@@ -1616,6 +1656,7 @@ impl BindingOverrides {
         self.values.get_mut(&node)?.get_mut(input)
     }
 
+    #[must_use]
     pub fn contains(&self, node: NodeId, input: &str) -> bool {
         self.get(node, input).is_some()
     }
@@ -1779,6 +1820,7 @@ mod binding_override_map {
 }
 
 impl PipelineInstance {
+    #[must_use]
     pub fn effect_default() -> Self {
         Self {
             ui_input_position: None,
@@ -1790,6 +1832,7 @@ impl PipelineInstance {
         }
     }
 
+    #[must_use]
     pub fn transform(&self) -> Option<&EffectNode> {
         self.local_nodes
             .iter()

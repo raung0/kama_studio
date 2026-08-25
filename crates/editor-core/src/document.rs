@@ -17,7 +17,7 @@ macro_rules! labeled_enum {
 
         impl $name {
             pub const ALL: [Self; labeled_enum!(@count $($variant),+)] = [$(Self::$variant),+];
-            pub fn label(self) -> &'static str {
+            pub const fn label(self) -> &'static str {
                 match self { $(Self::$variant => $label),+ }
             }
         }
@@ -150,7 +150,8 @@ pub enum Model3dShading {
 impl Model3dShading {
     pub const OPTIONS: [&'static str; 2] = ["Unlit", "PBR"];
 
-    pub fn from_index(index: usize) -> Self {
+    #[must_use]
+    pub const fn from_index(index: usize) -> Self {
         if index == 1 {
             Self::Pbr
         } else {
@@ -158,7 +159,8 @@ impl Model3dShading {
         }
     }
 
-    pub fn index(self) -> usize {
+    #[must_use]
+    pub const fn index(self) -> usize {
         match self {
             Self::Unlit => 0,
             Self::Pbr => 1,
@@ -193,6 +195,7 @@ pub struct WaveformData {
 }
 
 impl WaveformData {
+    #[must_use]
     pub fn sample_count(&self) -> usize {
         self.video
             .as_ref()
@@ -230,11 +233,11 @@ pub struct LegacyModel3dSettings {
     pub shading: Model3dShading,
 }
 
-fn legacy_model3d_size() -> [f32; 3] {
+const fn legacy_model3d_size() -> [f32; 3] {
     [2.0, 2.0, 2.0]
 }
 
-fn legacy_model3d_scale() -> [f32; 3] {
+const fn legacy_model3d_scale() -> [f32; 3] {
     [1.0, 1.0, 1.0]
 }
 
@@ -272,18 +275,20 @@ pub enum GeneratorSource {
 }
 
 impl GeneratorSource {
-    pub fn parameters(&self) -> &BTreeMap<String, HostBinding> {
+    #[must_use]
+    pub const fn parameters(&self) -> &BTreeMap<String, HostBinding> {
         match self {
             Self::Plugin { parameters, .. } | Self::Wasm { parameters, .. } => parameters,
         }
     }
 
-    pub fn parameters_mut(&mut self) -> &mut BTreeMap<String, HostBinding> {
+    pub const fn parameters_mut(&mut self) -> &mut BTreeMap<String, HostBinding> {
         match self {
             Self::Plugin { parameters, .. } | Self::Wasm { parameters, .. } => parameters,
         }
     }
 
+    #[must_use]
     pub fn host_binding(&self, input: &str) -> Option<&HostBinding> {
         self.parameters().get(input)
     }
@@ -306,15 +311,18 @@ pub enum VisualSource {
 }
 
 impl VisualSource {
-    pub fn is_audio(&self) -> bool {
+    #[must_use]
+    pub const fn is_audio(&self) -> bool {
         matches!(self, Self::Audio(_) | Self::AudioPlaceholder)
     }
 
-    pub fn is_effect_input(&self) -> bool {
+    #[must_use]
+    pub const fn is_effect_input(&self) -> bool {
         matches!(self, Self::EffectInput)
     }
 
-    pub fn is_renderable_visual(&self) -> bool {
+    #[must_use]
+    pub const fn is_renderable_visual(&self) -> bool {
         !self.is_audio() && !self.is_effect_input()
     }
 }
@@ -355,7 +363,7 @@ labeled_enum! {
     }
 }
 
-fn default_alpha_blend_binding() -> Binding {
+const fn default_alpha_blend_binding() -> Binding {
     Binding::Constant(GpuValue::Enum(0))
 }
 

@@ -50,22 +50,27 @@ impl<S: Clone> HistoryGraph<S> {
         self.revision = self.revision.wrapping_add(1).max(1);
     }
 
-    pub fn revision(&self) -> u64 {
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
         self.revision
     }
 
-    pub fn current(&self) -> usize {
+    #[must_use]
+    pub const fn current(&self) -> usize {
         self.current
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.nodes.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
+    #[must_use]
     pub fn entry(&self, index: usize) -> Option<HistoryEntry<'_>> {
         let node = self.nodes.get(index)?;
         Some(HistoryEntry {

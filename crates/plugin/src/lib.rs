@@ -18,6 +18,7 @@ pub fn get_parameter<T: Parameter>(name: &str, fallback: T) -> T {
     T::get(parameter_hash(name), fallback)
 }
 
+#[must_use]
 pub fn parameter_id(name: &str) -> u32 {
     parameter_hash(name) as u32
 }
@@ -41,7 +42,7 @@ impl Parameter for f32 {
 impl private::Sealed for u32 {}
 impl Parameter for u32 {
     fn get(hash: i64, fallback: Self) -> Self {
-        unsafe { host::param_u32(hash, fallback.min(i32::MAX as u32) as i32) as u32 }
+        unsafe { host::param_u32(hash, fallback.min(i32::MAX as Self) as i32) as Self }
     }
 }
 
@@ -114,14 +115,17 @@ impl Parameter for Vec<[f32; 2]> {
 pub mod generator {
     use super::host;
 
+    #[must_use]
     pub fn render_scale() -> f32 {
         unsafe { host::render_scale() }
     }
 
+    #[must_use]
     pub fn render_origin() -> [f32; 2] {
         unsafe { [host::render_origin(0), host::render_origin(1)] }
     }
 
+    #[must_use]
     pub fn has_tight_bounds() -> bool {
         unsafe { host::render_tight_bounds() != 0 }
     }
@@ -147,7 +151,8 @@ pub mod generator {
 pub mod audio {
     pub const RESET: i32 = 1;
 
-    pub fn reset_requested(flags: i32) -> bool {
+    #[must_use]
+    pub const fn reset_requested(flags: i32) -> bool {
         flags & RESET != 0
     }
 }

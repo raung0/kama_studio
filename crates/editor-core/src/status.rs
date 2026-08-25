@@ -8,6 +8,7 @@ pub struct DocumentStatus {
 }
 
 impl DocumentStatus {
+    #[must_use]
     pub fn new(revision: u64, content: Vec<u8>, view: Vec<u8>) -> Self {
         Self {
             saved_content: content.clone(),
@@ -53,10 +54,12 @@ impl DocumentStatus {
         self.unsaved = false;
     }
 
-    pub fn is_unsaved(&self) -> bool {
+    #[must_use]
+    pub const fn is_unsaved(&self) -> bool {
         self.unsaved
     }
 
+    #[must_use]
     pub fn differs_from_saved(&self, content: &[u8], view: &[u8]) -> bool {
         content != self.saved_content || view != self.saved_view
     }

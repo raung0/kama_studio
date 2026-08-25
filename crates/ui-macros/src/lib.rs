@@ -76,13 +76,13 @@ enum Node {
     },
     If {
         condition: Expr,
-        then_nodes: Vec<Node>,
-        else_branch: Option<Box<Node>>,
+        then_nodes: Vec<Self>,
+        else_branch: Option<Box<Self>>,
     },
     For {
         pattern: Pat,
         expression: Expr,
-        nodes: Vec<Node>,
+        nodes: Vec<Self>,
     },
     Match {
         expression: Expr,
@@ -546,10 +546,10 @@ fn expand_component_impl(args: ComponentArgs, item: ItemImpl) -> Result<TokenStr
             "ui_component must annotate `impl Component for Type`",
         ));
     };
-    if !trait_path
+    if trait_path
         .segments
         .last()
-        .is_some_and(|segment| segment.ident == "Component")
+        .is_none_or(|segment| segment.ident != "Component")
     {
         return Err(Error::new_spanned(
             trait_path,
