@@ -12,3 +12,7 @@ kama-ui-macros = { path = "../ui-macros" }
 cosmic-text = "0.19"
 serde = { version = "1", features = ["derive"] }
 winit = "0.30"
+
+[lints]
+workspace = true
+

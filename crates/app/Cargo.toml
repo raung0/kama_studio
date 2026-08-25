@@ -51,3 +51,7 @@ winresource = "0.1"
 name = "Kama"
 identifier = "app.kama.Kama"
 osx_minimum_system_version = "15.0"
+
+[lints]
+workspace = true
+

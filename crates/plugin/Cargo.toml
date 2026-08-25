@@ -7,3 +7,7 @@ publish = false
 
 [lib]
 name = "kama_plugin"
+
+[lints]
+workspace = true
+

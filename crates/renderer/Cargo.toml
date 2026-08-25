@@ -12,3 +12,7 @@ winit = "0.30"
 
 [build-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+
+[lints]
+workspace = true
+

@@ -16,3 +16,20 @@ opt-level = 1
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.89"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
