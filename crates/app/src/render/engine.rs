@@ -49,9 +49,8 @@ struct RenderJob {
     fps: f64,
     canvas_size: [u32; 2],
     audio_mix: Option<JoinHandle<Result<()>>>,
-    transcode: Option<Child>,
-    transcode_used_vt_fast_path: bool,
-    disable_vt_transcode_fast_path: bool,
+    transcode: Option<JoinHandle<Result<()>>>,
+    transcode_cancel: Arc<AtomicBool>,
     error: Option<String>,
 }
 
@@ -100,8 +99,7 @@ impl RenderJob {
             canvas_size: project.active_settings().canvas_size,
             audio_mix: None,
             transcode: None,
-            transcode_used_vt_fast_path: false,
-            disable_vt_transcode_fast_path: false,
+            transcode_cancel: Arc::new(AtomicBool::new(false)),
             error: None,
         })
     }
@@ -222,10 +220,11 @@ impl RenderJob {
 
     fn restart(&mut self, settings: RenderSpec) {
         self.abort_active();
-        if let Some(mut child) = self.transcode.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        self.transcode_cancel.store(true, Ordering::Release);
+        if let Some(task) = self.transcode.take() {
+            let _ = task.join();
         }
+        self.transcode_cancel.store(false, Ordering::Release);
         if let Some(task) = self.audio_mix.take() {
             let _ = task.join();
         }
@@ -262,8 +261,6 @@ impl RenderJob {
         self.chunks = chunks;
         self.settings = settings;
         self.error = None;
-        self.transcode_used_vt_fast_path = false;
-        self.disable_vt_transcode_fast_path = false;
         self.phase = RenderPhase::Rendering;
     }
 
@@ -454,20 +451,11 @@ impl RenderJob {
         timeline: &TimelineState,
         plugins: &PluginRegistry,
     ) -> Result<()> {
-        let list_path = self.cache_dir.join("concat.txt");
-        let mut list = BufWriter::new(File::create(&list_path)?);
         for chunk in &self.chunks {
             if chunk.state != ChunkState::Rendered || chunk.signature == 0 || !chunk.path.exists() {
                 anyhow::bail!("render cache chunk {} is not valid", chunk.path.display());
             }
-            let escaped = chunk
-                .path
-                .to_string_lossy()
-                .replace('\\', "\\\\")
-                .replace('\'', "'\\''");
-            writeln!(list, "file '{escaped}'")?;
         }
-        drop(list);
 
         if let Some(parent) = self
             .settings
@@ -506,103 +494,37 @@ impl RenderJob {
     }
 
     fn spawn_final_transcode(&mut self) -> Result<()> {
-        let list_path = self.cache_dir.join("concat.txt");
-        let audio_path = self.audio_path.clone();
         if !self.settings.overwrite && self.settings.output.exists() {
             anyhow::bail!("output already exists: {}", self.settings.output.display());
         }
-        let transcode_output = self.transcode_output_path();
-        let _ = fs::remove_file(&transcode_output);
-        let target_size = self.settings.preset.resolution.dimensions(self.canvas_size);
-        let use_vt_fast_path = !self.disable_vt_transcode_fast_path
-            && final_videotoolbox_pipeline_usable(self.settings.preset.video_codec);
-        let mut command = Command::new(external_tool("ffmpeg"));
-        command
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-y");
-        if use_vt_fast_path {
-            command.args([
-                "-hwaccel",
-                "videotoolbox",
-                "-hwaccel_output_format",
-                "videotoolbox_vld",
-            ]);
-        }
-        command
-            .arg("-f")
-            .arg("concat")
-            .arg("-safe")
-            .arg("0")
-            .arg("-i")
-            .arg(&list_path);
-        if self.settings.preset.include_audio {
-            command.arg("-i").arg(&audio_path);
-        }
-        let needs_scale = target_size != self.canvas_size;
-        if use_vt_fast_path {
-            command.arg("-vf").arg(format!(
-                "scale_vt=w={}:h={}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709",
-                target_size[0], target_size[1]
-            ));
-        } else if needs_scale {
-            command.arg("-vf").arg(format!(
-                "scale={}:{}:flags=lanczos",
-                target_size[0], target_size[1]
-            ));
-        }
-
-        configure_target_video_encoder(
-            &mut command,
-            self.settings.preset.video_codec,
-            self.settings.preset.quality,
-            needs_scale,
-            use_vt_fast_path,
-        );
-        if self.settings.preset.include_audio {
-            match self.settings.preset.audio_codec {
-                AudioCodec::Aac => {
-                    command.arg("-c:a").arg("aac").arg("-b:a").arg(format!(
-                        "{}k",
-                        self.settings.preset.audio_bitrate_kbps.max(64)
-                    ));
-                }
-                AudioCodec::Opus => {
-                    command.arg("-c:a").arg("libopus").arg("-b:a").arg(format!(
-                        "{}k",
-                        self.settings.preset.audio_bitrate_kbps.max(64)
-                    ));
-                }
-                AudioCodec::Flac => {
-                    command.arg("-c:a").arg("flac");
-                }
-                AudioCodec::Pcm => {
-                    command.arg("-c:a").arg("pcm_s24le");
-                }
-            }
-            command.arg("-shortest");
-        } else {
-            command.arg("-an");
-        }
-        let frame_count = self
+        let output = self.transcode_output_path();
+        let _ = fs::remove_file(&output);
+        let chunks = self
+            .chunks
+            .iter()
+            .map(|chunk| chunk.path.clone())
+            .collect::<Vec<_>>();
+        let audio = self
             .settings
-            .end_frame
-            .saturating_sub(self.settings.begin_frame)
-            .saturating_add(1);
-        let duration = frame_count as f64 / self.fps.max(1.0);
-        command
-            .arg("-frames:v")
-            .arg(frame_count.to_string())
-            .arg("-t")
-            .arg(format!("{duration:.9}"));
-        command
-            .arg(&transcode_output)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        self.transcode_used_vt_fast_path = use_vt_fast_path;
-        self.transcode = Some(command.spawn().context("start final ffmpeg transcode")?);
+            .preset
+            .include_audio
+            .then(|| self.audio_path.clone());
+        let settings = self.settings.clone();
+        let canvas_size = self.canvas_size;
+        let fps = self.fps;
+        self.transcode_cancel.store(false, Ordering::Release);
+        let cancelled = Arc::clone(&self.transcode_cancel);
+        self.transcode = Some(thread::spawn(move || {
+            super::transcoder::transcode(
+                &chunks,
+                audio.as_deref(),
+                &output,
+                &settings,
+                canvas_size,
+                fps,
+                &cancelled,
+            )
+        }));
         Ok(())
     }
 
@@ -623,35 +545,30 @@ impl RenderJob {
         if self.audio_mix.is_some() {
             return Ok(());
         }
-        let status = match self.transcode.as_mut() {
-            Some(child) => child.try_wait()?,
-            None => None,
-        };
-        if let Some(status) = status {
-            self.transcode = None;
+        if self
+            .transcode
+            .as_ref()
+            .is_some_and(|task| task.is_finished())
+        {
+            let result = self
+                .transcode
+                .take()
+                .context("finished transcode disappeared")?
+                .join()
+                .map_err(|_| anyhow::anyhow!("transcode thread panicked"))?;
             let _ = fs::remove_file(&self.audio_path);
             let temporary = self.transcode_output_path();
-            if status.success() {
-                if !self.settings.overwrite && self.settings.output.exists() {
-                    let _ = fs::remove_file(&temporary);
-                    anyhow::bail!(
-                        "output appeared during render: {}",
-                        self.settings.output.display()
-                    );
-                }
-                replace_file(&temporary, &self.settings.output)
-                    .with_context(|| format!("commit render {}", self.settings.output.display()))?;
-                self.phase = RenderPhase::Done;
-            } else if self.transcode_used_vt_fast_path {
+            result?;
+            if !self.settings.overwrite && self.settings.output.exists() {
                 let _ = fs::remove_file(&temporary);
-                self.transcode_used_vt_fast_path = false;
-                self.disable_vt_transcode_fast_path = true;
-                self.spawn_final_transcode()?;
-            } else {
-                let _ = fs::remove_file(&temporary);
-                self.phase = RenderPhase::Error;
-                self.error = Some(format!("final transcode exited with {status}"));
+                anyhow::bail!(
+                    "output appeared during render: {}",
+                    self.settings.output.display()
+                );
             }
+            replace_file(&temporary, &self.settings.output)
+                .with_context(|| format!("commit render {}", self.settings.output.display()))?;
+            self.phase = RenderPhase::Done;
         }
         Ok(())
     }
@@ -761,9 +678,9 @@ impl RenderJob {
 impl Drop for RenderJob {
     fn drop(&mut self) {
         self.abort_active();
-        if let Some(mut child) = self.transcode.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        self.transcode_cancel.store(true, Ordering::Release);
+        if let Some(task) = self.transcode.take() {
+            let _ = task.join();
         }
         let _ = fs::remove_file(self.transcode_output_path());
         if let Some(task) = self.audio_mix.take() {
@@ -1282,19 +1199,6 @@ fn cache_chunk_seconds() -> f64 {
     DEFAULT_CACHE_CHUNK_SECONDS
 }
 
-fn external_tool(name: &str) -> PathBuf {
-    let executable_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(directory) = current_exe.parent() {
-            let bundled = directory.join(&executable_name);
-            if bundled.is_file() {
-                return bundled;
-            }
-        }
-    }
-    PathBuf::from(executable_name)
-}
-
 fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u64) -> Result<()> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("stat completed cache chunk {}", path.display()))?;
@@ -1357,286 +1261,6 @@ fn render_encoder_threads(background: bool) -> usize {
         cores.saturating_sub(1).max(2)
     } else {
         cores.max(1)
-    }
-}
-
-fn configure_prores_encoder(
-    command: &mut Command,
-    allow_hardware: bool,
-    software_threads: Option<usize>,
-) -> bool {
-    if allow_hardware && prores_videotoolbox_usable() {
-        command.args([
-            "-c:v",
-            "prores_videotoolbox",
-            "-profile:v",
-            "4444",
-            "-allow_sw",
-            "0",
-            "-prio_speed",
-            "1",
-            "-pix_fmt",
-            "ayuv64le",
-        ]);
-        true
-    } else {
-        command.args([
-            "-c:v",
-            "prores_ks",
-            "-profile:v",
-            "4444",
-            "-alpha_bits",
-            "16",
-        ]);
-        if let Some(threads) = software_threads {
-            command
-                .arg("-threads")
-                .arg(threads.to_string())
-                .args(["-thread_type", "slice+frame"]);
-        }
-        command.args(["-pix_fmt", "yuva444p10le"]);
-        false
-    }
-}
-
-fn prores_videotoolbox_usable() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-
-    *USABLE.get_or_init(|| {
-        probe_prores_videotoolbox("color=c=black@0.0:s=16x16:r=1:d=1", "ayuv64le", "4444")
-    })
-}
-
-fn probe_prores_videotoolbox(input: &str, pixel_format: &str, profile: &str) -> bool {
-    if !cfg!(target_os = "macos") || !ffmpeg_encoder_available("prores_videotoolbox") {
-        return false;
-    }
-    Command::new(external_tool("ffmpeg"))
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            input,
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("format={pixel_format}"),
-            "-c:v",
-            "prores_videotoolbox",
-            "-profile:v",
-            profile,
-            "-allow_sw",
-            "0",
-            "-f",
-            "null",
-            "-",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn ffmpeg_encoder_available(name: &str) -> bool {
-    static ENCODERS: OnceLock<HashSet<String>> = OnceLock::new();
-    ENCODERS
-        .get_or_init(|| {
-            let Ok(output) = Command::new(external_tool("ffmpeg"))
-                .args(["-hide_banner", "-encoders"])
-                .output()
-            else {
-                return HashSet::new();
-            };
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut fields = line.split_whitespace();
-                    let flags = fields.next()?;
-                    let name = fields.next()?;
-                    (flags.starts_with('V') || flags.starts_with('.')).then(|| name.to_string())
-                })
-                .collect()
-        })
-        .contains(name)
-}
-
-fn ffmpeg_filter_available(name: &str) -> bool {
-    static FILTERS: OnceLock<HashSet<String>> = OnceLock::new();
-    FILTERS
-        .get_or_init(|| {
-            let Ok(output) = Command::new(external_tool("ffmpeg"))
-                .args(["-hide_banner", "-filters"])
-                .output()
-            else {
-                return HashSet::new();
-            };
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut fields = line.split_whitespace();
-                    let flags = fields.next()?;
-                    let name = fields.next()?;
-                    (flags.len() >= 3 && !name.starts_with('=')).then(|| name.to_string())
-                })
-                .collect()
-        })
-        .contains(name)
-}
-
-fn final_videotoolbox_pipeline_usable(codec: VideoCodec) -> bool {
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        || !ffmpeg_filter_available("scale_vt")
-    {
-        return false;
-    }
-    match codec {
-        VideoCodec::H264 => ffmpeg_encoder_available("h264_videotoolbox"),
-        VideoCodec::H265 => ffmpeg_encoder_available("hevc_videotoolbox"),
-        _ => false,
-    }
-}
-
-struct H26xEncoder {
-    videotoolbox: &'static str,
-    nvenc: &'static str,
-    software: &'static str,
-    videotoolbox_pix_fmt: &'static str,
-    nvenc_pix_fmt: &'static str,
-    software_pix_fmt: &'static str,
-}
-
-fn configure_h26x_encoder(
-    command: &mut Command,
-    encoder: H26xEncoder,
-    quality: u8,
-    hardware_frames: bool,
-) {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        && ffmpeg_encoder_available(encoder.videotoolbox)
-    {
-        let vt_quality = (100i32 - i32::from(quality) * 2).clamp(1, 100);
-        command
-            .arg("-c:v")
-            .arg(encoder.videotoolbox)
-            .arg("-q:v")
-            .arg(vt_quality.to_string())
-            .arg("-prio_speed")
-            .arg("1");
-        if !hardware_frames {
-            command.arg("-pix_fmt").arg(encoder.videotoolbox_pix_fmt);
-        }
-    } else if ffmpeg_encoder_available(encoder.nvenc) {
-        command
-            .arg("-c:v")
-            .arg(encoder.nvenc)
-            .arg("-preset")
-            .arg("p4")
-            .arg("-cq")
-            .arg(quality.to_string())
-            .arg("-pix_fmt")
-            .arg(encoder.nvenc_pix_fmt);
-    } else {
-        command
-            .arg("-c:v")
-            .arg(encoder.software)
-            .arg("-preset")
-            .arg("veryfast")
-            .arg("-threads")
-            .arg(render_encoder_threads(false).to_string())
-            .arg("-crf")
-            .arg(quality.to_string())
-            .arg("-pix_fmt")
-            .arg(encoder.software_pix_fmt);
-    }
-}
-
-fn configure_target_video_encoder(
-    command: &mut Command,
-    codec: VideoCodec,
-    quality: u8,
-    _needs_scale: bool,
-    hardware_frames: bool,
-) {
-    let quality = quality.clamp(0, 51);
-    match codec {
-        VideoCodec::H264 => configure_h26x_encoder(
-            command,
-            H26xEncoder {
-                videotoolbox: "h264_videotoolbox",
-                nvenc: "h264_nvenc",
-                software: "libx264",
-                videotoolbox_pix_fmt: "yuv420p",
-                nvenc_pix_fmt: "yuv420p",
-                software_pix_fmt: "yuv420p",
-            },
-            quality,
-            hardware_frames,
-        ),
-        VideoCodec::H265 => configure_h26x_encoder(
-            command,
-            H26xEncoder {
-                videotoolbox: "hevc_videotoolbox",
-                nvenc: "hevc_nvenc",
-                software: "libx265",
-                videotoolbox_pix_fmt: "p010le",
-                nvenc_pix_fmt: "p010le",
-                software_pix_fmt: "yuv420p10le",
-            },
-            quality,
-            hardware_frames,
-        ),
-        VideoCodec::ProRes4444 => {
-            configure_prores_encoder(command, true, None);
-        }
-        VideoCodec::Vp9 => {
-            command
-                .arg("-c:v")
-                .arg("libvpx-vp9")
-                .arg("-b:v")
-                .arg("0")
-                .arg("-crf")
-                .arg(quality.to_string())
-                .arg("-threads")
-                .arg(render_encoder_threads(false).to_string())
-                .args([
-                    "-row-mt",
-                    "1",
-                    "-tile-columns",
-                    "2",
-                    "-frame-parallel",
-                    "1",
-                    "-cpu-used",
-                    "4",
-                    "-pix_fmt",
-                    "yuva420p",
-                ]);
-        }
-        VideoCodec::Gif => {
-            command.arg("-c:v").arg("gif").arg("-pix_fmt").arg("pal8");
-        }
-        VideoCodec::Ffv1 => {
-            command
-                .arg("-c:v")
-                .arg("ffv1")
-                .arg("-level")
-                .arg("3")
-                .arg("-coder")
-                .arg("rice")
-                .arg("-context")
-                .arg("0")
-                .arg("-slicecrc")
-                .arg("0")
-                .arg("-threads")
-                .arg(render_encoder_threads(false).to_string())
-                .arg("-slices")
-                .arg("16")
-                .arg("-pix_fmt")
-                .arg("gbrap16le");
-        }
     }
 }
 
@@ -2382,15 +2006,13 @@ impl RenderSession {
 
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
-    fs::{self, File},
+    fs,
     hash::{Hash, Hasher},
-    io::{BufWriter, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
-        Arc, OnceLock,
+        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -2400,9 +2022,7 @@ use anyhow::{Context, Error, Result};
 use kama_ui::Renderer;
 use serde::Serialize;
 
-use super::{
-    cache_encoder::CacheEncoder, AudioCodec, RenderSpec, VideoCodec, DEFAULT_CACHE_CHUNK_SECONDS,
-};
+use super::{cache_encoder::CacheEncoder, RenderSpec, DEFAULT_CACHE_CHUNK_SECONDS};
 use crate::{
     audio::render_audio_wav,
     effects::{Binding, EffectRuntime, PipelineInstance},

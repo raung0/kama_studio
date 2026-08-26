@@ -124,6 +124,7 @@ impl CacheEncoder {
         let mut packet = Packet::empty();
         while self.encoder.receive_packet(&mut packet).is_ok() {
             packet.set_stream(self.stream_index);
+            packet.set_duration(1);
             packet.rescale_ts(self.encoder_time_base, self.stream_time_base);
             packet
                 .write_interleaved(&mut self.output)

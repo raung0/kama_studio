@@ -24,6 +24,7 @@ use crate::{
 mod cache_encoder;
 mod engine;
 mod spec;
+mod transcoder;
 
 pub(crate) use engine::RenderPhase;
 use engine::RenderSession;

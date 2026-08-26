@@ -34,13 +34,6 @@ PY
 }
 
 queue=("$EXECUTABLE")
-for tool in ffmpeg; do
-  if [[ ! -x "$MACOS_DIR/$tool" ]]; then
-    echo "error: bundled render tool missing: $MACOS_DIR/$tool" >&2
-    exit 1
-  fi
-  queue+=("$MACOS_DIR/$tool")
-done
 index=0
 
 while (( index < ${#queue[@]} )); do
@@ -82,12 +75,10 @@ done
 find "$FRAMEWORKS" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib; do
   /usr/bin/codesign --force --sign - "$dylib"
 done
-for binary in "$EXECUTABLE" "$MACOS_DIR/ffmpeg"; do
-  /usr/bin/codesign --force --sign - "$binary"
-done
+/usr/bin/codesign --force --sign - "$EXECUTABLE"
 /usr/bin/codesign --force --deep --sign - "$APP"
 
-for binary in "$EXECUTABLE" "$MACOS_DIR/ffmpeg" "$FRAMEWORKS"/*.dylib; do
+for binary in "$EXECUTABLE" "$FRAMEWORKS"/*.dylib; do
   [[ -e "$binary" ]] || continue
   if otool -L "$binary" | grep -F "$BREW_PREFIX/"; then
     echo "error: unbundled Homebrew dependency remains in $binary" >&2

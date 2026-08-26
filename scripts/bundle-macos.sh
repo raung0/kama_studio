@@ -44,18 +44,7 @@ fi
 
 INFO_PLIST="$APP/Contents/Info.plist"
 RESOURCES="$APP/Contents/Resources"
-MACOS_DIR="$APP/Contents/MacOS"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")"
-
-for tool in ffmpeg; do
-  source_path="$(command -v "$tool" || true)"
-  if [[ -z "$source_path" ]]; then
-    echo "error: $tool is required to package rendering support" >&2
-    exit 1
-  fi
-  cp -L "$source_path" "$MACOS_DIR/$tool"
-  chmod 755 "$MACOS_DIR/$tool"
-done
 
 "$ACTOOL" "$ICON" \
   --compile "$OUT" \

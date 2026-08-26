@@ -108,14 +108,6 @@ jobs:
           Copy-Item 'LICENSE' "$package/LICENSE"
 
           Get-ChildItem -Path $env:KAMA_FFMPEG_BIN -Filter '*.dll' | Copy-Item -Destination $package
-          foreach ($tool in @('ffmpeg.exe')) {
-            $source = Join-Path $env:KAMA_FFMPEG_BIN $tool
-            if (-not (Test-Path $source)) {
-              throw "Missing bundled render tool: $source"
-            }
-            Copy-Item $source -Destination $package
-          }
-
           $archive = "dist/kama-$env:RELEASE_TAG-windows-x86_64.zip"
           Compress-Archive -Path "$package/*" -DestinationPath $archive -CompressionLevel Optimal
           Remove-Item -Recurse -Force $package
