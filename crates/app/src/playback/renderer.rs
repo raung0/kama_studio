@@ -1034,48 +1034,47 @@ impl FrameRenderer {
                 let surface = self.export_readbacks.encode(index);
                 surface.encode_gpu_conversion(&gpu, device, &mut encoder, &frame);
                 surface.copy_to_buffer(&mut encoder);
-                let submission = queue.submit(Some(encoder.finish()));
+                queue.submit(Some(encoder.finish()));
                 let slice = surface.buffer.slice(..);
                 let (tx, rx) = std::sync::mpsc::sync_channel(1);
                 slice.map_async(wgpu::MapMode::Read, move |result| {
                     let _ = tx.send(result);
                 });
-                receivers.push((rx, submission));
+                receivers.push(rx);
                 gpu.recycle_frame(frame);
             }
 
             let rendered_count = receivers.len();
             let mut write_error = None;
             let mut map_error = None;
-            for (index, (rx, submission)) in receivers.into_iter().enumerate() {
-                let mapped_ok = match rx.try_recv() {
-                    Ok(Ok(())) => true,
-                    Ok(Err(error)) => {
-                        map_error.get_or_insert_with(|| error.to_string());
-                        false
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        map_error
-                            .get_or_insert_with(|| "export readback callback dropped".to_string());
-                        false
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        let _ = device.poll(wgpu::PollType::Wait {
-                            submission_index: Some(submission),
-                            timeout: None,
-                        });
-                        match rx.recv() {
-                            Ok(Ok(())) => true,
-                            Ok(Err(error)) => {
-                                map_error.get_or_insert_with(|| error.to_string());
-                                false
-                            }
-                            Err(_) => {
+            for (index, rx) in receivers.into_iter().enumerate() {
+                // Do not block on `recv` after one `Device::poll(Wait)`. On D3D12 the
+                // submission can finish without its map callback being dispatched by that
+                // poll, leaving the render worker asleep forever. Keep pumping callbacks and
+                // bound the wait so a lost device becomes a render error instead of a hang.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                let mapped_ok = loop {
+                    match rx.try_recv() {
+                        Ok(Ok(())) => break true,
+                        Ok(Err(error)) => {
+                            map_error.get_or_insert_with(|| error.to_string());
+                            break false;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            map_error.get_or_insert_with(|| {
+                                "export readback callback dropped".to_string()
+                            });
+                            break false;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            if std::time::Instant::now() >= deadline {
                                 map_error.get_or_insert_with(|| {
-                                    "export readback callback dropped".to_string()
+                                    "timed out waiting for export readback".to_string()
                                 });
-                                false
+                                break false;
                             }
+                            let _ = device.poll(wgpu::PollType::Poll);
+                            std::thread::sleep(std::time::Duration::from_millis(1));
                         }
                     }
                 };

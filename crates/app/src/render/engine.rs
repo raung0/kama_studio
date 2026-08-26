@@ -1389,6 +1389,13 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
 }
 
 fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
+    // D3D12 map callbacks are less reliable with several readbacks in flight on the
+    // same device used for presentation. Serial readback also makes Windows progress
+    // visible after every frame instead of waiting for a whole batch.
+    if cfg!(target_os = "windows") {
+        return 1;
+    }
+
     let pixels = u64::from(canvas_size[0].max(1)) * u64::from(canvas_size[1].max(1));
 
     if pixels >= 3_840u64 * 2_160 {
