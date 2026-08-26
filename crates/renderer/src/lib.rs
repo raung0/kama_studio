@@ -6,6 +6,7 @@ pub use types::*;
 
 use anyhow::{bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
+use num_traits::ToPrimitive;
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::atlas::TextureAtlas;
@@ -45,6 +46,10 @@ macro_rules! texture_views {
 
 macro_rules! atlas_registration {
     ($name:ident, $id:ident, $atlas:ident, $entries:ident) => {
+        /// Uploads pixels into texture atlas.
+        ///
+        /// # Errors
+        /// Returns error when pixels are invalid or atlas is full.
         pub fn $name(&mut self, width: u32, height: u32, pixels: &[u8]) -> Result<$id> {
             register_atlas(
                 &mut self.$atlas,
@@ -125,10 +130,12 @@ impl DrawCommand {
     fn base(id: u64, rect: Rect, clips: &[ClipShape], color: Color, opacity: f32) -> Self {
         let mut clip_rects = [[0.0; 4]; 4];
         let mut clip_radii = [0.0; 4];
-        let clips = &clips[clips.len().saturating_sub(4)..];
-        for (index, clip) in clips.iter().enumerate() {
-            clip_rects[index] = clip.rect.as_array();
-            clip_radii[index] = clip.radius;
+        let clips = clips
+            .get(clips.len().saturating_sub(4)..)
+            .unwrap_or_default();
+        for ((rect, radius), clip) in clip_rects.iter_mut().zip(&mut clip_radii).zip(clips) {
+            *rect = clip.rect.as_array();
+            *radius = clip.radius;
         }
         Self {
             rect: rect.as_array(),
@@ -249,22 +256,31 @@ impl DrawCommand {
         &self,
         width: u32,
         height: u32,
-        tile_x_count: u32,
-        tile_y_count: u32,
+        column_count: u32,
+        row_count: u32,
     ) -> Option<(u32, u32, u32, u32)> {
-        let min_x = self.rect[0].floor().max(0.0) as u32;
-        let min_y = self.rect[1].floor().max(0.0) as u32;
-        let max_x = (self.rect[0] + self.rect[2]).ceil().min(width as f32) as u32;
-        let max_y = (self.rect[1] + self.rect[3]).ceil().min(height as f32) as u32;
-        if min_x >= max_x || min_y >= max_y {
+        let [x, y, rect_width, rect_height] = self.rect;
+        let left = x.floor().max(0.0).to_u32()?;
+        let top = y.floor().max(0.0).to_u32()?;
+        let right = rect_width
+            .mul_add(1.0, x)
+            .ceil()
+            .min(width as f32)
+            .to_u32()?;
+        let bottom = rect_height
+            .mul_add(1.0, y)
+            .ceil()
+            .min(height as f32)
+            .to_u32()?;
+        if left >= right || top >= bottom {
             return None;
         }
 
-        let min_tile_x = (min_x / TILE_SIZE).min(tile_x_count.saturating_sub(1));
-        let min_tile_y = (min_y / TILE_SIZE).min(tile_y_count.saturating_sub(1));
-        let max_tile_x = ((max_x - 1) / TILE_SIZE).min(tile_x_count.saturating_sub(1));
-        let max_tile_y = ((max_y - 1) / TILE_SIZE).min(tile_y_count.saturating_sub(1));
-        Some((min_tile_x, min_tile_y, max_tile_x, max_tile_y))
+        let first_tile_x = (left / TILE_SIZE).min(column_count.saturating_sub(1));
+        let first_tile_y = (top / TILE_SIZE).min(row_count.saturating_sub(1));
+        let last_tile_x = (right.saturating_sub(1) / TILE_SIZE).min(column_count.saturating_sub(1));
+        let last_tile_y = (bottom.saturating_sub(1) / TILE_SIZE).min(row_count.saturating_sub(1));
+        Some((first_tile_x, first_tile_y, last_tile_x, last_tile_y))
     }
 }
 
@@ -327,6 +343,11 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Creates renderer for window.
+    ///
+    /// # Errors
+    /// Returns error when GPU setup or surface configuration fails.
+    #[allow(clippy::too_many_lines)]
     pub async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
@@ -385,16 +406,24 @@ impl Renderer {
         let queue = Arc::new(queue);
 
         let caps = surface.get_capabilities(&adapter);
+        let fallback_format = caps
+            .formats
+            .first()
+            .copied()
+            .context("surface exposes no texture formats")?;
         let format = caps
             .formats
             .iter()
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(caps.formats[0]);
+            .unwrap_or(fallback_format);
         let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
             wgpu::PresentMode::Fifo
         } else {
-            caps.present_modes[0]
+            caps.present_modes
+                .first()
+                .copied()
+                .context("surface exposes no present modes")?
         };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -403,7 +432,11 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode: caps
+                .alpha_modes
+                .first()
+                .copied()
+                .context("surface exposes no alpha modes")?,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -618,6 +651,10 @@ impl Renderer {
 
     atlas_registration!(register_texture_rgba8, TextureId, user_atlas, user_entries);
 
+    /// Updates existing RGBA8 texture.
+    ///
+    /// # Errors
+    /// Returns error for invalid ID or pixel data.
     pub fn update_texture_rgba8(&mut self, id: TextureId, pixels: &[u8]) -> Result<()> {
         let entry = self
             .user_entries
@@ -646,6 +683,10 @@ impl Renderer {
 
     atlas_registration!(register_icon_rgba8, IconId, icon_atlas, icon_entries);
 
+    /// Registers external texture view.
+    ///
+    /// # Errors
+    /// Returns error when external texture capacity is exhausted.
     pub fn register_external_texture(
         &mut self,
         view: wgpu::TextureView,
@@ -660,6 +701,10 @@ impl Renderer {
         Ok(id)
     }
 
+    /// Replaces registered external texture view.
+    ///
+    /// # Errors
+    /// Returns error when ID is invalid.
     pub fn replace_external_texture(
         &mut self,
         id: ExternalTextureId,
@@ -679,6 +724,10 @@ impl Renderer {
         Ok(())
     }
 
+    /// Invalidates registered external texture.
+    ///
+    /// # Errors
+    /// Returns error when ID is invalid.
     pub fn invalidate_external_texture(&mut self, id: ExternalTextureId) -> Result<()> {
         let revision = self
             .external_revisions
@@ -688,6 +737,10 @@ impl Renderer {
         Ok(())
     }
 
+    /// Uploads glyph pixels.
+    ///
+    /// # Errors
+    /// Returns error for invalid pixels or full atlas.
     pub fn upload_glyph(&mut self, width: u32, height: u32, rgba: &[u8]) -> Result<AtlasEntry> {
         self.glyph_atlas.upload(&self.queue, width, height, rgba)
     }
@@ -705,17 +758,25 @@ impl Renderer {
             Some(TextureSource::Icon(id)) => {
                 resolve_atlas(&self.icon_entries, id.0, TextureKind::Icon)
             }
-            Some(TextureSource::External(id)) if (id.0 as usize) < self.external_views.len() => {
-                ResolvedTexture {
-                    kind: 4 + id.0,
+            Some(TextureSource::External(id)) => self
+                .external_revisions
+                .get(id.0 as usize)
+                .map_or_else(ResolvedTexture::none, |&revision| ResolvedTexture {
+                    kind: id.0.saturating_add(4),
                     uv: [0.0, 0.0, 1.0, 1.0],
-                    revision: self.external_revisions[id.0 as usize],
-                }
-            }
-            Some(TextureSource::External(_)) => ResolvedTexture::none(),
+                    revision,
+                }),
         }
     }
 
+    /// Renders command lists.
+    ///
+    /// # Errors
+    /// Returns error when buffer growth or surface rendering fails.
+    ///
+    /// # Panics
+    /// Panics only if internal GPU resource invariants are violated.
+    #[allow(clippy::too_many_lines)]
     pub fn render(
         &mut self,
         base_commands: &[DrawCommand],
@@ -838,34 +899,44 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("UI frame"),
             });
-        let tile_groups = (self.size.tile_x_count * self.size.tile_y_count).div_ceil(64);
+        let tile_groups = self
+            .size
+            .tile_x_count
+            .saturating_mul(self.size.tile_y_count)
+            .div_ceil(64);
+        let compute_bind_group = self
+            .compute_bind_group
+            .as_ref()
+            .context("compute bind group is not initialized")?;
+        let paint_bind_group = self
+            .paint_bind_group
+            .as_ref()
+            .context("paint bind group is not initialized")?;
         dispatch!(
             encoder,
             "Base cache: find dirty tiles",
             self.scan_pipeline,
-            self.compute_bind_group
-                .as_ref()
-                .expect("compute bind group"),
+            compute_bind_group,
             dispatch_workgroups(tile_groups, 1, 1)
         );
         dispatch!(
             encoder,
             "Base cache: paint dirty tiles",
             self.paint_pipeline,
-            self.paint_bind_group.as_ref().expect("paint bind group"),
+            paint_bind_group,
             dispatch_workgroups_indirect(&self.size.scan_args_buffer, 0)
         );
 
         if needs_blur {
             let steps = [
-                ("Blur: full → half", &self.blur_bind_groups[0], 2),
-                ("Blur: half → quarter", &self.blur_bind_groups[1], 4),
-                ("Blur: quarter → eighth", &self.blur_bind_groups[2], 8),
-                ("Blur: eighth → quarter", &self.blur_bind_groups[3], 4),
-                ("Blur: quarter → half", &self.blur_bind_groups[4], 2),
-                ("Blur: half → full", &self.blur_bind_groups[5], 1),
+                ("Blur: full → half", 2),
+                ("Blur: half → quarter", 4),
+                ("Blur: quarter → eighth", 8),
+                ("Blur: eighth → quarter", 4),
+                ("Blur: quarter → half", 2),
+                ("Blur: half → full", 1),
             ];
-            for (label, bind_group, divisor) in steps {
+            for ((label, divisor), bind_group) in steps.into_iter().zip(&self.blur_bind_groups) {
                 let width = self.config.width.div_ceil(divisor).max(1);
                 let height = self.config.height.div_ceil(divisor).max(1);
                 dispatch!(
@@ -898,7 +969,7 @@ impl Renderer {
                 self.overlay_pipeline,
                 self.overlay_bind_group
                     .as_ref()
-                    .expect("overlay bind group"),
+                    .context("overlay bind group is not initialized")?,
                 dispatch_workgroups(bins.active_tiles.len() as u32, 1, 1)
             );
         }
@@ -925,7 +996,7 @@ impl Renderer {
                 0,
                 self.present_bind_group
                     .as_ref()
-                    .expect("present bind group"),
+                    .context("present bind group is not initialized")?,
                 &[],
             );
             pass.draw(0..3, 0..1);
@@ -937,14 +1008,23 @@ impl Renderer {
     }
 
     fn build_tile_bins(&self, commands: &[DrawCommand]) -> Result<TileBins> {
-        let tile_count = (self.size.tile_x_count * self.size.tile_y_count) as usize;
+        let tile_count = self
+            .size
+            .tile_x_count
+            .checked_mul(self.size.tile_y_count)
+            .and_then(|count| count.to_usize())
+            .context("tile count overflow")?;
         let mut counts = vec![0u32; tile_count];
 
         for command in commands {
-            self.for_each_tile(command, |tile| counts[tile] += 1);
+            self.for_each_tile(command, |tile| {
+                if let Some(count) = counts.get_mut(tile) {
+                    *count = count.saturating_add(1);
+                }
+            });
         }
 
-        let mut offsets = Vec::with_capacity(tile_count + 1);
+        let mut offsets = Vec::with_capacity(tile_count.saturating_add(1));
         let mut reference_count = 0u32;
         offsets.push(reference_count);
         for &count in &counts {
@@ -965,12 +1045,21 @@ impl Renderer {
             .enumerate()
             .filter_map(|(tile, &count)| (count != 0).then_some(tile as u32))
             .collect();
-        let mut cursors = offsets[..tile_count].to_vec();
+        let mut cursors = offsets.get(..tile_count).unwrap_or_default().to_vec();
         let mut indices = vec![0u32; reference_count];
         for (command_index, command) in commands.iter().enumerate() {
             self.for_each_tile(command, |tile| {
-                indices[cursors[tile] as usize] = command_index as u32;
-                cursors[tile] += 1;
+                let Some(cursor) = cursors.get_mut(tile) else {
+                    return;
+                };
+                if let (Some(index), Some(command_index)) =
+                    (cursor.to_usize(), command_index.to_u32())
+                {
+                    if let Some(slot) = indices.get_mut(index) {
+                        *slot = command_index;
+                    }
+                }
+                *cursor = cursor.saturating_add(1);
             });
         }
 
@@ -992,7 +1081,12 @@ impl Renderer {
         };
         for tile_y in min_y..=max_y {
             for tile_x in min_x..=max_x {
-                f((tile_y * self.size.tile_x_count + tile_x) as usize);
+                let tile = tile_y
+                    .saturating_mul(self.size.tile_x_count)
+                    .saturating_add(tile_x);
+                if let Some(tile) = tile.to_usize() {
+                    f(tile);
+                }
             }
         }
     }
@@ -1189,10 +1283,23 @@ fn grow_storage_buffer<T>(
     label: &str,
 ) -> Result<bool> {
     let item_size = std::mem::size_of::<T>();
-    if needed <= buffer.size() as usize / item_size {
+    if needed
+        <= buffer
+            .size()
+            .to_usize()
+            .unwrap_or_default()
+            .checked_div(item_size.max(1))
+            .unwrap_or_default()
+    {
         return Ok(false);
     }
-    let max = device.limits().max_storage_buffer_binding_size as usize / item_size;
+    let max = device
+        .limits()
+        .max_storage_buffer_binding_size
+        .to_usize()
+        .unwrap_or_default()
+        .checked_div(item_size.max(1))
+        .unwrap_or_default();
     if needed > max {
         bail!("{needed} {label} exceed the device limit of {max}");
     }
@@ -1210,7 +1317,10 @@ fn storage_buffer<T>(
     gpu_buffer(
         device,
         label,
-        (count * std::mem::size_of::<T>()) as u64,
+        count
+            .checked_mul(std::mem::size_of::<T>())
+            .and_then(|size| size.to_u64())
+            .unwrap_or(u64::MAX),
         wgpu::BufferUsages::STORAGE | usage,
     )
 }
@@ -1244,7 +1354,7 @@ fn add_external_entries<'a>(
 ) {
     entries.extend((0..MAX_EXTERNAL_TEXTURES).map(|slot| {
         texture_entry(
-            first_binding + slot as u32,
+            first_binding.saturating_add(slot.to_u32().unwrap_or_default()),
             views.get(slot).unwrap_or(dummy),
         )
     }));
@@ -1295,24 +1405,24 @@ fn create_size_resources(
     width: u32,
     height: u32,
 ) -> SizeResources {
-    let tile_x_count = width.div_ceil(TILE_SIZE);
-    let tile_y_count = height.div_ceil(TILE_SIZE);
-    let tile_count = (tile_x_count * tile_y_count).max(1);
+    let column_count = width.div_ceil(TILE_SIZE);
+    let row_count = height.div_ceil(TILE_SIZE);
+    let total_tiles = column_count.saturating_mul(row_count).max(1);
     storage_buffers! { device;
-        tile_offset_buffer: u32, "tile command offsets", tile_count as usize + 1, wgpu::BufferUsages::COPY_DST;
+        tile_offset_buffer: u32, "tile command offsets", total_tiles.to_usize().unwrap_or_default().saturating_add(1), wgpu::BufferUsages::COPY_DST;
         tile_index_buffer: u32, "tile command indices", MAX_TILE_REFERENCES, wgpu::BufferUsages::COPY_DST;
-        previous_hash_buffer: u32, "previous tile hashes", tile_count as usize, wgpu::BufferUsages::COPY_DST;
+        previous_hash_buffer: u32, "previous tile hashes", total_tiles.to_usize().unwrap_or_default(), wgpu::BufferUsages::COPY_DST;
     }
     queue.write_buffer(
         &previous_hash_buffer,
         0,
-        bytemuck::cast_slice(&vec![u32::MAX; tile_count as usize]),
+        bytemuck::cast_slice(&vec![u32::MAX; total_tiles.to_usize().unwrap_or_default()]),
     );
     storage_buffers! { device;
-        dirty_tile_buffer: u32, "dirty tile work indices", tile_count as usize, wgpu::BufferUsages::empty();
+        dirty_tile_buffer: u32, "dirty tile work indices", total_tiles.to_usize().unwrap_or_default(), wgpu::BufferUsages::empty();
         scan_args_buffer: u32, "dirty-tile indirect dispatch args", 3, wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST;
-        overlay_tile_offsets_buffer: u32, "overlay tile command offsets", tile_count as usize + 1, wgpu::BufferUsages::COPY_DST;
-        overlay_active_tiles_buffer: u32, "overlay active tile indices", tile_count as usize, wgpu::BufferUsages::COPY_DST;
+        overlay_tile_offsets_buffer: u32, "overlay tile command offsets", total_tiles.to_usize().unwrap_or_default().saturating_add(1), wgpu::BufferUsages::COPY_DST;
+        overlay_active_tiles_buffer: u32, "overlay active tile indices", total_tiles.to_usize().unwrap_or_default(), wgpu::BufferUsages::COPY_DST;
     }
     let storage_texture_usage =
         wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING;
@@ -1343,8 +1453,8 @@ fn create_size_resources(
     );
 
     SizeResources {
-        tile_x_count,
-        tile_y_count,
+        tile_x_count: column_count,
+        tile_y_count: row_count,
         tile_offset_buffer,
         tile_index_buffer,
         previous_hash_buffer,
@@ -1402,21 +1512,31 @@ fn mip_view(texture: &wgpu::Texture, label: &str, base_mip_level: u32) -> wgpu::
 }
 
 fn make_builtin_icon(size: u32) -> Vec<u8> {
-    let mut pixels = vec![0u8; (size * size * 4) as usize];
-    let center = (size as f32 - 1.0) * 0.5;
-    let radius = size as f32 * 0.375;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let edge = radius - dx.hypot(dy);
-            let alpha = ((edge + 0.5).clamp(0.0, 1.0) * 255.0) as u8;
-            let i = ((y * size + x) * 4) as usize;
-            pixels[i] = 255;
-            pixels[i + 1] = 255;
-            pixels[i + 2] = 255;
-            pixels[i + 3] = alpha;
-        }
+    if size == 0 {
+        return Vec::new();
+    }
+    let pixel_count = size
+        .checked_mul(size)
+        .and_then(|count| count.checked_mul(4))
+        .and_then(|count| count.to_usize())
+        .unwrap_or_default();
+    let mut pixels = vec![0u8; pixel_count];
+    let center = (size as f32).mul_add(0.5, -0.5);
+    let radius = (size as f32).mul_add(0.375, 0.0);
+    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        let Some(index) = index.to_u32() else { break };
+        let x = index.checked_rem(size).unwrap_or_default();
+        let y = index.checked_div(size).unwrap_or_default();
+        let dx = (x as f32).mul_add(1.0, -center);
+        let dy = (y as f32).mul_add(1.0, -center);
+        let edge = dx.hypot(dy).mul_add(-1.0, radius);
+        let alpha = edge
+            .mul_add(1.0, 0.5)
+            .clamp(0.0, 1.0)
+            .mul_add(255.0, 0.0)
+            .to_u8()
+            .unwrap_or_default();
+        pixel.copy_from_slice(&[255, 255, 255, alpha]);
     }
     pixels
 }

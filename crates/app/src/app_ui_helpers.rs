@@ -89,7 +89,8 @@ fn build_about_column(
     }
     let content_id = column
         .children(|ctx| {
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fill)
                 .height(ui::Size::Pixels(30.0))
                 .build();
@@ -102,14 +103,16 @@ fn build_about_column(
             if let Some(logo) = logo {
                 logo_block = logo_block.fill_texture(logo);
             }
-            logo_block.build();
+            let _ = logo_block.build();
 
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fit)
                 .height(ui::Size::Fill)
                 .build();
 
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fill)
                 .height(ui::Size::Pixels(ABOUT_TEXT_H))
                 .font_size(11.0)
@@ -117,7 +120,8 @@ fn build_about_column(
                 .text_centered()
                 .text(format!("Version {}", version::VERSION))
                 .build();
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fill)
                 .height(ui::Size::Pixels(ABOUT_TEXT_H))
                 .font_size(11.0)
@@ -126,12 +130,14 @@ fn build_about_column(
                 .text("Licensed under the GNU General Public License v3.0")
                 .build();
 
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fill)
                 .height(ui::Size::Pixels(24.0))
                 .row()
                 .children(|ctx| {
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(ui::Size::Fill)
                         .height(ui::Size::Fill)
                         .build();
@@ -150,14 +156,16 @@ fn build_about_column(
                         .text("OK")
                         .interactive()
                         .build();
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(ui::Size::Pixels(12.0))
                         .height(ui::Size::Fill)
                         .build();
                 })
                 .build();
 
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(ui::Size::Fill)
                 .height(ui::Size::Pixels(12.0))
                 .build();
@@ -1002,7 +1010,8 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
     let (scroll, measured) = kama_ui::measure_layout(
         Rect::new(0.0, 0.0, metrics.width, visible_height.max(1.0)),
         |ctx| {
-            ctx.new()
+            let root = ctx
+                .new()
                 .column()
                 .width(Size::Fill)
                 .height(Size::Fill)
@@ -1010,13 +1019,15 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
                 .gap(metrics.row_gap)
                 .children(|ctx| {
                     for _ in 0..entries {
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(Size::Fill)
                             .height(Size::Pixels(metrics.row_h))
                             .build();
                     }
                 })
-                .build()
+                .build();
+            root
         },
     );
     measured

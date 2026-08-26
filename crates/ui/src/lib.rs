@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cosmic_text::{
     Align as CosmicAlign, Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping,
     SwashCache, SwashContent, Wrap,
@@ -26,7 +26,7 @@ pub use kama_ui_renderer::{
 };
 
 const MAX_CLIPS: usize = 4;
-const ROOT_SCOPE_SEED: u64 = 0xcbf29ce484222325;
+const ROOT_SCOPE_SEED: u64 = 0xcbf2_9ce4_8422_2325;
 const TOOLTIP_HOVER_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const TOOLTIP_FONT_SIZE: f32 = 10.5;
 const TOOLTIP_PADDING: f32 = 5.0;
@@ -103,7 +103,9 @@ impl ColorKind {
         match self {
             Self::Fixed(color) => color,
             Self::Contrast if fill.a > 0.01 => {
-                let luminance = fill.r * 0.2126 + fill.g * 0.7152 + fill.b * 0.0722;
+                let luminance = fill
+                    .b
+                    .mul_add(0.0722, fill.g.mul_add(0.7152, fill.r * 0.2126));
                 if luminance >= 0.56 {
                     Color::BLACK
                 } else {
@@ -190,7 +192,7 @@ pub enum Size {
     FitScale(f32),
     Pixels(f32),
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Direction {
     Row,
     #[default]
@@ -237,6 +239,7 @@ pub struct BlockId(pub u64);
 pub struct FormatKey<'a>(std::fmt::Arguments<'a>);
 
 impl<'a> FormatKey<'a> {
+    #[must_use]
     pub const fn new(arguments: std::fmt::Arguments<'a>) -> Self {
         Self(arguments)
     }
@@ -298,6 +301,7 @@ pub struct PopupPlacement {
     pub direction: PopupDirection,
 }
 
+#[must_use]
 pub fn place_popup_with_direction(
     anchor: Rect,
     size: [f32; 2],
@@ -341,6 +345,7 @@ pub fn place_popup_with_direction(
     }
 }
 
+#[must_use]
 pub fn place_popup(
     anchor: Rect,
     size: [f32; 2],
@@ -372,6 +377,7 @@ pub struct InputState {
 pub struct PopupState(Rc<Cell<bool>>);
 
 impl PopupState {
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.0.get()
     }
@@ -421,7 +427,7 @@ pub struct Block {
     pub text_align: Align,
     pub text_vertical_align: Align,
     pub text_wrap: bool,
-    pub children: Vec<Block>,
+    pub children: Vec<Self>,
     pub on_click: Option<Box<dyn FnMut(ClickEvent)>>,
     pub on_mouse_enter: Option<Box<dyn FnMut()>>,
     pub horizontal_scroll: Option<ScrollState>,
@@ -537,10 +543,12 @@ pub struct LayoutRects {
 }
 
 impl LayoutRects {
+    #[must_use]
     pub fn rect(&self, id: BlockId) -> Option<Rect> {
         self.rects.get(&id).copied()
     }
 
+    #[must_use]
     pub fn scroll_range(&self, id: BlockId) -> Option<ScrollRange> {
         self.scroll_ranges.get(&id).copied()
     }
@@ -582,7 +590,7 @@ pub fn measure_layout<R>(
 }
 
 impl BuildCtx {
-    fn with_seed(scope_seed: u64) -> Self {
+    const fn with_seed(scope_seed: u64) -> Self {
         Self {
             blocks: Vec::new(),
             scope_seed,
@@ -593,7 +601,7 @@ impl BuildCtx {
 
     #[allow(clippy::new_ret_no_self)]
     pub fn new(&mut self) -> BlockBuilder<'_> {
-        let auto_id = hash_pair(self.scope_seed, self.next_index as u64);
+        let auto_id = hash_pair(self.scope_seed, u64::from(self.next_index));
         self.next_index += 1;
         let mut block = Block::new(BlockId(auto_id), auto_id);
         block.explicit_clips.clone_from(&self.clip_stack);
@@ -603,7 +611,7 @@ impl BuildCtx {
         }
     }
 
-    pub fn with_clip<R>(&mut self, rect: Rect, build: impl FnOnce(&mut BuildCtx) -> R) -> R {
+    pub fn with_clip<R>(&mut self, rect: Rect, build: impl FnOnce(&mut Self) -> R) -> R {
         self.clip_stack.push(ClipShape { rect, radius: 0.0 });
         let result = build(self);
         self.clip_stack.pop();
@@ -624,6 +632,7 @@ pub struct BlockBuilder<'a> {
 macro_rules! builder_setters {
     ($($name:ident($arg:ident: $ty:ty) => $field:ident = $value:expr;)*) => {
         $(
+            #[must_use]
             pub fn $name(self, $arg: $ty) -> Self {
                 self.block.$field = $value;
                 self
@@ -635,11 +644,13 @@ macro_rules! builder_setters {
 macro_rules! builder_flags {
     ($($name:ident, $conditional:ident => $($field:ident = $value:expr),+;)*) => {
         $(
+            #[must_use]
             pub fn $name(self) -> Self {
                 let block = &mut *self.block;
                 $(block.$field = $value;)+
                 self
             }
+            #[must_use]
             pub fn $conditional(self, enabled: bool) -> Self {
                 if enabled { self.$name() } else { self }
             }
@@ -731,12 +742,14 @@ impl BlockBuilder<'_> {
         centered, centered_if => centered = true;
     }
 
+    #[must_use]
     pub fn position(self, (x, y): (f32, f32)) -> Self {
-        self.block.position = Some([x, y]);
+        self.block.position = Some((x, y).into());
         self
     }
 
-    pub fn bounds(self, (x, y, width, height): (f32, f32, f32, f32)) -> Self {
+    #[must_use]
+    pub const fn bounds(self, (x, y, width, height): (f32, f32, f32, f32)) -> Self {
         let block = &mut *self.block;
         block.position = Some([x, y]);
         block.width = Size::Pixels(width);
@@ -744,12 +757,14 @@ impl BlockBuilder<'_> {
         self
     }
 
-    pub fn backdrop_blur(self, radius: f32) -> Self {
+    #[must_use]
+    pub const fn backdrop_blur(self, radius: f32) -> Self {
         self.block.backdrop_blur = radius.max(0.0);
         self
     }
 
-    pub fn popup(self) -> Self {
+    #[must_use]
+    pub const fn popup(self) -> Self {
         let block = &mut *self.block;
         block.layer = Layer::Popup;
         block.centered = true;
@@ -758,6 +773,7 @@ impl BlockBuilder<'_> {
     }
 
     /// Marks this top-level popup surface as owning outside-press dismissal.
+    #[must_use]
     pub fn dismissible_popup(self, state: PopupState) -> Self {
         let block = &mut *self.block;
         block.layer = Layer::Popup;
@@ -789,7 +805,8 @@ impl BlockBuilder<'_> {
         self
     }
 
-    pub fn build(self) -> BlockId {
+    #[must_use]
+    pub const fn build(self) -> BlockId {
         self.block.id
     }
 }
@@ -829,25 +846,22 @@ struct TooltipState {
 
 impl TooltipState {
     fn update(&mut self, target: Option<(BlockId, String, Rect)>, now: Instant, dt: f32) {
-        match target {
-            Some((id, text, anchor)) => {
-                if self.hovered != Some(id) {
-                    self.hovered = Some(id);
-                    self.hover_started = Some(now);
-                    self.ready = false;
-                    self.opacity = 0.0;
-                }
-                self.text = Some(text);
-                self.anchor = anchor;
-                self.ready = self.hover_started.is_some_and(|started| {
-                    now.saturating_duration_since(started) >= TOOLTIP_HOVER_DELAY
-                });
-            }
-            None => {
-                self.hovered = None;
-                self.hover_started = None;
+        if let Some((id, text, anchor)) = target {
+            if self.hovered != Some(id) {
+                self.hovered = Some(id);
+                self.hover_started = Some(now);
                 self.ready = false;
+                self.opacity = 0.0;
             }
+            self.text = Some(text);
+            self.anchor = anchor;
+            self.ready = self.hover_started.is_some_and(|started| {
+                now.saturating_duration_since(started) >= TOOLTIP_HOVER_DELAY
+            });
+        } else {
+            self.hovered = None;
+            self.hover_started = None;
+            self.ready = false;
         }
 
         self.opacity = approach(
@@ -890,6 +904,7 @@ impl Default for Gui {
 }
 
 impl Gui {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hot: None,
@@ -906,7 +921,7 @@ impl Gui {
         }
     }
 
-    pub fn begin<'a>(&'a mut self, renderer: &'a mut Renderer, input: InputState) -> Ui<'a> {
+    pub const fn begin<'a>(&'a mut self, renderer: &'a mut Renderer, input: InputState) -> Ui<'a> {
         Ui {
             gui: self,
             renderer,
@@ -915,7 +930,7 @@ impl Gui {
         }
     }
 
-    pub fn cursor_shape(&self) -> CursorShape {
+    pub const fn cursor_shape(&self) -> CursorShape {
         self.cursor_shape
     }
 
@@ -1162,7 +1177,7 @@ fn measure_text_ink_width(
         );
         let mut glyphs = Vec::new();
         for run in borrowed.layout_runs() {
-            for glyph in run.glyphs.iter() {
+            for glyph in run.glyphs {
                 let physical = glyph.physical((0.0, run.line_y * scale), scale);
                 glyphs.push((physical.cache_key, physical.x));
             }
@@ -1217,7 +1232,8 @@ fn append_tooltip(
     let inset = (TOOLTIP_PADDING + TOOLTIP_BORDER) * 2.0;
     let width = text_size[0] + inset;
     let height = text_size[1] + inset;
-    let x = (state.anchor.x + (state.anchor.width - width) * 0.5)
+    let x = (state.anchor.width - width)
+        .mul_add(0.5, state.anchor.x)
         .clamp(6.0, (viewport.width - width - 6.0).max(6.0));
     let below = state.anchor.bottom() + 8.0;
     let y = if below + height <= viewport.bottom() - 6.0 {
@@ -1227,7 +1243,8 @@ fn append_tooltip(
     };
 
     let mut ctx = BuildCtx::with_seed(ROOT_SCOPE_SEED);
-    ctx.new()
+    let _ = ctx
+        .new()
         .id("ui-tooltip")
         .overlay()
         .bounds((x, y, width, height))
@@ -1272,7 +1289,7 @@ fn find_block(blocks: &[Block], id: BlockId) -> Option<&Block> {
 
 fn layout_roots(blocks: &mut [Block], viewport: Rect) {
     let (fixed, fill_weight) = flow_metrics(blocks, false, 0.0);
-    let fill_height = fill_share(viewport.height, fixed, fill_weight);
+    let available_height = fill_share(viewport.height, fixed, fill_weight);
     let mut cursor_y = viewport.y;
 
     for block in blocks {
@@ -1281,7 +1298,7 @@ fn layout_roots(blocks: &mut [Block], viewport: Rect) {
             layout_block(block, rect, &[], Layer::Base, [viewport.x, viewport.y]);
             continue;
         }
-        let height = resolve_main(block.height, fill_height, intrinsic_size(block, false));
+        let height = resolve_main(block.height, available_height, intrinsic_size(block, false));
         let rect = Rect::new(
             viewport.x,
             cursor_y,
@@ -1346,7 +1363,7 @@ fn layout_block(
     let cross_available = axis_extent(content, !horizontal);
     let (fixed, fill_weight) = flow_metrics(&block.children, horizontal, block.gap);
     let fill_size = fill_share(main_available, fixed, fill_weight);
-    let occupied = fixed + fill_size * fill_weight;
+    let occupied = fill_size.mul_add(fill_weight, fixed);
     let mut cursor = alignment_offset(main_available, occupied, block.justify_content);
 
     for child in &mut block.children {
@@ -1433,7 +1450,7 @@ fn absolute_rect(block: &Block, parent: Rect) -> Rect {
     rect
 }
 
-fn axis_spec(block: &Block, horizontal: bool) -> Size {
+const fn axis_spec(block: &Block, horizontal: bool) -> Size {
     if horizontal {
         block.width
     } else {
@@ -1441,7 +1458,7 @@ fn axis_spec(block: &Block, horizontal: bool) -> Size {
     }
 }
 
-fn axis_extent(rect: Rect, horizontal: bool) -> f32 {
+const fn axis_extent(rect: Rect, horizontal: bool) -> f32 {
     if horizontal {
         rect.width
     } else {
@@ -1485,13 +1502,16 @@ fn flow_metrics(blocks: &[Block], horizontal: bool, gap: f32) -> (f32, f32) {
             Size::Pixels(value) => fixed += value.max(0.0),
             Size::Fit => fixed += intrinsic_size(block, horizontal),
             Size::FitScale(scale) => {
-                fixed += intrinsic_size(block, horizontal) * normalized_scale(scale)
+                fixed = intrinsic_size(block, horizontal).mul_add(normalized_scale(scale), fixed);
             }
             Size::Fill => fill_weight += 1.0,
             Size::FillPortion(portion) => fill_weight += normalized_weight(portion),
         }
     }
-    (fixed + gap * count.saturating_sub(1) as f32, fill_weight)
+    (
+        gap.mul_add(count.saturating_sub(1) as f32, fixed),
+        fill_weight,
+    )
 }
 
 fn fill_share(available: f32, fixed: f32, weight: f32) -> f32 {
@@ -1502,7 +1522,7 @@ fn fill_share(available: f32, fixed: f32, weight: f32) -> f32 {
     }
 }
 
-fn normalized_weight(value: f32) -> f32 {
+const fn normalized_weight(value: f32) -> f32 {
     if value.is_finite() {
         value.max(0.0)
     } else {
@@ -1510,7 +1530,7 @@ fn normalized_weight(value: f32) -> f32 {
     }
 }
 
-fn normalized_scale(value: f32) -> f32 {
+const fn normalized_scale(value: f32) -> f32 {
     if value.is_finite() {
         value.max(0.0)
     } else {
@@ -1702,7 +1722,7 @@ fn block_contains(block: &Block, point: [f32; 2]) -> bool {
 
 fn point_in_triangle_2d(point: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> bool {
     fn edge(a: [f32; 2], b: [f32; 2], point: [f32; 2]) -> f32 {
-        (point[0] - a[0]) * (b[1] - a[1]) - (point[1] - a[1]) * (b[0] - a[0])
+        (point[1] - a[1]).mul_add(-(b[0] - a[0]), (point[0] - a[0]) * (b[1] - a[1]))
     }
     let e0 = edge(a, b, point);
     let e1 = edge(b, c, point);
@@ -1720,10 +1740,10 @@ fn rounded_rect_contains(rect: Rect, radius: f32, point: [f32; 2]) -> bool {
     if radius <= 0.0 {
         return true;
     }
-    let center_x = rect.x + rect.width * 0.5;
-    let center_y = rect.y + rect.height * 0.5;
-    let inner_x = (rect.width * 0.5 - radius).max(0.0);
-    let inner_y = (rect.height * 0.5 - radius).max(0.0);
+    let center_x = rect.width.mul_add(0.5, rect.x);
+    let center_y = rect.height.mul_add(0.5, rect.y);
+    let inner_x = rect.width.mul_add(0.5, -radius).max(0.0);
+    let inner_y = rect.height.mul_add(0.5, -radius).max(0.0);
     let nearest_x = point[0].clamp(center_x - inner_x, center_x + inner_x);
     let nearest_y = point[1].clamp(center_y - inner_y, center_y + inner_y);
     let dx = point[0] - nearest_x;
@@ -1745,7 +1765,7 @@ fn find_block_mut(blocks: &mut [Block], id: BlockId) -> Option<&mut Block> {
 
 fn approach(current: f32, target: f32, speed: f32, dt: f32) -> f32 {
     let amount = 1.0 - (-speed * dt).exp();
-    current + (target - current) * amount
+    (target - current).mul_add(amount, current)
 }
 
 fn colors_close(a: Option<Color>, b: Option<Color>, epsilon: f32) -> bool {
@@ -1862,15 +1882,15 @@ fn emit_block(
             Color::TRANSPARENT
         }
     });
-    let background = if !is_icon {
+    let background = if is_icon {
+        inherited_background
+    } else {
         block
             .fill
             .filter(|fill| fill.a > 0.0)
             .map_or(inherited_background, |fill| {
                 composite_over(fill, inherited_background)
             })
-    } else {
-        inherited_background
     };
     let foreground = block.foreground.or(inherited_foreground);
     let fill_color = if is_icon {
@@ -1996,15 +2016,24 @@ fn emit_block(
 }
 
 fn composite_over(foreground: Color, background: Color) -> Color {
-    let alpha = foreground.a + background.a * (1.0 - foreground.a);
+    let alpha = background.a.mul_add(1.0 - foreground.a, foreground.a);
     if alpha <= 1e-6 {
         return Color::TRANSPARENT;
     }
     let background_weight = background.a * (1.0 - foreground.a);
     Color::rgba(
-        (foreground.r * foreground.a + background.r * background_weight) / alpha,
-        (foreground.g * foreground.a + background.g * background_weight) / alpha,
-        (foreground.b * foreground.a + background.b * background_weight) / alpha,
+        background
+            .r
+            .mul_add(background_weight, foreground.r * foreground.a)
+            / alpha,
+        background
+            .g
+            .mul_add(background_weight, foreground.g * foreground.a)
+            / alpha,
+        background
+            .b
+            .mul_add(background_weight, foreground.b * foreground.a)
+            / alpha,
         alpha,
     )
 }
@@ -2086,10 +2115,16 @@ fn emit_text(
                 text_rect.x * scale,
                 ((text_rect.y + run.line_y + y_shift) * scale).round(),
             );
-            for glyph in run.glyphs.iter() {
+            for glyph in run.glyphs {
                 let font_size = glyph.font_size * scale;
-                let x = (glyph.x + glyph.font_size * glyph.x_offset).mul_add(scale, origin.0);
-                let y = (glyph.y - glyph.font_size * glyph.y_offset).mul_add(scale, origin.1);
+                let x = glyph
+                    .font_size
+                    .mul_add(glyph.x_offset, glyph.x)
+                    .mul_add(scale, origin.0);
+                let y = glyph
+                    .font_size
+                    .mul_add(-glyph.y_offset, glyph.y)
+                    .mul_add(scale, origin.1);
                 if !font_size.is_finite()
                     || font_size <= 0.0
                     || font_size > 16_384.0
@@ -2122,7 +2157,7 @@ fn emit_text(
             if width == 0 || height == 0 {
                 continue;
             }
-            let rgba = swash_to_rgba(&image.content, &image.data, width, height);
+            let rgba = swash_to_rgba(image.content, &image.data, width, height);
             let entry = renderer.upload_glyph(width, height, &rgba)?;
             gui.glyphs.insert(physical.cache_key, entry);
             entry
@@ -2132,10 +2167,10 @@ fn emit_text(
             .swash_cache
             .get_image(&mut gui.font_system, physical.cache_key)
             .as_ref()
-            .expect("cached glyph image vanished");
+            .ok_or_else(|| anyhow!(""))?;
         let rect = Rect::new(
-            (physical.x + image.placement.left) as f32,
-            (physical.y - image.placement.top) as f32,
+            (physical.x.saturating_add(image.placement.left)) as f32,
+            (physical.y.saturating_sub(image.placement.top)) as f32,
             image.placement.width as f32,
             image.placement.height as f32,
         );
@@ -2157,8 +2192,8 @@ fn emit_text(
     Ok(())
 }
 
-fn swash_to_rgba(content: &SwashContent, data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let count = width as usize * height as usize;
+fn swash_to_rgba(content: SwashContent, data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let count = (width as usize).saturating_mul(height as usize);
     match content {
         SwashContent::Mask => data
             .iter()
@@ -2171,15 +2206,13 @@ fn swash_to_rgba(content: &SwashContent, data: &[u8], width: u32, height: u32) -
             .flat_map(|rgba| [255, 255, 255, rgba[0].max(rgba[1]).max(rgba[2])])
             .collect(),
         SwashContent::Color => data.to_vec(),
-        #[allow(unreachable_patterns)]
-        _ => vec![0; count * 4],
     }
 }
 
-fn hash_pair(a: u64, b: u64) -> u64 {
-    let mut hash = a ^ 0x9e3779b97f4a7c15;
+const fn hash_pair(a: u64, b: u64) -> u64 {
+    let mut hash = a ^ 0x9e37_79b9_7f4a_7c15;
     hash ^= b
-        .wrapping_add(0x9e3779b97f4a7c15)
+        .wrapping_add(0x9e37_79b9_7f4a_7c15)
         .wrapping_add(hash << 6)
         .wrapping_add(hash >> 2);
     avalanche(hash)
@@ -2193,21 +2226,21 @@ fn hash_value<K: Hash>(seed: u64, value: &K) -> u64 {
         }
         fn write(&mut self, bytes: &[u8]) {
             for &byte in bytes {
-                self.0 ^= byte as u64;
-                self.0 = self.0.wrapping_mul(0x100000001b3);
+                self.0 ^= u64::from(byte);
+                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
             }
         }
     }
-    let mut hasher = SeededHasher(seed ^ 0xcbf29ce484222325);
+    let mut hasher = SeededHasher(seed ^ 0xcbf2_9ce4_8422_2325);
     value.hash(&mut hasher);
     hasher.finish()
 }
 
-fn avalanche(mut value: u64) -> u64 {
+const fn avalanche(mut value: u64) -> u64 {
     value ^= value >> 30;
-    value = value.wrapping_mul(0xbf58476d1ce4e5b9);
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value ^= value >> 27;
-    value = value.wrapping_mul(0x94d049bb133111eb);
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
 }
 
@@ -2266,11 +2299,12 @@ mod layout_tests {
     #[test]
     fn explicit_clip_tracks_nested_parent_origin() {
         let mut ctx = BuildCtx::with_seed(ROOT_SCOPE_SEED);
-        ctx.new()
+        let _ = ctx
+            .new()
             .bounds((40.0, 30.0, 100.0, 100.0))
             .children(|ctx| {
                 ctx.with_clip(Rect::new(5.0, 6.0, 30.0, 20.0), |ctx| {
-                    ctx.new().bounds((7.0, 8.0, 10.0, 10.0)).build();
+                    let _ = ctx.new().bounds((7.0, 8.0, 10.0, 10.0)).build();
                 });
             })
             .build();
@@ -2387,7 +2421,8 @@ mod layout_tests {
         let ((one, two), measured) = measure_layout(Rect::new(0.0, 0.0, 300.0, 40.0), |ctx| {
             let mut one = BlockId::default();
             let mut two = BlockId::default();
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(Size::Fill)
                 .height(Size::Fill)
                 .row()
@@ -2484,7 +2519,8 @@ mod layout_tests {
     #[test]
     fn scroll_range_comes_from_laid_out_content() {
         let (scroll, measured) = measure_layout(Rect::new(0.0, 0.0, 120.0, 70.0), |ctx| {
-            ctx.new()
+            let _ = ctx
+                .new()
                 .column()
                 .width(Size::Fill)
                 .height(Size::Fill)
@@ -2492,13 +2528,14 @@ mod layout_tests {
                 .gap(5.0)
                 .children(|ctx| {
                     for _ in 0..3 {
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(Size::Fill)
                             .height(Size::Pixels(30.0))
                             .build();
                     }
                 })
-                .build()
+                .build();
         });
 
         assert_eq!(

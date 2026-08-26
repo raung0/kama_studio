@@ -77,6 +77,7 @@ pub struct ColorPicker {
 }
 
 impl ColorPicker {
+    #[must_use]
     pub fn new(color: Color) -> Self {
         let linear = color.to_array();
         let srgb = linear_to_srgb_rgba(linear);
@@ -95,11 +96,13 @@ impl ColorPicker {
         }
     }
 
+    #[must_use]
     pub fn color(&self) -> Color {
         ui_color(self.linear)
     }
 
-    pub fn linear(&self) -> [f32; 4] {
+    #[must_use]
+    pub const fn linear(&self) -> [f32; 4] {
         self.linear
     }
 
@@ -116,6 +119,7 @@ impl ColorPicker {
         self.textures.signature = None;
     }
 
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.open.is_open()
     }
@@ -134,26 +138,36 @@ impl ColorPicker {
     }
 
     pub fn tick(&mut self, dt: f32) {
-        ease(&mut self.t, self.open.is_open() as u8 as f32, SPEED, dt);
+        ease(
+            &mut self.t,
+            f32::from(u8::from(self.open.is_open())),
+            SPEED,
+            dt,
+        );
         self.hex.tick(dt);
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
-        (self.t - self.open.is_open() as u8 as f32).abs() > 0.001 || self.hex.is_animating()
+        (self.t - f32::from(u8::from(self.open.is_open()))).abs() > 0.001 || self.hex.is_animating()
     }
 
+    #[must_use]
     pub fn is_editing(&self) -> bool {
         self.open.is_open() && self.hex.is_focused()
     }
 
-    pub fn is_dragging(&self) -> bool {
+    #[must_use]
+    pub const fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
+    #[must_use]
     pub fn caret_rect(&self, rect: Rect) -> Option<Rect> {
         self.caret_rect_bounded(rect, self.effective_window_bounds(rect))
     }
 
+    #[must_use]
     pub fn caret_rect_in(&self, rect: Rect, bounds: Rect) -> Option<Rect> {
         self.caret_rect_bounded(rect, Some(bounds))
     }
@@ -163,10 +177,12 @@ impl ColorPicker {
             .then(|| self.hex.caret_rect(self.layout(rect, bounds).hex))
     }
 
+    #[must_use]
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
         self.popup_contains_bounded(rect, self.effective_window_bounds(rect), point)
     }
 
+    #[must_use]
     pub fn popup_contains_in(&self, rect: Rect, bounds: Rect, point: [f32; 2]) -> bool {
         self.popup_contains_bounded(rect, Some(bounds), point)
     }
@@ -175,6 +191,10 @@ impl ColorPicker {
         self.open.is_open() && self.layout(rect, bounds).popup.contains(point)
     }
 
+    /// Synchronizes picker textures with renderer.
+    ///
+    /// # Errors
+    /// Returns error when texture registration or upload fails.
     pub fn sync_textures(&mut self, renderer: &mut Renderer) -> Result<()> {
         if self.t <= 0.001 {
             return Ok(());
@@ -233,7 +253,10 @@ impl ColorPicker {
         if self.open.is_open() && layout.popup.contains(point) {
             for (index, tab) in layout.tabs.into_iter().enumerate() {
                 if tab.contains(point) {
-                    self.mode = [Mode::Hsv, Mode::Rgb][index];
+                    let Some(mode) = [Mode::Hsv, Mode::Rgb].get(index).copied() else {
+                        continue;
+                    };
+                    self.mode = mode;
                     self.textures.signature = None;
                     self.hex.set_focused(false);
                     return true;
@@ -294,7 +317,7 @@ impl ColorPicker {
         self.hex.pointer_moved(point)
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         let dragged = self.drag.take().is_some();
         dragged | self.hex.pointer_released()
     }
@@ -422,10 +445,10 @@ impl ColorPicker {
                 crate::ui!(ctx, {
                     @for channel in 0..3 {
                         @let row = rows[channel];
-                        @let x = layout.plane.x + srgb[channel].clamp(0.0, 1.0) * layout.plane.width;
-                        @let y = row.y + row.height * 0.5;
+                        @let x = srgb[channel].clamp(0.0, 1.0).mul_add(layout.plane.width, layout.plane.x);
+                        @let y = row.height.mul_add(0.5, row.y);
                         Rect(@format("color-picker-rgb-handle {id} {channel}"), Rect::new(
-                            x - 2.0, y - row.height * 0.36, 4.0, row.height * 0.72,
+                            x - 2.0, row.height.mul_add(-0.36, y), 4.0, row.height * 0.72,
                         )) {
                             top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                             border_color: Color::BLACK; border_radius: 2.0;
@@ -570,7 +593,8 @@ impl ColorPicker {
                 .padding(8.0)
                 .align_items(Align::Center)
                 .children(|ctx| {
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .row()
                         .width(Size::Fill)
                         .height(Size::Pixels(22.0))
@@ -581,7 +605,8 @@ impl ColorPicker {
                             }
                         })
                         .build();
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Pixels(5.0))
                         .build();
@@ -590,7 +615,8 @@ impl ColorPicker {
                         .width(Size::Pixels(plane_size))
                         .height(Size::Pixels(plane_size))
                         .build();
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Pixels(5.0))
                         .build();
@@ -601,7 +627,8 @@ impl ColorPicker {
                                 .height(Size::Pixels(14.0))
                                 .build(),
                         );
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(Size::Fill)
                             .height(Size::Pixels(5.0))
                             .build();
@@ -611,7 +638,8 @@ impl ColorPicker {
                         .width(Size::Fill)
                         .height(Size::Pixels(14.0))
                         .build();
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Pixels(7.0))
                         .build();
@@ -754,11 +782,16 @@ struct WheelGeometry {
 }
 
 fn wheel_geometry(rect: Rect, hue: f32) -> WheelGeometry {
-    let center = [rect.x + rect.width * 0.5, rect.y + rect.height * 0.5];
+    let center = [
+        rect.width.mul_add(0.5, rect.x),
+        rect.height.mul_add(0.5, rect.y),
+    ];
     let outer_radius = (rect.width.min(rect.height) * 0.495).max(1.0);
     let inner_radius = outer_radius * 0.78;
     let triangle_radius = (inner_radius * 0.96).max(1.0);
-    let hue_angle = hue.rem_euclid(1.0) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+    let hue_angle = hue
+        .rem_euclid(1.0)
+        .mul_add(std::f32::consts::TAU, -std::f32::consts::FRAC_PI_2);
     WheelGeometry {
         center,
         outer_radius,
@@ -779,8 +812,8 @@ fn wheel_geometry(rect: Rect, hue: f32) -> WheelGeometry {
 
 fn point_on_circle(center: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
     [
-        center[0] + angle.cos() * radius,
-        center[1] + angle.sin() * radius,
+        angle.cos().mul_add(radius, center[0]),
+        angle.sin().mul_add(radius, center[1]),
     ]
 }
 
@@ -788,7 +821,7 @@ fn wheel_ring_contains(rect: Rect, point: [f32; 2]) -> bool {
     let geometry = wheel_geometry(rect, 0.0);
     let dx = point[0] - geometry.center[0];
     let dy = point[1] - geometry.center[1];
-    let distance = (dx * dx + dy * dy).sqrt();
+    let distance = dx.hypot(dy);
     distance >= geometry.inner_radius && distance <= geometry.outer_radius
 }
 
@@ -835,35 +868,35 @@ fn barycentric(point: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> [f32; 
     let v0 = [b[0] - a[0], b[1] - a[1]];
     let v1 = [c[0] - a[0], c[1] - a[1]];
     let v2 = [point[0] - a[0], point[1] - a[1]];
-    let d00 = v0[0] * v0[0] + v0[1] * v0[1];
-    let d01 = v0[0] * v1[0] + v0[1] * v1[1];
-    let d11 = v1[0] * v1[0] + v1[1] * v1[1];
-    let d20 = v2[0] * v0[0] + v2[1] * v0[1];
-    let d21 = v2[0] * v1[0] + v2[1] * v1[1];
-    let denominator = d00 * d11 - d01 * d01;
+    let d00 = v0[1].mul_add(v0[1], v0[0] * v0[0]);
+    let d01 = v0[1].mul_add(v1[1], v0[0] * v1[0]);
+    let d11 = v1[1].mul_add(v1[1], v1[0] * v1[0]);
+    let d20 = v2[1].mul_add(v0[1], v2[0] * v0[0]);
+    let d21 = v2[1].mul_add(v1[1], v2[0] * v1[0]);
+    let denominator = d01.mul_add(-d01, d00 * d11);
     if denominator.abs() <= 1e-7 {
         return [1.0, 0.0, 0.0];
     }
-    let white = (d11 * d20 - d01 * d21) / denominator;
-    let black = (d00 * d21 - d01 * d20) / denominator;
+    let white = d01.mul_add(-d21, d11 * d20) / denominator;
+    let black = d01.mul_add(-d20, d00 * d21) / denominator;
     [1.0 - white - black, white, black]
 }
 
 fn closest_point_on_segment(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     let ab = [b[0] - a[0], b[1] - a[1]];
-    let length_squared = ab[0] * ab[0] + ab[1] * ab[1];
+    let length_squared = ab[1].mul_add(ab[1], ab[0] * ab[0]);
     if length_squared <= 1e-7 {
         return a;
     }
-    let t =
-        (((point[0] - a[0]) * ab[0] + (point[1] - a[1]) * ab[1]) / length_squared).clamp(0.0, 1.0);
-    [a[0] + ab[0] * t, a[1] + ab[1] * t]
+    let t = ((point[1] - a[1]).mul_add(ab[1], (point[0] - a[0]) * ab[0]) / length_squared)
+        .clamp(0.0, 1.0);
+    [ab[0].mul_add(t, a[0]), ab[1].mul_add(t, a[1])]
 }
 
 fn distance_squared(a: [f32; 2], b: [f32; 2]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
-    dx * dx + dy * dy
+    dy.mul_add(dy, dx * dx)
 }
 
 fn hsv_triangle_weights(saturation: f32, value: f32) -> [f32; 3] {
@@ -893,7 +926,7 @@ fn wheel_triangle_pixel(
 
     let dx = point[0] - geometry.center[0];
     let dy = point[1] - geometry.center[1];
-    let distance = (dx * dx + dy * dy).sqrt();
+    let distance = dx.hypot(dy);
     let ring_distance = (geometry.outer_radius - distance).min(distance - geometry.inner_radius);
     let ring_coverage = antialias_coverage(ring_distance, AA_RADIUS);
     if ring_distance > -AA_RADIUS * 2.0 {
@@ -931,7 +964,7 @@ fn wheel_triangle_pixel(
 
 fn antialias_coverage(signed_distance: f32, radius: f32) -> f32 {
     let t = ((signed_distance + radius) / (radius * 2.0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+    t * t * 2.0f32.mul_add(-t, 3.0)
 }
 
 fn triangle_signed_distance(geometry: WheelGeometry, weights: [f32; 3]) -> f32 {
@@ -945,11 +978,14 @@ fn triangle_signed_distance(geometry: WheelGeometry, weights: [f32; 3]) -> f32 {
 
 fn point_line_distance(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let ab = [b[0] - a[0], b[1] - a[1]];
-    let length = (ab[0] * ab[0] + ab[1] * ab[1]).sqrt();
+    let length = ab[0].hypot(ab[1]);
     if length <= 1e-7 {
         return 0.0;
     }
-    ((point[0] - a[0]) * ab[1] - (point[1] - a[1]) * ab[0]).abs() / length
+    (point[1] - a[1])
+        .mul_add(-ab[0], (point[0] - a[0]) * ab[1])
+        .abs()
+        / length
 }
 
 fn hue_color(_mode: Mode, hue: f32) -> [f32; 4] {
@@ -971,15 +1007,18 @@ fn wheel_handles(
     let hue_point = point_on_circle(
         geometry.center,
         hue_radius,
-        hue.rem_euclid(1.0) * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2,
+        hue.rem_euclid(1.0)
+            .mul_add(std::f32::consts::TAU, -std::f32::consts::FRAC_PI_2),
     );
     let selection = [
-        geometry.hue[0] * weights[0]
-            + geometry.white[0] * weights[1]
-            + geometry.black[0] * weights[2],
-        geometry.hue[1] * weights[0]
-            + geometry.white[1] * weights[1]
-            + geometry.black[1] * weights[2],
+        geometry.black[0].mul_add(
+            weights[2],
+            geometry.white[0].mul_add(weights[1], geometry.hue[0] * weights[0]),
+        ),
+        geometry.black[1].mul_add(
+            weights[2],
+            geometry.white[1].mul_add(weights[1], geometry.hue[1] * weights[0]),
+        ),
     ];
 
     crate::ui!(ctx, {
@@ -1018,7 +1057,7 @@ fn strip_handle(
     suffix: &str,
     opacity: f32,
 ) {
-    let x = rect.x + value.clamp(0.0, 1.0) * rect.width;
+    let x = value.clamp(0.0, 1.0).mul_add(rect.width, rect.x);
     crate::ui!(ctx, {
         Rect(@format("color-picker-strip-handle {id} {suffix}"), Rect::new(x - 2.0, rect.y - 2.0, 4.0, rect.height + 4.0)) {
             top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
@@ -1031,7 +1070,8 @@ fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
     let ((rows, labels), measured) = crate::measure_layout(plane, |ctx| {
         let mut rows = [BlockId(0); 3];
         let mut labels = [BlockId(0); 3];
-        ctx.new()
+        let _ = ctx
+            .new()
             .column()
             .width(Size::Fill)
             .height(Size::Fill)
@@ -1043,7 +1083,8 @@ fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
                         .width(Size::Fill)
                         .height(Size::Fill)
                         .children(|ctx| {
-                            ctx.new()
+                            let _ = ctx
+                                .new()
                                 .width(Size::Pixels(6.0))
                                 .height(Size::Fill)
                                 .build();
@@ -1052,7 +1093,7 @@ fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
                                 .width(Size::Pixels(18.0))
                                 .height(Size::Fill)
                                 .build();
-                            ctx.new().width(Size::Fill).height(Size::Fill).build();
+                            let _ = ctx.new().width(Size::Fill).height(Size::Fill).build();
                         })
                         .build();
                 }
@@ -1098,9 +1139,9 @@ fn alpha_pixels(linear: [f32; 4]) -> Vec<u8> {
                 &mut pixels,
                 (y * width + x) * 4,
                 [
-                    straight[0] * alpha + checker * (1.0 - alpha),
-                    straight[1] * alpha + checker * (1.0 - alpha),
-                    straight[2] * alpha + checker * (1.0 - alpha),
+                    straight[0].mul_add(alpha, checker * (1.0 - alpha)),
+                    straight[1].mul_add(alpha, checker * (1.0 - alpha)),
+                    straight[2].mul_add(alpha, checker * (1.0 - alpha)),
                     1.0,
                 ],
             );
@@ -1136,10 +1177,10 @@ fn srgb_to_linear_rgba(value: [f32; 4]) -> [f32; 4] {
     ]
 }
 fn linear_to_srgb(value: f32) -> f32 {
-    if value <= 0.0031308 {
+    if value <= 0.003_130_8 {
         value * 12.92
     } else {
-        1.055 * value.max(0.0).powf(1.0 / 2.4) - 0.055
+        1.055f32.mul_add(value.max(0.0).powf(1.0 / 2.4), -0.055)
     }
 }
 fn srgb_to_linear(value: f32) -> f32 {
@@ -1151,18 +1192,18 @@ fn srgb_to_linear(value: f32) -> f32 {
 }
 
 fn rgb_to_hsv(rgb: [f32; 3]) -> [f32; 3] {
-    let [r, g, b] = rgb;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
+    let [red, green, blue] = rgb;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
     let delta = max - min;
     let mut h = if delta <= 1e-7 {
         0.0
-    } else if max == r {
-        ((g - b) / delta).rem_euclid(6.0)
-    } else if max == g {
-        (b - r) / delta + 2.0
+    } else if max == red {
+        ((green - blue) / delta).rem_euclid(6.0)
+    } else if max == green {
+        (blue - red) / delta + 2.0
     } else {
-        (r - g) / delta + 4.0
+        (red - green) / delta + 4.0
     } / 6.0;
     if !h.is_finite() {
         h = 0.0;
@@ -1172,21 +1213,22 @@ fn rgb_to_hsv(rgb: [f32; 3]) -> [f32; 3] {
 }
 
 fn hsv_to_rgb(hsv: [f32; 3]) -> [f32; 3] {
-    let h = hsv[0].rem_euclid(1.0) * 6.0;
-    let s = hsv[1].clamp(0.0, 1.0);
-    let v = hsv[2].clamp(0.0, 1.0);
-    let c = v * s;
-    let x = c * (1.0 - ((h.rem_euclid(2.0)) - 1.0).abs());
-    let (r, g, b) = match h.floor() as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+    let [hue, saturation, value] = hsv;
+    let hue_position = hue.rem_euclid(1.0) * 6.0;
+    let saturation_amount = saturation.clamp(0.0, 1.0);
+    let value_amount = value.clamp(0.0, 1.0);
+    let chroma = value_amount * saturation_amount;
+    let secondary = chroma * (1.0 - ((hue_position.rem_euclid(2.0)) - 1.0).abs());
+    let (red, green, blue) = match hue_position.floor() as i32 {
+        0 => (chroma, secondary, 0.0),
+        1 => (secondary, chroma, 0.0),
+        2 => (0.0, chroma, secondary),
+        3 => (0.0, secondary, chroma),
+        4 => (secondary, 0.0, chroma),
+        _ => (chroma, 0.0, secondary),
     };
-    let m = v - c;
-    [r + m, g + m, b + m]
+    let m = value_amount - chroma;
+    [red + m, green + m, blue + m]
 }
 
 fn rgba_hex(linear: [f32; 4]) -> String {
@@ -1206,10 +1248,10 @@ fn parse_rgba_hex(text: &str) -> Option<[f32; 4]> {
         8 => (&text[..6], u8::from_str_radix(&text[6..8], 16).ok()?),
         _ => return None,
     };
-    let r = u8::from_str_radix(&rgb[0..2], 16).ok()? as f32 / 255.0;
-    let g = u8::from_str_radix(&rgb[2..4], 16).ok()? as f32 / 255.0;
-    let b = u8::from_str_radix(&rgb[4..6], 16).ok()? as f32 / 255.0;
-    Some(srgb_to_linear_rgba([r, g, b, alpha as f32 / 255.0]))
+    let r = f32::from(u8::from_str_radix(&rgb[0..2], 16).ok()?) / 255.0;
+    let g = f32::from(u8::from_str_radix(&rgb[2..4], 16).ok()?) / 255.0;
+    let b = f32::from(u8::from_str_radix(&rgb[4..6], 16).ok()?) / 255.0;
+    Some(srgb_to_linear_rgba([r, g, b, f32::from(alpha) / 255.0]))
 }
 fn byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8

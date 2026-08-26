@@ -46,8 +46,8 @@ impl DocumentStatus {
     }
 
     pub fn mark_saved(&mut self, revision: u64, content: Vec<u8>, view: Vec<u8>) {
-        self.saved_content = content.clone();
-        self.saved_view = view.clone();
+        self.saved_content.clone_from(&content);
+        self.saved_view.clone_from(&view);
         self.observed_revision = revision;
         self.observed_content = content;
         self.observed_view = view;

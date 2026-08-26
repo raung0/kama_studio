@@ -18,6 +18,7 @@ pub struct Style {
 }
 
 impl Style {
+    #[must_use]
     pub fn with_scale(mut self, scale: f32) -> Self {
         let scale = scale.clamp(0.25, 4.0);
         self.text_scale = scale;

@@ -27,6 +27,7 @@ pub struct ComboBox {
 }
 
 impl ComboBox {
+    #[must_use]
     pub fn new(selected: usize) -> Self {
         Self {
             selected,
@@ -40,16 +41,16 @@ impl ComboBox {
         }
     }
 
-    pub fn open_direction(mut self, direction: ComboBoxOpenDirection) -> Self {
+    pub const fn open_direction(mut self, direction: ComboBoxOpenDirection) -> Self {
         self.open_direction = direction;
         self
     }
 
-    pub fn selected(&self) -> usize {
+    pub const fn selected(&self) -> usize {
         self.selected
     }
 
-    pub fn set_selected(&mut self, selected: usize) {
+    pub const fn set_selected(&mut self, selected: usize) {
         self.selected = selected;
     }
 
@@ -66,11 +67,16 @@ impl ComboBox {
     }
 
     pub fn tick(&mut self, dt: f32) {
-        ease(&mut self.t, self.open.is_open() as u8 as f32, SPEED, dt);
+        ease(
+            &mut self.t,
+            f32::from(u8::from(self.open.is_open())),
+            SPEED,
+            dt,
+        );
     }
 
     pub fn is_animating(&self) -> bool {
-        (self.t - self.open.is_open() as u8 as f32).abs() > 0.001
+        (self.t - f32::from(u8::from(self.open.is_open()))).abs() > 0.001
     }
 
     pub fn option_at(&self, rect: Rect, point: [f32; 2], len: usize) -> Option<usize> {
@@ -102,7 +108,9 @@ impl ComboBox {
         };
         let scale = self.ui_scale.get().clamp(0.25, 4.0);
         let viewport_height = popup.height / self.t.max(0.001);
-        let max = (len as f32 * OPTION_H * scale - viewport_height).max(0.0);
+        let max = (len as f32 * OPTION_H)
+            .mul_add(scale, -viewport_height)
+            .max(0.0);
         let axis = if delta[1].abs() >= delta[0].abs() {
             delta[1]
         } else {
@@ -196,8 +204,7 @@ impl ComboBox {
                     id: @format("combobox-chevron {}", &id);
                     icon!: chevron;
                     color!: style.muted;
-                    texture_rotation: std::f32::consts::FRAC_PI_2
-                        - std::f32::consts::PI * self.t;
+                    texture_rotation: std::f32::consts::PI.mul_add(-self.t, std::f32::consts::FRAC_PI_2);
                     width: Size::Pixels(16.0 * ui_scale);
                     height: Size::Pixels(16.0 * ui_scale);
                 }
@@ -305,8 +312,10 @@ impl ComboBox {
                 rect: Rect::new(
                     rect.x,
                     match self.open_direction {
-                        ComboBoxOpenDirection::Down => rect.bottom() + 4.0 * scale,
-                        ComboBoxOpenDirection::Up => rect.y - 4.0 * scale - desired_height,
+                        ComboBoxOpenDirection::Down => 4.0f32.mul_add(scale, rect.bottom()),
+                        ComboBoxOpenDirection::Up => {
+                            4.0f32.mul_add(-scale, rect.y) - desired_height
+                        }
                     },
                     rect.width,
                     desired_height,
@@ -326,12 +335,16 @@ impl ComboBox {
                 )
             },
         );
-        let max_scroll = (len as f32 * OPTION_H * scale - placement.rect.height).max(0.0);
+        let max_scroll = (len as f32 * OPTION_H)
+            .mul_add(scale, -placement.rect.height)
+            .max(0.0);
         self.scroll.set(self.scroll.get().clamp(0.0, max_scroll));
         let height = placement.rect.height * self.t;
         let y = match placement.direction {
-            PopupDirection::Down => placement.rect.y - (1.0 - self.t) * 5.0 * scale,
-            PopupDirection::Up => placement.rect.bottom() - height + (1.0 - self.t) * 5.0 * scale,
+            PopupDirection::Down => ((1.0 - self.t) * 5.0).mul_add(-scale, placement.rect.y),
+            PopupDirection::Up => {
+                ((1.0 - self.t) * 5.0).mul_add(scale, placement.rect.bottom() - height)
+            }
         };
         Some(Rect::new(placement.rect.x, y, placement.rect.width, height))
     }
@@ -348,7 +361,8 @@ impl ComboBox {
         let scale = self.ui_scale.get().clamp(0.25, 4.0);
         let (ids, measured) = crate::measure_layout(popup, |ctx| {
             let mut ids = Vec::with_capacity(len);
-            ctx.new()
+            let _ = ctx
+                .new()
                 .column()
                 .width(Size::Fill)
                 .height(Size::Fill)

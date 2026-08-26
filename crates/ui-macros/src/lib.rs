@@ -1,3 +1,12 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    clippy::option_if_let_else,
+    clippy::useless_let_if_seq
+)]
+
 use std::collections::HashSet;
 
 use proc_macro::TokenStream;
@@ -115,7 +124,12 @@ fn parse_node(input: ParseStream<'_>) -> Result<Node> {
     }
 
     let kind: Path = input.parse()?;
-    if kind.segments.len() == 1 && kind.segments[0].ident == "Rect" && input.peek(syn::token::Paren)
+    if kind.segments.len() == 1
+        && kind
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == "Rect")
+        && input.peek(syn::token::Paren)
     {
         let args;
         parenthesized!(args in input);
@@ -203,6 +217,7 @@ fn parse_property_value(input: ParseStream<'_>) -> Result<Expr> {
     syn::parse2(quote! { #core::FormatKey::new(format_args!(#args)) })
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_directive(input: ParseStream<'_>) -> Result<Node> {
     input.parse::<Token![@]>()?;
     let directive = input.call(Ident::parse_any)?;
@@ -367,13 +382,13 @@ fn expand_node(node: Node) -> Result<TokenStream2> {
 }
 
 fn expand_element(element: Element) -> Result<TokenStream2> {
-    let name = element
-        .kind
-        .segments
-        .last()
-        .expect("non-empty path")
-        .ident
-        .to_string();
+    let Some(segment) = element.kind.segments.last() else {
+        return Err(Error::new_spanned(
+            element.kind,
+            "component path cannot be empty",
+        ));
+    };
+    let name = segment.ident.to_string();
     match name.as_str() {
         "Block" if element.kind.segments.len() == 1 => {
             if let Some(state) = element.state {
@@ -390,13 +405,13 @@ fn expand_element(element: Element) -> Result<TokenStream2> {
 
 fn expand_component(element: Element) -> Result<TokenStream2> {
     let core = core_path();
-    let alias = element
-        .kind
-        .segments
-        .last()
-        .expect("non-empty path")
-        .ident
-        .clone();
+    let Some(last) = element.kind.segments.last() else {
+        return Err(Error::new_spanned(
+            &element.kind,
+            "component path cannot be empty",
+        ));
+    };
+    let alias = last.ident.clone();
     let marker_ident = format_ident!("{alias}Ui");
     let props_ident = format_ident!("{alias}UiProps");
     let built_in = matches!(
@@ -407,14 +422,20 @@ fn expand_component(element: Element) -> Result<TokenStream2> {
         quote! { #core::components::#marker_ident }
     } else {
         let mut path = element.kind.clone();
-        path.segments.last_mut().expect("non-empty path").ident = marker_ident;
+        let Some(last) = path.segments.last_mut() else {
+            return Err(Error::new_spanned(&path, "component path cannot be empty"));
+        };
+        last.ident = marker_ident;
         quote! { #path }
     };
     let props = if built_in {
         quote! { #core::components::#props_ident }
     } else {
         let mut path = element.kind;
-        path.segments.last_mut().expect("non-empty path").ident = props_ident;
+        let Some(last) = path.segments.last_mut() else {
+            return Err(Error::new_spanned(&path, "component path cannot be empty"));
+        };
+        last.ident = props_ident;
         quote! { #path }
     };
 
@@ -442,11 +463,10 @@ fn expand_component(element: Element) -> Result<TokenStream2> {
     }
 
     let props = quote! { #props { #(#component_fields),* } };
-    let start = if let Some(state) = element.state {
-        quote! { #marker::begin(#state, ctx, #props) }
-    } else {
-        quote! { #marker::begin(ctx, #props) }
-    };
+    let start = element.state.map_or_else(
+        || quote! { #marker::begin(ctx, #props) },
+        |state| quote! { #marker::begin(#state, ctx, #props) },
+    );
     expand_block_parts(block_properties, children, start)
 }
 
@@ -484,17 +504,17 @@ fn expand_block_parts(
         if !seen.insert(name.to_string()) {
             return Err(Error::new(name.span(), "duplicate UI property"));
         }
-        builder = match property.value {
-            None => quote! { #builder.#name() },
-            Some(value) => quote! { #builder.#name(#value) },
-        };
+        builder = property.value.map_or_else(
+            || quote! { #builder.#name() },
+            |value| quote! { #builder.#name(#value) },
+        );
     }
 
     if children.is_empty() {
-        Ok(quote! { { #builder.build(); } })
+        Ok(quote! { { let _ = #builder.build(); } })
     } else {
         let children = expand_nodes(children)?;
-        Ok(quote! { { #builder.children(|ctx| { #children }).build(); } })
+        Ok(quote! { { let _ = #builder.children(|ctx| { #children }).build(); } })
     }
 }
 
@@ -517,15 +537,16 @@ struct ComponentArgs {
 impl Parse for ComponentArgs {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let alias = input.parse()?;
-        let mut stateless = false;
-        if input.peek(Token![,]) {
+        let stateless = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
             let option = input.call(Ident::parse_any)?;
             if option != "stateless" {
                 return Err(Error::new(option.span(), "expected `stateless`"));
             }
-            stateless = true;
-        }
+            true
+        } else {
+            false
+        };
         if !input.is_empty() {
             return Err(input.error("unexpected ui_component options"));
         }
@@ -533,6 +554,7 @@ impl Parse for ComponentArgs {
     }
 }
 
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn expand_component_impl(args: ComponentArgs, item: ItemImpl) -> Result<TokenStream2> {
     if !item.generics.params.is_empty() {
         return Err(Error::new_spanned(
@@ -576,7 +598,12 @@ fn expand_component_impl(args: ComponentArgs, item: ItemImpl) -> Result<TokenStr
             "component impl may only contain `ui`; put other methods in inherent impl",
         ));
     }
-    let method = methods[0];
+    let Some(method) = methods.first() else {
+        return Err(Error::new_spanned(
+            &item,
+            "component impl requires exactly one `ui` method",
+        ));
+    };
     if !method.sig.generics.params.is_empty() {
         return Err(Error::new_spanned(
             &method.sig.generics,

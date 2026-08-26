@@ -46,6 +46,7 @@ pub enum EndBehavior {
     Restart,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TimelineViewState {
     pub pixels_per_second: f32,
@@ -97,6 +98,8 @@ impl Default for ProjectBackground {
 }
 
 impl CompositionSettings {
+    /// # Errors
+    /// Returns error when canvas size, frame rate, or background color invalid.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.canvas_size
@@ -400,7 +403,10 @@ impl LayerComposite {
             .evaluate(time)
             .and_then(GpuValue::enum_index)
             .unwrap_or(0) as usize;
-        BlendMode::ALL[index.min(BlendMode::ALL.len() - 1)]
+        BlendMode::ALL
+            .get(index.min(BlendMode::ALL.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(BlendMode::ALL[0])
     }
 
     pub fn alpha_blend_mode(&self, time: f64) -> AlphaBlendMode {
@@ -409,7 +415,10 @@ impl LayerComposite {
             .evaluate(time)
             .and_then(GpuValue::enum_index)
             .unwrap_or(0) as usize;
-        AlphaBlendMode::ALL[index.min(AlphaBlendMode::ALL.len() - 1)]
+        AlphaBlendMode::ALL
+            .get(index.min(AlphaBlendMode::ALL.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(AlphaBlendMode::ALL[0])
     }
 }
 

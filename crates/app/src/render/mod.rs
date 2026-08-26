@@ -1383,7 +1383,7 @@ struct RenderRectIds {
 }
 
 fn build_spacer(ctx: &mut kama_ui::BuildCtx, width: Size, height: Size) {
-    ctx.new().width(width).height(height).build();
+    let _ = ctx.new().width(width).height(height).build();
 }
 
 fn build_full_width_item(
@@ -1393,7 +1393,8 @@ fn build_full_width_item(
     align: Align,
 ) -> BlockId {
     let mut item = BlockId::default();
-    ctx.new()
+    let _ = ctx
+        .new()
         .width(Size::Fill)
         .height(Size::Pixels(height))
         .row()
@@ -1413,7 +1414,8 @@ fn build_full_width_item(
 
 fn build_field_row(ctx: &mut kama_ui::BuildCtx) -> RenderFieldIds {
     let mut field = RenderFieldIds::default();
-    ctx.new()
+    let _ = ctx
+        .new()
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
         .row()
@@ -1438,7 +1440,8 @@ fn build_field_row(ctx: &mut kama_ui::BuildCtx) -> RenderFieldIds {
 
 fn build_two_button_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 2] {
     let mut buttons = [BlockId::default(); 2];
-    ctx.new()
+    let _ = ctx
+        .new()
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
         .row()
@@ -1446,7 +1449,8 @@ fn build_two_button_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 2] {
         .children(|ctx| {
             build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
             build_spacer(ctx, Size::FillPortion(0.42), Size::Fill);
-            ctx.new()
+            let _ = ctx
+                .new()
                 .width(Size::FillPortion(0.58))
                 .height(Size::Fill)
                 .row()
@@ -1475,7 +1479,8 @@ fn build_section(
 ) -> (BlockId, BlockId) {
     let mut header = BlockId::default();
     let mut section_body = BlockId::default();
-    ctx.new()
+    let _ = ctx
+        .new()
         .width(Size::Fill)
         .height(Size::Fit)
         .column()
@@ -1488,7 +1493,8 @@ fn build_section(
                 .height(Size::FitScale(open))
                 .column()
                 .children(|ctx| {
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Fit)
                         .padding(SECTION_CONTENT_PAD)
@@ -1522,14 +1528,16 @@ fn measure_render_rects(
 
                 let (section, section_body) = build_section(ctx, open[0], |ctx| {
                     ids.combos[RenderCombo::Preset as usize] = Some(build_field_row(ctx));
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Pixels(ROW_H))
                         .row()
                         .align_items(Align::Center)
                         .children(|ctx| {
                             build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
-                            ctx.new()
+                            let _ = ctx
+                                .new()
                                 .width(Size::Fill)
                                 .height(Size::Fill)
                                 .row()

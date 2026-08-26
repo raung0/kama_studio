@@ -34,7 +34,7 @@ impl EditResponse {
         changed: false,
     };
 
-    fn changed(changed: bool) -> Self {
+    const fn changed(changed: bool) -> Self {
         Self {
             handled: true,
             changed,
@@ -104,6 +104,7 @@ impl TextEdit {
         edit
     }
 
+    #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -135,7 +136,8 @@ impl TextEdit {
         self.caret = self.caret_target;
     }
 
-    pub fn is_focused(&self) -> bool {
+    #[must_use]
+    pub const fn is_focused(&self) -> bool {
         self.focused
     }
 
@@ -155,6 +157,7 @@ impl TextEdit {
         }
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.focused
             && self
@@ -198,16 +201,16 @@ impl TextEdit {
         };
         let cursor = self.cursor_from_point(rect, point);
         self.editor.set_cursor(cursor);
-        self.editor.set_selection(if cursor != anchor {
-            Selection::Normal(anchor)
-        } else {
+        self.editor.set_selection(if cursor == anchor {
             Selection::None
+        } else {
+            Selection::Normal(anchor)
         });
         self.refresh_caret_target();
         true
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         self.drag.take().is_some()
     }
 
@@ -252,9 +255,10 @@ impl TextEdit {
             }
             Ime::Preedit(text, cursor) => {
                 self.preedit = normalize(text, self.multiline);
-                self.preedit_cursor = cursor
-                    .map(|(start, _)| char_index_at_byte(&self.preedit, start))
-                    .unwrap_or_else(|| self.preedit.chars().count());
+                self.preedit_cursor = cursor.map_or_else(
+                    || self.preedit.chars().count(),
+                    |(start, _)| char_index_at_byte(&self.preedit, start),
+                );
                 self.preedit_layout = None;
                 EditResponse::HANDLED
             }
@@ -558,6 +562,7 @@ impl TextEdit {
         self.editor.set_cursor(end);
     }
 
+    #[must_use]
     pub fn caret_rect(&self, rect: Rect) -> Rect {
         Rect::new(
             rect.x + self.pad() + self.caret[0] - self.scroll[0],
@@ -686,7 +691,7 @@ impl TextEdit {
             buffer
                 .lines
                 .iter()
-                .map(|line| line.text())
+                .map(cosmic_text::BufferLine::text)
                 .collect::<Vec<_>>()
                 .join("\n")
         });
@@ -763,9 +768,9 @@ impl TextEdit {
         let pad = self.pad();
         let line_height = self.line_height();
         let viewport = [
-            (rect.width - pad * 2.0).max(0.0),
+            pad.mul_add(-2.0, rect.width).max(0.0),
             if self.multiline {
-                (rect.height - pad * 2.0).max(0.0)
+                pad.mul_add(-2.0, rect.height).max(0.0)
             } else {
                 rect.height.max(line_height)
             },
@@ -915,7 +920,7 @@ fn end_cursor(buffer: &Buffer) -> Cursor {
     Cursor::new(line, buffer.lines[line].text().len())
 }
 
-fn selection_anchor(selection: Selection) -> Option<Cursor> {
+const fn selection_anchor(selection: Selection) -> Option<Cursor> {
     match selection {
         Selection::Normal(cursor) | Selection::Line(cursor) | Selection::Word(cursor) => {
             Some(cursor)
@@ -972,7 +977,7 @@ fn with_font<T>(f: impl FnOnce(&mut FontSystem) -> T) -> T {
     let mut font = FONT_SYSTEM
         .get_or_init(|| Mutex::new(FontSystem::new()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     f(&mut font)
 }
 

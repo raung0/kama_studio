@@ -16,7 +16,8 @@ pub struct VerticalSlider {
 }
 
 impl VerticalSlider {
-    pub fn new(value: f32) -> Self {
+    #[must_use]
+    pub const fn new(value: f32) -> Self {
         let value = value.clamp(0.0, 1.0);
         Self {
             value,
@@ -25,11 +26,12 @@ impl VerticalSlider {
         }
     }
 
-    pub fn value(&self) -> f32 {
+    #[must_use]
+    pub const fn value(&self) -> f32 {
         self.value
     }
 
-    pub fn set_value(&mut self, value: f32) {
+    pub const fn set_value(&mut self, value: f32) {
         let value = value.clamp(0.0, 1.0);
         self.value = value;
 
@@ -38,7 +40,8 @@ impl VerticalSlider {
         }
     }
 
-    pub fn is_dragging(&self) -> bool {
+    #[must_use]
+    pub const fn is_dragging(&self) -> bool {
         self.drag_track.is_some()
     }
 
@@ -46,6 +49,7 @@ impl VerticalSlider {
         ease(&mut self.shown, self.value, SPEED, dt);
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         (self.shown - self.value).abs() > 0.001
     }
@@ -68,7 +72,7 @@ impl VerticalSlider {
         true
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         self.drag_track.take().is_some()
     }
 
@@ -90,8 +94,8 @@ impl VerticalSlider {
                 }
             }
             Rect(FormatKey::new(format_args!("vertical-slider-thumb {id}")), Rect::new(
-                track.x + TRACK * 0.5 - THUMB_W * 0.5,
-                track.bottom() - fill_height - THUMB_H * 0.5,
+                THUMB_W.mul_add(-0.5, TRACK.mul_add(0.5, track.x)),
+                THUMB_H.mul_add(-0.5, track.bottom() - fill_height),
                 THUMB_W,
                 THUMB_H,
             )) {

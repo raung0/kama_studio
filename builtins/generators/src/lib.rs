@@ -10,6 +10,10 @@ pub extern "C" fn kama_alloc(len: i32) -> i32 {
     Box::into_raw(bytes) as *mut u8 as i32
 }
 
+/// Deallocate buffer previously returned by [`kama_alloc`].
+///
+/// # Safety
+/// `pointer` and `len` must describe allocation returned by `kama_alloc` and must not be reused.
 #[no_mangle]
 pub unsafe extern "C" fn kama_dealloc(pointer: i32, len: i32) {
     if pointer > 0 && len > 0 {

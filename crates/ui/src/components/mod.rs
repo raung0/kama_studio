@@ -34,7 +34,7 @@ pub use toggle_button::ToggleButton;
 pub use vertical_slider::VerticalSlider;
 
 fn ease(value: &mut f32, target: f32, speed: f32, dt: f32) {
-    *value += (target - *value) * (1.0 - (-speed * dt).exp());
+    *value = (target - *value).mul_add(1.0 - (-speed * dt).exp(), *value);
     if (*value - target).abs() < 0.001 {
         *value = target;
     }

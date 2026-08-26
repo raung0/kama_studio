@@ -122,7 +122,11 @@ impl TextureAtlas {
             self.next_x = 1;
             self.next_y = self
                 .next_y
-                .checked_add(self.row_height + 1)
+                .checked_add(
+                    self.row_height
+                        .checked_add(1)
+                        .context("atlas row padding overflow")?,
+                )
                 .context("atlas row position overflow")?;
             self.row_height = 0;
         }
@@ -132,7 +136,10 @@ impl TextureAtlas {
 
         let x = self.next_x;
         let y = self.next_y;
-        self.next_x += padded_width;
+        self.next_x = self
+            .next_x
+            .checked_add(padded_width)
+            .context("atlas column position overflow")?;
         self.row_height = self.row_height.max(height);
 
         self.write(queue, x, y, width, height, pixels);
@@ -185,7 +192,7 @@ impl TextureAtlas {
             pixels,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * self.bytes_per_pixel),
+                bytes_per_row: width.checked_mul(self.bytes_per_pixel),
                 rows_per_image: Some(height),
             },
             wgpu::Extent3d {

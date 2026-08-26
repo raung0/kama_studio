@@ -203,7 +203,8 @@ fn history_lane_x(lane: usize) -> f32 {
 fn history_row_rects(viewport: Rect, count: usize, scroll: ScrollState) -> Vec<Rect> {
     let (ids, measured) = kama_ui::measure_layout(viewport, |ctx| {
         let mut ids = Vec::with_capacity(count);
-        ctx.new()
+        let _ = ctx
+            .new()
             .width(Size::Fill)
             .height(Size::Fill)
             .padding(PAD)

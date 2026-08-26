@@ -778,7 +778,7 @@ impl MonitorState {
                         if let Some(texture) = texture {
                             frame = frame.fill_texture(texture);
                         }
-                        frame.build();
+                        let _ = frame.build();
                     }
                 }
             }

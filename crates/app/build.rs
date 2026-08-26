@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects, clippy::exit)]
+
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -11,85 +13,132 @@ use resvg::{
 
 const ICON_SIZE: u32 = 80;
 fn variant(path: &Path) -> String {
-    path.file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .split('_')
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        eprintln!("invalid icon file name: {}", path.display());
+        std::process::exit(1);
+    };
+    stem.split('_')
         .map(|word| {
             let mut chars = word.chars();
-            chars
-                .next()
-                .unwrap()
-                .to_uppercase()
-                .chain(chars)
-                .collect::<String>()
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            first.to_uppercase().chain(chars).collect::<String>()
         })
         .collect()
 }
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+    if matches!(std::env::var("CARGO_CFG_TARGET_OS"), Ok(value) if value == "windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("icon.ico");
-        res.compile().unwrap();
+        if let Err(error) = res.compile() {
+            eprintln!("windows resource compile failed: {error}");
+            std::process::exit(1);
+        }
     }
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let Some(out_dir_os) = env::var_os("OUT_DIR") else {
+        eprintln!("OUT_DIR missing");
+        std::process::exit(1);
+    };
+    let out_dir = PathBuf::from(out_dir_os);
     println!("cargo:rerun-if-changed=assets");
     embed_builtin_plugin(&out_dir);
-    let mut icons = fs::read_dir("assets")
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "svg"))
-        .collect::<Vec<_>>();
+    let mut icons = match fs::read_dir("assets") {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "svg"))
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            eprintln!("read assets: {error}");
+            std::process::exit(1);
+        }
+    };
     icons.sort();
-    let icon_bytes = ICON_SIZE as usize * ICON_SIZE as usize * 4;
-    let mut atlas = Vec::with_capacity(icon_bytes * icons.len());
+    let icon_bytes = usize::try_from(ICON_SIZE)
+        .ok()
+        .and_then(|size| size.checked_mul(size))
+        .and_then(|size| size.checked_mul(4))
+        .unwrap_or_else(|| {
+            eprintln!("icon size overflow");
+            std::process::exit(1);
+        });
+    let atlas_bytes = icon_bytes.checked_mul(icons.len()).unwrap_or_else(|| {
+        eprintln!("icon atlas size overflow");
+        std::process::exit(1);
+    });
+    let mut atlas = Vec::with_capacity(atlas_bytes);
     let variants = icons
         .iter()
         .map(|path| variant(path))
         .collect::<Vec<_>>()
         .join(",");
-    fs::write(
+    if let Err(error) = fs::write(
         out_dir.join("app_icons.rs"),
         format!(
             "#[allow(dead_code)] #[repr(usize)] #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum AppIcon {{ {variants} }} impl AppIcon {{ const COUNT: usize = {}; }}",
             icons.len()
         ),
-    )
-    .unwrap();
+    ) {
+        eprintln!("write app_icons.rs: {error}");
+        std::process::exit(1);
+    }
 
     for path in icons {
-        let data = fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(error) => {
+                eprintln!("{}: {error}", path.display());
+                std::process::exit(1);
+            }
+        };
         let options = Options::default();
-        let tree = Tree::from_data(&data, &options)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let tree = match Tree::from_data(&data, &options) {
+            Ok(tree) => tree,
+            Err(error) => {
+                eprintln!("{}: {error}", path.display());
+                std::process::exit(1);
+            }
+        };
         let size = tree.size();
         let transform = Transform::from_scale(
             ICON_SIZE as f32 / size.width(),
             ICON_SIZE as f32 / size.height(),
         );
-        let mut pixmap = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
+        let Some(mut pixmap) = Pixmap::new(ICON_SIZE, ICON_SIZE) else {
+            eprintln!("create pixmap for {}", path.display());
+            std::process::exit(1);
+        };
         resvg::render(&tree, transform, &mut pixmap.as_mut());
         for pixel in pixmap.data_mut().chunks_exact_mut(4) {
-            let alpha = u32::from(pixel[3]);
+            let [red, green, blue, alpha] = pixel else {
+                continue;
+            };
+            let alpha = u32::from(*alpha);
             if alpha == 0 {
                 continue;
             }
-            for channel in &mut pixel[..3] {
+            for channel in [red, green, blue] {
                 *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
             }
         }
         atlas.extend_from_slice(pixmap.data());
     }
 
-    fs::write(out_dir.join("icons.rgba"), atlas).unwrap();
+    if let Err(error) = fs::write(out_dir.join("icons.rgba"), atlas) {
+        eprintln!("write icons.rgba: {error}");
+        std::process::exit(1);
+    }
     export_app_version();
 }
 
 fn export_app_version() {
-    let workspace = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../..");
+    let Some(manifest_dir) = env::var_os("CARGO_MANIFEST_DIR") else {
+        eprintln!("CARGO_MANIFEST_DIR missing");
+        std::process::exit(1);
+    };
+    let workspace = PathBuf::from(manifest_dir).join("../..");
     let version_file = workspace.join("VERSION");
     println!("cargo:rerun-if-changed={}", version_file.display());
 
@@ -103,9 +152,11 @@ fn export_app_version() {
 }
 
 fn embed_builtin_plugin(out_dir: &Path) {
-    let source = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
-        .join("../..")
-        .join("builtins");
+    let Some(manifest_dir) = env::var_os("CARGO_MANIFEST_DIR") else {
+        eprintln!("CARGO_MANIFEST_DIR missing");
+        std::process::exit(1);
+    };
+    let source = PathBuf::from(manifest_dir).join("../..").join("builtins");
     emit_rerun_if_changed(&source);
 
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
@@ -120,28 +171,43 @@ fn embed_builtin_plugin(out_dir: &Path) {
     let embedded_root = out_dir.join("embedded-plugins");
     let embedded = embedded_root.join("builtins");
     if embedded_root.exists() {
-        fs::remove_dir_all(&embedded_root).unwrap_or_else(|error| {
-            panic!(
+        if let Err(error) = fs::remove_dir_all(&embedded_root) {
+            eprintln!(
                 "remove stale embedded plugin directory {}: {error}",
                 embedded_root.display()
-            )
-        });
+            );
+            std::process::exit(1);
+        }
     }
-    fs::create_dir_all(&embedded).unwrap_or_else(|error| {
-        panic!(
+    if let Err(error) = fs::create_dir_all(&embedded) {
+        eprintln!(
             "create embedded builtin directory {}: {error}",
             embedded.display()
-        )
-    });
+        );
+        std::process::exit(1);
+    }
 
-    for entry in
-        fs::read_dir(&source).unwrap_or_else(|error| panic!("read {}: {error}", source.display()))
-    {
-        let entry = entry.unwrap();
+    let entries = match fs::read_dir(&source) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("read {}: {error}", source.display());
+            std::process::exit(1);
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!("read {}: {error}", source.display());
+                std::process::exit(1);
+            }
+        };
         let path = entry.path();
         if path.is_file() {
-            fs::copy(&path, embedded.join(entry.file_name()))
-                .unwrap_or_else(|error| panic!("copy builtin asset {}: {error}", path.display()));
+            if let Err(error) = fs::copy(&path, embedded.join(entry.file_name())) {
+                eprintln!("copy builtin asset {}: {error}", path.display());
+                std::process::exit(1);
+            }
         }
     }
 
@@ -161,7 +227,10 @@ fn embed_builtin_plugin(out_dir: &Path) {
             .arg(&target)
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .status()
-            .unwrap_or_else(|error| panic!("launch builtin {crate_name} WASM build: {error}"));
+            .unwrap_or_else(|error| {
+                eprintln!("launch builtin {crate_name} WASM build: {error}");
+                std::process::exit(1);
+            });
         assert!(status.success(),
             "builtin {crate_name} WASM build failed; ensure wasm32-unknown-unknown is installed (the Nix flake includes it)"
         );
@@ -169,8 +238,10 @@ fn embed_builtin_plugin(out_dir: &Path) {
             .join("wasm32-unknown-unknown")
             .join("release")
             .join(artifact);
-        fs::copy(&wasm, embedded.join(embedded_name))
-            .unwrap_or_else(|error| panic!("copy {}: {error}", wasm.display()));
+        if let Err(error) = fs::copy(&wasm, embedded.join(embedded_name)) {
+            eprintln!("copy {}: {error}", wasm.display());
+            std::process::exit(1);
+        }
     }
 }
 
@@ -179,10 +250,21 @@ fn emit_rerun_if_changed(path: &Path) {
         println!("cargo:rerun-if-changed={}", path.display());
         return;
     }
-    for entry in
-        fs::read_dir(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-    {
-        let path = entry.unwrap().path();
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            eprintln!("read {}: {error}", path.display());
+            std::process::exit(1);
+        }
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                eprintln!("read {}: {error}", path.display());
+                std::process::exit(1);
+            }
+        };
 
         if path.is_dir() && path.file_name().is_some_and(|name| name == "target") {
             continue;

@@ -3,6 +3,7 @@ use std::{
     hash::Hash,
 };
 
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 
 pub type PipelineId = u64;
@@ -60,9 +61,9 @@ impl GpuValue {
     #[must_use]
     pub fn numeric_count(self) -> Option<usize> {
         Some(match self {
-            Self::U32(value) | Self::Enum(value) => value as usize,
-            Self::I32(value) => value.max(0) as usize,
-            Self::F32(value) => value.round().max(0.0) as usize,
+            Self::U32(value) | Self::Enum(value) => value.to_usize()?,
+            Self::I32(value) => value.max(0).to_usize()?,
+            Self::F32(value) => value.round().max(0.0).to_usize()?,
             _ => return None,
         })
     }
@@ -115,9 +116,8 @@ impl GpuValue {
         Some(match (self, component) {
             (Self::F32(value), None | Some(0)) => f64::from(value),
             (Self::I32(value), None | Some(0)) => f64::from(value),
-            (Self::U32(value), None | Some(0)) => f64::from(value),
+            (Self::U32(value) | Self::Enum(value), None | Some(0)) => f64::from(value),
             (Self::Bool(value), None | Some(0)) => f64::from(u8::from(value)),
-            (Self::Enum(value), None | Some(0)) => f64::from(value),
             (Self::Vec2(value), Some(component)) => f64::from(*value.get(component)?),
             (Self::Vec3(value), Some(component)) => f64::from(*value.get(component)?),
             (Self::Vec4(value) | Self::Color(value), Some(component)) => {
@@ -131,10 +131,10 @@ impl GpuValue {
     pub fn with_numeric(self, component: Option<usize>, next: f32) -> Option<Self> {
         Some(match (self, component) {
             (Self::F32(_), None | Some(0)) => Self::F32(next),
-            (Self::I32(_), None | Some(0)) => Self::I32(next.round() as i32),
-            (Self::U32(_), None | Some(0)) => Self::U32(next.round().max(0.0) as u32),
+            (Self::I32(_), None | Some(0)) => Self::I32(next.round().to_i32()?),
+            (Self::U32(_), None | Some(0)) => Self::U32(next.round().max(0.0).to_u32()?),
             (Self::Bool(_), None | Some(0)) => Self::Bool(next >= 0.5),
-            (Self::Enum(_), None | Some(0)) => Self::Enum(next.round().max(0.0) as u32),
+            (Self::Enum(_), None | Some(0)) => Self::Enum(next.round().max(0.0).to_u32()?),
             (Self::Vec2(mut values), Some(component)) => {
                 *values.get_mut(component)? = next;
                 Self::Vec2(values)
@@ -178,15 +178,18 @@ impl GpuValue {
                     }
                 }
             }
-            values[component] = next;
+            let Some(value) = values.get_mut(component) else {
+                return false;
+            };
+            *value = next;
             true
         }
 
         Some(match self {
             Self::F32(_) if component == 0 => Self::F32(next),
-            Self::I32(_) if component == 0 => Self::I32(next.round() as i32),
-            Self::U32(_) if component == 0 => Self::U32(next.round().max(0.0) as u32),
-            Self::Enum(_) if component == 0 => Self::Enum(next.round().max(0.0) as u32),
+            Self::I32(_) if component == 0 => Self::I32(next.round().to_i32()?),
+            Self::U32(_) if component == 0 => Self::U32(next.round().max(0.0).to_u32()?),
+            Self::Enum(_) if component == 0 => Self::Enum(next.round().max(0.0).to_u32()?),
             Self::Bool(_) if component == 0 => Self::Bool(next >= 0.5),
             Self::Vec2(mut values) => {
                 update(&mut values, component, next, linked).then_some(())?;
@@ -200,8 +203,8 @@ impl GpuValue {
                 update(&mut values, component, next, linked).then_some(())?;
                 Self::Vec4(values)
             }
-            Self::Color(mut values) if component < 4 => {
-                values[component] = next.clamp(0.0, 1.0);
+            Self::Color(mut values) => {
+                *values.get_mut(component)? = next.clamp(0.0, 1.0);
                 Self::Color(values)
             }
             _ => return None,
@@ -374,8 +377,10 @@ impl<K: TimedKey> KeyTrack<K> {
     }
 
     pub(crate) fn retime(&mut self, index: usize, time: f64) {
-        self.keys[index].set_time(time.max(0.0));
-        self.keys.sort_by(|a, b| a.time().total_cmp(&b.time()));
+        if let Some(key) = self.keys.get_mut(index) {
+            key.set_time(time.max(0.0));
+            self.keys.sort_by(|a, b| a.time().total_cmp(&b.time()));
+        }
     }
 
     pub(crate) fn shift(&mut self, delta: f64) {
@@ -397,6 +402,7 @@ impl<T> TimedKey for AnimatedKey<T> {
 
 #[doc(hidden)]
 pub trait AnimatedValue: Copy {
+    #[must_use]
     fn interpolate(self, other: Self, amount: f32) -> Self;
 }
 
@@ -426,8 +432,8 @@ impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
             return Some(last.value);
         }
         let right = self.keys.partition_point(|key| key.time <= time);
-        let a = &self.keys[right.saturating_sub(1)];
-        let b = &self.keys[right];
+        let a = self.keys.get(right.saturating_sub(1))?;
+        let b = self.keys.get(right)?;
         if a.interpolation == Interpolation::Step || b.time <= a.time {
             return Some(a.value);
         }
@@ -447,8 +453,10 @@ impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
     }
 
     pub fn set_key(&mut self, time: f64, value: T, interpolation: Interpolation) {
-        if let Some(index) = self.key_index(time) {
-            let key = &mut self.keys[index];
+        if let Some(key) = self
+            .key_index(time)
+            .and_then(|index| self.keys.get_mut(index))
+        {
             key.value = value;
             key.interpolation = interpolation;
             return;
@@ -478,7 +486,9 @@ impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
         let Some(index) = self.key_index(time) else {
             return false;
         };
-        let key = &mut self.keys[index];
+        let Some(key) = self.keys.get_mut(index) else {
+            return false;
+        };
         if let Some(value) = next_value {
             key.value = value;
         }
@@ -497,7 +507,9 @@ impl<T: AnimatedValue> KeyTrack<AnimatedKey<T>> {
         let Some(index) = self.key_index(time) else {
             return false;
         };
-        let key = &mut self.keys[index];
+        let Some(key) = self.keys.get_mut(index) else {
+            return false;
+        };
         if incoming {
             key.ease_in = handle.clamped();
             key.custom_ease_in = true;
@@ -560,9 +572,13 @@ fn interpolate(a: GpuValue, b: GpuValue, amount: f32) -> GpuValue {
         (GpuValue::I32(a), GpuValue::I32(b)) => {
             GpuValue::I32(lerp(a as f32, b as f32).round() as i32)
         }
-        (GpuValue::U32(a), GpuValue::U32(b)) => {
-            GpuValue::U32(lerp(a as f32, b as f32).round().max(0.0) as u32)
-        }
+        (GpuValue::U32(a), GpuValue::U32(b)) => GpuValue::U32(
+            lerp(a as f32, b as f32)
+                .round()
+                .max(0.0)
+                .to_u32()
+                .unwrap_or(u32::MAX),
+        ),
         (GpuValue::Vec2(a), GpuValue::Vec2(b)) => {
             GpuValue::Vec2([lerp(a[0], b[0]), lerp(a[1], b[1])])
         }
@@ -582,7 +598,6 @@ fn interpolate(a: GpuValue, b: GpuValue, amount: f32) -> GpuValue {
             lerp(a[3], b[3]),
         ]),
 
-        (GpuValue::Bool(_), GpuValue::Bool(_)) | (GpuValue::Enum(_), GpuValue::Enum(_)) => a,
         _ => a,
     }
 }
@@ -690,11 +705,14 @@ impl Binding {
                 for component in 0..count {
                     let arg = (count > 1).then_some(component);
                     if let Some(next) = value.numeric(arg) {
-                        let interpolation = channels.tracks[component]
+                        let Some(track) = channels.tracks.get_mut(component) else {
+                            continue;
+                        };
+                        let interpolation = track
                             .keys
                             .last()
                             .map_or_else(|| default_interpolation(value), |key| key.interpolation);
-                        channels.tracks[component].set_key(time, next as f32, interpolation);
+                        track.set_key(time, next as f32, interpolation);
                     }
                 }
             }
@@ -745,11 +763,14 @@ impl Binding {
                     }
                     let arg = (count > 1).then_some(index);
                     if let Some(value) = next.numeric(arg) {
-                        let interpolation = channels.tracks[index]
+                        let Some(track) = channels.tracks.get_mut(index) else {
+                            continue;
+                        };
+                        let interpolation = track
                             .keys
                             .last()
                             .map_or_else(|| default_interpolation(next), |key| key.interpolation);
-                        channels.tracks[index].set_key(time, value as f32, interpolation);
+                        track.set_key(time, value as f32, interpolation);
                     }
                 }
                 true
@@ -770,11 +791,9 @@ impl Binding {
                 for component in 0..count {
                     let arg = Some(component);
                     if let Some(next) = value.numeric(arg) {
-                        channels.tracks[component].set_key(
-                            time,
-                            next as f32,
-                            default_interpolation(value),
-                        );
+                        if let Some(track) = channels.tracks.get_mut(component) {
+                            track.set_key(time, next as f32, default_interpolation(value));
+                        }
                     }
                 }
                 *self = Self::Components(channels);
@@ -812,12 +831,10 @@ impl Binding {
                     let count = value.component_count();
                     for component in 0..count {
                         let arg = (count > 1).then_some(component);
-                        if let Some(next) = value.numeric(arg) {
-                            channels.tracks[component].set_key(
-                                time,
-                                next as f32,
-                                default_interpolation(value),
-                            );
+                        if let (Some(next), Some(track)) =
+                            (value.numeric(arg), channels.tracks.get_mut(component))
+                        {
+                            track.set_key(time, next as f32, default_interpolation(value));
                         }
                     }
                 }
@@ -880,21 +897,24 @@ impl Binding {
                 else {
                     return false;
                 };
+                let Some(key) = track.keys.get_mut(index) else {
+                    return false;
+                };
                 if let Some(value) = next_value {
-                    let current = track.keys[index].value;
+                    let current = key.value;
                     let arg = (current.component_count() > 1).then_some(component);
                     let Some(next) = current.with_numeric(arg, value) else {
                         return false;
                     };
-                    track.keys[index].value = next;
+                    key.value = next;
                 }
                 if let Some(interpolation) = interpolation {
-                    track.keys[index].interpolation = interpolation;
-                    track.keys[index].custom_ease_in = false;
-                    track.keys[index].custom_ease_out = false;
+                    key.interpolation = interpolation;
+                    key.custom_ease_in = false;
+                    key.custom_ease_out = false;
                 }
                 if let Some(next_time) = next_time {
-                    track.keys[index].time = next_time.max(0.0);
+                    key.time = next_time.max(0.0);
                     track.keys.sort_by(|a, b| a.time.total_cmp(&b.time));
                 }
                 true
@@ -927,7 +947,9 @@ impl Binding {
                 else {
                     return false;
                 };
-                let key = &mut track.keys[index];
+                let Some(key) = track.keys.get_mut(index) else {
+                    return false;
+                };
                 if incoming {
                     key.ease_in = handle;
                     key.custom_ease_in = true;
@@ -1233,6 +1255,113 @@ pub struct ValueNode {
     pub ui_position: Option<[f32; 2]>,
 }
 
+#[derive(Clone, Copy)]
+enum Shape {
+    Scalar,
+    Vec2,
+    Vec3,
+    Vec4,
+    Color,
+}
+
+const fn lanes(value: GpuValue) -> ([f32; 4], usize, Shape) {
+    match value {
+        GpuValue::F32(value) => ([value, value, value, value], 1, Shape::Scalar),
+        GpuValue::I32(value) => ([value as f32; 4], 1, Shape::Scalar),
+        GpuValue::U32(value) | GpuValue::Enum(value) => ([value as f32; 4], 1, Shape::Scalar),
+        GpuValue::Bool(value) => ([if value { 1.0 } else { 0.0 }; 4], 1, Shape::Scalar),
+        GpuValue::Vec2([x, y]) => ([x, y, 0.0, 0.0], 2, Shape::Vec2),
+        GpuValue::Vec3([x, y, z]) => ([x, y, z, 0.0], 3, Shape::Vec3),
+        GpuValue::Vec4(value) => (value, 4, Shape::Vec4),
+        GpuValue::Color(value) => (value, 4, Shape::Color),
+    }
+}
+
+const fn result_shape(a: GpuValue, b: GpuValue) -> (usize, Shape) {
+    let (_, ac, ashape) = lanes(a);
+    let (_, bc, bshape) = lanes(b);
+    if ac >= bc {
+        (ac, ashape)
+    } else {
+        (bc, bshape)
+    }
+}
+
+const fn from_lanes(values: [f32; 4], count: usize, shape: Shape) -> GpuValue {
+    let [x, y, z, _] = values;
+    match (count, shape) {
+        (1, _) => GpuValue::F32(x),
+        (2, _) => GpuValue::Vec2([x, y]),
+        (3, _) => GpuValue::Vec3([x, y, z]),
+        (4, Shape::Color) => GpuValue::Color(values),
+        _ => GpuValue::Vec4(values),
+    }
+}
+
+fn unary_value(value: GpuValue, op: impl Fn(f32) -> f32) -> GpuValue {
+    let (mut values, count, shape) = lanes(value);
+    for value in values.iter_mut().take(count) {
+        *value = finite_or_zero(op(*value));
+    }
+    from_lanes(values, count, shape)
+}
+
+fn binary_value(a: GpuValue, b: GpuValue, op: impl Fn(f32, f32) -> f32) -> GpuValue {
+    let (av, ac, _) = lanes(a);
+    let (bv, bc, _) = lanes(b);
+    let (count, shape) = result_shape(a, b);
+    let mut result = [0.0; 4];
+    for (index, result) in result.iter_mut().enumerate().take(count) {
+        let a_index = if ac == 1 {
+            0
+        } else {
+            index.min(ac.saturating_sub(1))
+        };
+        let b_index = if bc == 1 {
+            0
+        } else {
+            index.min(bc.saturating_sub(1))
+        };
+        let (Some(&a), Some(&b)) = (av.get(a_index), bv.get(b_index)) else {
+            continue;
+        };
+        *result = finite_or_zero(op(a, b));
+    }
+    from_lanes(result, count, shape)
+}
+
+fn ternary_value(
+    a: GpuValue,
+    b: GpuValue,
+    c: GpuValue,
+    op: impl Fn(f32, f32, f32) -> f32,
+) -> GpuValue {
+    let (ab_count, ab_shape) = result_shape(a, b);
+    let (_, cc, _) = lanes(c);
+    let (count, shape) = if cc > ab_count {
+        let (_, _, cshape) = lanes(c);
+        (cc, cshape)
+    } else {
+        (ab_count, ab_shape)
+    };
+    let (av, ac, _) = lanes(a);
+    let (bv, bc, _) = lanes(b);
+    let (cv, cc, _) = lanes(c);
+    let mut result = [0.0; 4];
+    for (index, result) in result.iter_mut().enumerate().take(count) {
+        let lane = |values: [f32; 4], lanes: usize| {
+            let lane_index = if lanes == 1 {
+                0
+            } else {
+                index.min(lanes.saturating_sub(1))
+            };
+            values.get(lane_index).copied().unwrap_or_default()
+        };
+        *result = finite_or_zero(op(lane(av, ac), lane(bv, bc), lane(cv, cc)));
+    }
+    from_lanes(result, count, shape)
+}
+
 fn evaluate_value_node_in(
     nodes: &HashMap<NodeId, &ValueNode>,
     node: NodeId,
@@ -1282,6 +1411,13 @@ fn evaluate_value_node_in(
                 .unwrap_or(GpuValue::F32(0.0))
         };
         let names = node.kind.input_names();
+        let input_at = |index: usize,
+                        cache: &mut HashMap<NodeId, GpuValue>,
+                        visiting: &mut std::collections::HashSet<NodeId>| {
+            names
+                .get(index)
+                .map_or(GpuValue::F32(0.0), |name| input(name, cache, visiting))
+        };
         let value = match node.kind.operation() {
             ValueNodeOp::Constant => node.value,
             ValueNodeOp::Runtime(source) => GpuValue::F32(match source {
@@ -1295,112 +1431,22 @@ fn evaluate_value_node_in(
                 RuntimeValue::Pi => std::f32::consts::PI,
                 RuntimeValue::Tau => std::f32::consts::TAU,
             }),
-            ValueNodeOp::Unary(op) => unary_value(input(names[0], cache, visiting), op),
+            ValueNodeOp::Unary(op) => unary_value(input_at(0, cache, visiting), op),
             ValueNodeOp::Binary(op) => binary_value(
-                input(names[0], cache, visiting),
-                input(names[1], cache, visiting),
+                input_at(0, cache, visiting),
+                input_at(1, cache, visiting),
                 op,
             ),
             ValueNodeOp::Ternary(op) => ternary_value(
-                input(names[0], cache, visiting),
-                input(names[1], cache, visiting),
-                input(names[2], cache, visiting),
+                input_at(0, cache, visiting),
+                input_at(1, cache, visiting),
+                input_at(2, cache, visiting),
                 op,
             ),
         };
         visiting.remove(&node_id);
         cache.insert(node_id, value);
         Some(value)
-    }
-
-    #[derive(Clone, Copy)]
-    enum Shape {
-        Scalar,
-        Vec2,
-        Vec3,
-        Vec4,
-        Color,
-    }
-
-    const fn lanes(value: GpuValue) -> ([f32; 4], usize, Shape) {
-        match value {
-            GpuValue::F32(value) => ([value, value, value, value], 1, Shape::Scalar),
-            GpuValue::I32(value) => ([value as f32; 4], 1, Shape::Scalar),
-            GpuValue::U32(value) | GpuValue::Enum(value) => ([value as f32; 4], 1, Shape::Scalar),
-            GpuValue::Bool(value) => ([if value { 1.0 } else { 0.0 }; 4], 1, Shape::Scalar),
-            GpuValue::Vec2(value) => ([value[0], value[1], 0.0, 0.0], 2, Shape::Vec2),
-            GpuValue::Vec3(value) => ([value[0], value[1], value[2], 0.0], 3, Shape::Vec3),
-            GpuValue::Vec4(value) => (value, 4, Shape::Vec4),
-            GpuValue::Color(value) => (value, 4, Shape::Color),
-        }
-    }
-
-    const fn result_shape(a: GpuValue, b: GpuValue) -> (usize, Shape) {
-        let (_, ac, ashape) = lanes(a);
-        let (_, bc, bshape) = lanes(b);
-        if ac >= bc {
-            (ac, ashape)
-        } else {
-            (bc, bshape)
-        }
-    }
-
-    const fn from_lanes(values: [f32; 4], count: usize, shape: Shape) -> GpuValue {
-        match (count, shape) {
-            (1, _) => GpuValue::F32(values[0]),
-            (2, _) => GpuValue::Vec2([values[0], values[1]]),
-            (3, _) => GpuValue::Vec3([values[0], values[1], values[2]]),
-            (4, Shape::Color) => GpuValue::Color(values),
-            _ => GpuValue::Vec4(values),
-        }
-    }
-
-    fn unary_value(value: GpuValue, op: impl Fn(f32) -> f32) -> GpuValue {
-        let (mut values, count, shape) = lanes(value);
-        for value in values.iter_mut().take(count) {
-            *value = finite_or_zero(op(*value));
-        }
-        from_lanes(values, count, shape)
-    }
-
-    fn binary_value(a: GpuValue, b: GpuValue, op: impl Fn(f32, f32) -> f32) -> GpuValue {
-        let (av, ac, _) = lanes(a);
-        let (bv, bc, _) = lanes(b);
-        let (count, shape) = result_shape(a, b);
-        let mut result = [0.0; 4];
-        for index in 0..count {
-            let a = av[if ac == 1 { 0 } else { index.min(ac - 1) }];
-            let b = bv[if bc == 1 { 0 } else { index.min(bc - 1) }];
-            result[index] = finite_or_zero(op(a, b));
-        }
-        from_lanes(result, count, shape)
-    }
-
-    fn ternary_value(
-        a: GpuValue,
-        b: GpuValue,
-        c: GpuValue,
-        op: impl Fn(f32, f32, f32) -> f32,
-    ) -> GpuValue {
-        let (ab_count, ab_shape) = result_shape(a, b);
-        let (_, cc, _) = lanes(c);
-        let (count, shape) = if cc > ab_count {
-            let (_, _, cshape) = lanes(c);
-            (cc, cshape)
-        } else {
-            (ab_count, ab_shape)
-        };
-        let (av, ac, _) = lanes(a);
-        let (bv, bc, _) = lanes(b);
-        let (cv, cc, _) = lanes(c);
-        let mut result = [0.0; 4];
-        for index in 0..count {
-            let lane = |values: [f32; 4], lanes: usize| {
-                values[if lanes == 1 { 0 } else { index.min(lanes - 1) }]
-            };
-            result[index] = finite_or_zero(op(lane(av, ac), lane(bv, bc), lane(cv, cc)));
-        }
-        from_lanes(result, count, shape)
     }
 
     resolve_node(node, nodes, context, cache, visiting)
@@ -1514,7 +1560,9 @@ impl<'a, N: DependencyNode> DependencyGraph<'a, N> {
 
     #[must_use]
     pub fn node(&self, id: NodeId) -> Option<&'a N> {
-        self.indices.get(&id).map(|&index| &self.nodes[index])
+        self.indices
+            .get(&id)
+            .and_then(|&index| self.nodes.get(index))
     }
 
     #[must_use]
@@ -1525,7 +1573,10 @@ impl<'a, N: DependencyNode> DependencyGraph<'a, N> {
             if let Some(node) = seen.insert(id).then(|| self.node(id)).flatten() {
                 let previous = stack.len();
                 node.push_dependencies(&mut stack);
-                if stack[previous..].contains(&target) {
+                if stack
+                    .get(previous..)
+                    .is_some_and(|dependencies| dependencies.contains(&target))
+                {
                     return true;
                 }
             }
@@ -1586,8 +1637,10 @@ impl<'a> DependencyGraph<'a, EffectNode> {
             let Some(&position) = index.indices.get(&id) else {
                 return;
             };
-            if let Some(source) = index.nodes[position]
-                .stack_image_input()
+            if let Some(source) = index
+                .nodes
+                .get(position)
+                .and_then(EffectNode::stack_image_input)
                 .and_then(|(_, binding)| image_source(binding))
             {
                 visit(index, source, seen, out);

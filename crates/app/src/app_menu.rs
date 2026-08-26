@@ -192,13 +192,15 @@ pub(super) fn app_menu_button_rects() -> [Rect; APP_MENU_SECTIONS.len()] {
     let viewport = Rect::new(0.0, 0.0, widths.iter().sum::<f32>() + 6.0, APP_MENU_HEIGHT);
     let (ids, measured) = ui::measure_layout(viewport, |ctx| {
         let mut ids = [ui::BlockId(0); APP_MENU_SECTIONS.len()];
-        ctx.new()
+        let _ = ctx
+            .new()
             .row()
             .width(Size::Fill)
             .height(Size::Fill)
             .padding(2.0)
             .children(|ctx| {
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(Size::Pixels(2.0))
                     .height(Size::Fill)
                     .build();
@@ -437,15 +439,15 @@ pub(super) fn build_item<K: Hash>(
         .border_radius(RADIUS_SM).padding(APP_MENU_ITEM_PADDING).gap(7.0).interactive_if(enabled)
         .cursor(if enabled { CursorShape::Pointer } else { CursorShape::Passthrough })
         .children(|ctx| {
-            ctx.new().width(Size::Pixels(20.0)).height(Size::Fill).content_centered().children(|ctx| {
+            let _ = ctx.new().width(Size::Pixels(20.0)).height(Size::Fill).content_centered().children(|ctx| {
                 if let Some(icon) = icon {
                     ui::ui!(ctx, { Icon { icon!: icons.get(icon); color!: muted; width: Size::Pixels(20.0); height: Size::Pixels(20.0); } });
                 }
             }).build();
-            ctx.new().width(Size::Fill).height(Size::Fill).font_size(font_size).text_color(foreground)
+            let _ = ctx.new().width(Size::Fill).height(Size::Fill).font_size(font_size).text_color(foreground)
                 .text_vertical_align(ui::Align::Center).text(label).build();
             if let Some(shortcut) = shortcut {
-                ctx.new().width(Size::Pixels(76.0)).height(Size::Fill).font_size((font_size - 1.0).max(8.0))
+                let _ = ctx.new().width(Size::Pixels(76.0)).height(Size::Fill).font_size((font_size - 1.0).max(8.0))
                     .text_color(muted).text_align(ui::Align::End).text_vertical_align(ui::Align::Center)
                     .text(shortcut).build();
             }
@@ -1305,7 +1307,8 @@ pub(super) fn build_app_menu(
     let help_open = state.is_help();
     let recent_open = matches!(state, AppMenuState::File { recent: true });
     let delete_layout_open = matches!(state, AppMenuState::Layout { delete: true });
-    ctx.new()
+    let _ = ctx
+        .new()
         .id("app-menu-bar")
         .overlay()
         .position((0.0, 0.0))
@@ -1562,7 +1565,7 @@ pub(super) fn build_app_menu(
                 help_menu_item_rect(index),
                 cursor,
                 keyboard.active && keyboard.item == index,
-                command.label,
+                &i18n::text(command.label_key),
                 shortcut.as_deref(),
                 icon,
                 true,

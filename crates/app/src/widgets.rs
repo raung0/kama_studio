@@ -180,7 +180,8 @@ struct GalleryFieldIds {
 fn gallery_field(ctx: &mut ui::BuildCtx, height: f32, control_width: Size) -> GalleryFieldIds {
     let mut ids = None;
     let flexible = matches!(control_width, Size::Fill);
-    ctx.new()
+    let _ = ctx
+        .new()
         .row()
         .width(Size::Fill)
         .height(Size::Pixels(height))
@@ -248,7 +249,8 @@ impl GalleryRects {
                     color = Some(gallery_field(ctx, ROW_H, Size::Fill));
 
                     let mut button_ids = None;
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .row()
                         .width(Size::Fill)
                         .height(Size::Pixels(ROW_H))
@@ -283,13 +285,15 @@ impl GalleryRects {
                     toggle = Some(gallery_field(ctx, ROW_H, Size::Pixels(112.0)));
                     combo = Some(gallery_field(ctx, ROW_H, Size::Pixels(220.0)));
                     accordion = Some(gallery_field(ctx, ROW_H, Size::Fill));
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .row()
                         .width(Size::Fill)
                         .height(Size::FitScale(accordion_open))
                         .gap(FORM_GAP)
                         .children(|ctx| {
-                            ctx.new()
+                            let _ = ctx
+                                .new()
                                 .width(Size::FillPortion(0.32))
                                 .height(Size::Fill)
                                 .build();
@@ -298,7 +302,8 @@ impl GalleryRects {
                                 .width(Size::FillPortion(0.68))
                                 .height(Size::Fill)
                                 .children(|ctx| {
-                                    ctx.new()
+                                    let _ = ctx
+                                        .new()
                                         .width(Size::Fill)
                                         .height(Size::Pixels(ACCORDION_BODY_H))
                                         .build();

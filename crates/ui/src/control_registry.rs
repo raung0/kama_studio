@@ -128,6 +128,7 @@ impl<K: Eq + Hash, C> ControlRegistry<K, C> {
 }
 
 impl<K: Clone + Eq + Hash, C> ControlRegistry<K, C> {
+    #[must_use]
     pub fn target_at(&self, panel: Rect, point: [f32; 2]) -> Option<K> {
         self.iter().find_map(|(target, _, local)| {
             let local = local?;
@@ -166,12 +167,14 @@ impl<K: Eq + Hash, C: AnimatedControl> ControlRegistry<K, C> {
         }
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.iter().any(|(_, control, _)| control.is_animating())
     }
 }
 
 impl<K: Eq + Hash, C: DragControl> ControlRegistry<K, C> {
+    #[must_use]
     pub fn is_dragging(&self) -> bool {
         self.iter().any(|(_, control, _)| control.is_dragging())
     }

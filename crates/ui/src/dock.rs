@@ -44,7 +44,7 @@ pub enum DropZone {
 }
 
 impl DropZone {
-    fn split(self) -> Option<(Axis, bool)> {
+    const fn split(self) -> Option<(Axis, bool)> {
         match self {
             Self::Left => Some((Axis::Horizontal, true)),
             Self::Right => Some((Axis::Horizontal, false)),
@@ -68,6 +68,7 @@ pub struct DockTransfer {
 }
 
 impl DockTransfer {
+    #[must_use]
     pub fn into_layout_spec(self) -> DockLayoutSpec {
         DockLayoutSpec::StackActive {
             titles: self.titles,
@@ -84,7 +85,7 @@ pub struct Stack {
 }
 
 impl Stack {
-    fn empty(id: StackId) -> Self {
+    const fn empty(id: StackId) -> Self {
         Self {
             id,
             tabs: Vec::new(),
@@ -106,12 +107,13 @@ impl Stack {
         self.active = index;
     }
 
-    fn append(&mut self, source: Stack) {
+    fn append(&mut self, source: Self) {
         let base = self.tabs.len();
         self.active = base + source.active.min(source.tabs.len().saturating_sub(1));
         self.tabs.extend(source.tabs);
     }
 
+    #[must_use]
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs
             .get(self.active.min(self.tabs.len().saturating_sub(1)))
@@ -124,8 +126,8 @@ pub enum DockNode {
         id: SplitId,
         axis: Axis,
         ratio: f32,
-        first: Box<DockNode>,
-        second: Box<DockNode>,
+        first: Box<Self>,
+        second: Box<Self>,
     },
     Stack(Stack),
 }
@@ -140,8 +142,8 @@ pub enum DockLayoutSpec {
     Split {
         axis: Axis,
         ratio: f32,
-        first: Box<DockLayoutSpec>,
-        second: Box<DockLayoutSpec>,
+        first: Box<Self>,
+        second: Box<Self>,
     },
 }
 
@@ -150,6 +152,7 @@ impl DockLayoutSpec {
         Self::Stack(vec![title.into()])
     }
 
+    #[must_use]
     pub fn split(axis: Axis, ratio: f32, first: Self, second: Self) -> Self {
         Self::Split {
             axis,
@@ -198,6 +201,7 @@ pub struct LayoutSnapshot {
 }
 
 impl LayoutSnapshot {
+    #[must_use]
     pub fn stack_at(&self, point: [f32; 2]) -> Option<&StackLayout> {
         self.stacks
             .iter()
@@ -205,6 +209,7 @@ impl LayoutSnapshot {
             .find(|stack| stack.rect.contains(point))
     }
 
+    #[must_use]
     pub fn content_at(&self, point: [f32; 2]) -> Option<&StackLayout> {
         self.stacks
             .iter()
@@ -212,6 +217,7 @@ impl LayoutSnapshot {
             .find(|stack| stack.content.contains(point))
     }
 
+    #[must_use]
     pub fn tab_at(&self, point: [f32; 2]) -> Option<TabHit> {
         self.tabs.iter().copied().rev().find(|tab| {
             !tab.closing
@@ -222,6 +228,7 @@ impl LayoutSnapshot {
         })
     }
 
+    #[must_use]
     pub fn splitter_at(&self, point: [f32; 2]) -> Option<SplitterLayout> {
         self.splitters
             .iter()
@@ -230,6 +237,7 @@ impl LayoutSnapshot {
             .find(|splitter| splitter.rect.contains(point))
     }
 
+    #[must_use]
     pub fn plus_at(&self, point: [f32; 2]) -> Option<&StackLayout> {
         self.stacks
             .iter()
@@ -237,6 +245,7 @@ impl LayoutSnapshot {
             .find(|stack| stack.tab_viewport.contains(point) && stack.plus_rect.contains(point))
     }
 
+    #[must_use]
     pub fn maximize_at(&self, point: [f32; 2]) -> Option<&StackLayout> {
         self.stacks
             .iter()
@@ -244,6 +253,7 @@ impl LayoutSnapshot {
             .find(|stack| stack.maximize_rect.width > 0.0 && stack.maximize_rect.contains(point))
     }
 
+    #[must_use]
     pub fn stack(&self, id: StackId) -> Option<&StackLayout> {
         self.stacks.iter().find(|stack| stack.stack.id == id)
     }
@@ -273,6 +283,7 @@ pub struct DockState {
 }
 
 impl DockState {
+    #[must_use]
     pub fn from_spec(spec: DockLayoutSpec) -> Self {
         let mut state = Self {
             root: DockNode::Stack(Stack::empty(StackId(0))),
@@ -326,6 +337,7 @@ impl DockState {
         }
     }
 
+    #[must_use]
     pub fn layout_spec(&self) -> DockLayoutSpec {
         fn snapshot(node: &DockNode) -> DockLayoutSpec {
             match node {
@@ -374,13 +386,13 @@ impl DockState {
         state
     }
 
-    fn alloc_id(&mut self) -> u64 {
+    const fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
-    fn tab(&mut self, title: String) -> Tab {
+    const fn tab(&mut self, title: String) -> Tab {
         Tab {
             id: TabId(self.alloc_id()),
             title,
@@ -428,7 +440,7 @@ impl DockState {
                     None
                 } else {
                     let t = t.clamp(0.0, 1.0);
-                    Some((motion, t * t * (3.0 - 2.0 * t)))
+                    Some((motion, t * t * 2.0f32.mul_add(-t, 3.0)))
                 }
             }
         } else {
@@ -501,10 +513,12 @@ impl DockState {
         true
     }
 
-    pub fn maximized_stack(&self) -> Option<StackId> {
+    #[must_use]
+    pub const fn maximized_stack(&self) -> Option<StackId> {
         self.maximized
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.layout_animating
             || self.maximize_motion.is_some()
@@ -538,6 +552,7 @@ impl DockState {
         Some(id)
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         node_counts(&self.root).0 == 0
     }
@@ -726,7 +741,7 @@ impl DockState {
             Axis::Vertical => (cursor[1], parent_rect.y, parent_rect.height),
         };
         let usable = (size - SPLITTER_SIZE).max(1.0);
-        let raw = (cursor - origin - SPLITTER_SIZE * 0.5) / usable;
+        let raw = SPLITTER_SIZE.mul_add(-0.5, cursor - origin) / usable;
         let min_ratio = (MIN_PANEL_SIZE / usable).min(0.45);
         *ratio = raw.clamp(min_ratio, 1.0 - min_ratio);
     }
@@ -892,7 +907,7 @@ fn layout_node(
                 let t = (context.now.duration_since(started).as_secs_f32()
                     / SPLIT_COLLAPSE_DURATION.as_secs_f32())
                 .clamp(0.0, 1.0);
-                let eased = t * t * (3.0 - 2.0 * t);
+                let eased = t * t * 2.0f32.mul_add(-t, 3.0);
                 *context.animating |= t < 1.0;
                 let (first_rect, _, second_rect) =
                     split_rects(rect, *axis, ratio.clamp(0.05, 0.95));
@@ -966,7 +981,8 @@ fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
     let ((tab_bar, content), measured) = crate::measure_layout(rect, |ctx| {
         let mut tab_bar = crate::BlockId(0);
         let mut content = crate::BlockId(0);
-        ctx.new()
+        let _ = ctx
+            .new()
             .column()
             .width(crate::Size::Fill)
             .height(crate::Size::Fill)
@@ -976,7 +992,8 @@ fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
                     .width(crate::Size::Fill)
                     .height(crate::Size::Pixels(TAB_BAR_HEIGHT))
                     .build();
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(crate::Size::Fill)
                     .height(crate::Size::Pixels(TAB_SEPARATOR_HEIGHT))
                     .build();
@@ -993,7 +1010,8 @@ fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
     let content = measured.rect(content).expect("dock content layout");
     let (viewport, measured) = crate::measure_layout(tab_bar, |ctx| {
         let mut viewport = crate::BlockId(0);
-        ctx.new()
+        let _ = ctx
+            .new()
             .row()
             .width(crate::Size::Fill)
             .height(crate::Size::Fill)
@@ -1003,7 +1021,8 @@ fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
                     .width(crate::Size::Fill)
                     .height(crate::Size::Fill)
                     .build();
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(crate::Size::Pixels(if show_maximize { 29.0 } else { 2.0 }))
                     .height(crate::Size::Fill)
                     .build();
@@ -1023,23 +1042,27 @@ fn tab_strip_layout(tab_bar: Rect, widths: &[f32], scroll: f32) -> (Vec<Rect>, R
         let mut tabs = Vec::with_capacity(widths.len());
         let mut plus = crate::BlockId(0);
         let mut trailing = crate::BlockId(0);
-        ctx.new()
+        let _ = ctx
+            .new()
             .column()
             .width(crate::Size::Fill)
             .height(crate::Size::Fill)
             .children(|ctx| {
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(crate::Size::Fill)
                     .height(crate::Size::Pixels(TAB_BAR_TOP_PADDING))
                     .build();
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .row()
                     .width(crate::Size::Fill)
                     .height(crate::Size::Fill)
                     .horizontal_scroll(crate::ScrollState { offset: scroll })
                     .align_items(crate::Align::Start)
                     .children(|ctx| {
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(crate::Size::Pixels(TAB_BAR_LEFT_PADDING))
                             .height(crate::Size::Fill)
                             .build();
@@ -1051,13 +1074,15 @@ fn tab_strip_layout(tab_bar: Rect, widths: &[f32], scroll: f32) -> (Vec<Rect>, R
                                     .build(),
                             );
                             if index + 1 < widths.len() {
-                                ctx.new()
+                                let _ = ctx
+                                    .new()
                                     .width(crate::Size::Pixels(1.0))
                                     .height(crate::Size::Fill)
                                     .build();
                             }
                         }
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(crate::Size::Pixels(2.0))
                             .height(crate::Size::Fill)
                             .build();
@@ -1093,12 +1118,14 @@ fn maximize_rect(tab_bar: Rect, visible: bool) -> Rect {
     let ((button, _), measured) = crate::measure_layout(tab_bar, |ctx| {
         let mut button = crate::BlockId(0);
         let mut row = crate::BlockId(0);
-        ctx.new()
+        let _ = ctx
+            .new()
             .column()
             .width(crate::Size::Fill)
             .height(crate::Size::Fill)
             .children(|ctx| {
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(crate::Size::Fill)
                     .height(crate::Size::Pixels(TAB_BAR_TOP_PADDING))
                     .build();
@@ -1110,7 +1137,8 @@ fn maximize_rect(tab_bar: Rect, visible: bool) -> Rect {
                         TAB_BAR_HEIGHT - TAB_BAR_TOP_PADDING - 2.0,
                     ))
                     .children(|ctx| {
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(crate::Size::Fill)
                             .height(crate::Size::Fill)
                             .build();
@@ -1119,13 +1147,15 @@ fn maximize_rect(tab_bar: Rect, visible: bool) -> Rect {
                             .width(crate::Size::Pixels(23.0))
                             .height(crate::Size::Fill)
                             .build();
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .width(crate::Size::Pixels(4.0))
                             .height(crate::Size::Fill)
                             .build();
                     })
                     .build();
-                ctx.new()
+                let _ = ctx
+                    .new()
                     .width(crate::Size::Fill)
                     .height(crate::Size::Pixels(2.0))
                     .build();
@@ -1141,15 +1171,18 @@ fn maximize_rect(tab_bar: Rect, visible: bool) -> Rect {
 }
 
 fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
-    let (tab_bar, content, tab_viewport) = stack_regions(rect, context.show_maximize);
+    let (tab_bar, content_rect, tab_viewport) = stack_regions(rect, context.show_maximize);
 
     let mut widths = Vec::with_capacity(stack.tabs.len());
-    for tab in &stack.tabs {
-        let target = (context.measure_tab)(&tab.title) + TAB_CONTENT_CHROME_WIDTH;
-        let width = context.tab_widths.entry(tab.id).or_insert(target);
-        *width += (target - *width) * 0.24;
-        *context.animating |= (*width - target).abs() > 0.1;
-        widths.push(*width);
+    for tab_item in &stack.tabs {
+        let desired_width = (context.measure_tab)(&tab_item.title) + TAB_CONTENT_CHROME_WIDTH;
+        let current_width = context
+            .tab_widths
+            .entry(tab_item.id)
+            .or_insert(desired_width);
+        *current_width = (desired_width - *current_width).mul_add(0.24, *current_width);
+        *context.animating |= (*current_width - desired_width).abs() > 0.1;
+        widths.push(*current_width);
     }
     let (_, _, strip_width) = tab_strip_layout(tab_bar, &widths, 0.0);
     let max_scroll = (strip_width - tab_viewport.width).max(0.0);
@@ -1177,11 +1210,11 @@ fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
 
         let target_offset = target_rect.x - tab_bar.x;
         let animated_offset = context.tab_offsets.entry(tab.id).or_insert(target_offset);
-        *animated_offset += (target_offset - *animated_offset) * 0.22;
+        *animated_offset = (target_offset - *animated_offset).mul_add(0.22, *animated_offset);
         *context.animating |= (*animated_offset - target_offset).abs() > 0.1;
         let tab_rect = Rect::new(
             tab_bar.x + *animated_offset,
-            target_rect.y + (1.0 - open_eased) * 12.0 + close_eased * 16.0,
+            (1.0 - open_eased).mul_add(12.0, target_rect.y) + close_eased * 16.0,
             actual,
             target_rect.height,
         );
@@ -1197,7 +1230,7 @@ fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
 
     let plus_target = plus_target_rect.x - tab_bar.x;
     let plus_offset = context.plus_offsets.entry(stack.id).or_insert(plus_target);
-    *plus_offset += (plus_target - *plus_offset) * 0.22;
+    *plus_offset = (plus_target - *plus_offset).mul_add(0.22, *plus_offset);
     *context.animating |= (*plus_offset - plus_target).abs() > 0.1;
     let plus_rect = Rect {
         x: tab_bar.x + *plus_offset,
@@ -1208,7 +1241,7 @@ fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
         rect,
         tab_bar,
         tab_viewport,
-        content,
+        content: content_rect,
         plus_rect,
         maximize_rect: maximize_rect(tab_bar, context.show_maximize),
     });
@@ -1385,6 +1418,7 @@ fn replace_stack_with_split(
     Ok(())
 }
 
+#[must_use]
 pub fn drop_zone(rect: Rect, point: [f32; 2]) -> DropZone {
     let local_x = (point[0] - rect.x) / rect.width.max(1.0);
     let local_y = (point[1] - rect.y) / rect.height.max(1.0);
@@ -1402,6 +1436,7 @@ pub fn drop_zone(rect: Rect, point: [f32; 2]) -> DropZone {
     }
 }
 
+#[must_use]
 pub fn drop_preview(rect: Rect, zone: DropZone) -> Rect {
     if zone == DropZone::Center {
         return rect.inset(6.0);
@@ -1410,12 +1445,12 @@ pub fn drop_preview(rect: Rect, zone: DropZone) -> Rect {
     match zone {
         DropZone::Left => preview.width *= 0.5,
         DropZone::Right => {
-            preview.x += preview.width * 0.5;
+            preview.x = preview.width.mul_add(0.5, preview.x);
             preview.width *= 0.5;
         }
         DropZone::Top => preview.height *= 0.5,
         DropZone::Bottom => {
-            preview.y += preview.height * 0.5;
+            preview.y = preview.height.mul_add(0.5, preview.y);
             preview.height *= 0.5;
         }
         DropZone::Center => unreachable!(),
@@ -1423,6 +1458,7 @@ pub fn drop_preview(rect: Rect, zone: DropZone) -> Rect {
     preview.inset(4.0)
 }
 
+#[must_use]
 pub fn insertion_index(
     snapshot: &LayoutSnapshot,
     stack_id: StackId,
@@ -1436,7 +1472,7 @@ pub fn insertion_index(
         .collect();
     tabs.sort_by(|a, b| a.rect.x.total_cmp(&b.rect.x));
     for (index, tab) in tabs.iter().enumerate() {
-        if cursor_x < tab.rect.x + tab.rect.width * 0.5 {
+        if cursor_x < tab.rect.width.mul_add(0.5, tab.rect.x) {
             return index;
         }
     }
@@ -1473,8 +1509,8 @@ mod tests {
         let snapshot = dock.layout(Rect::new(0.0, 0.0, 500.0, 300.0));
         let tab = snapshot.tabs[0];
         let point = [
-            tab.rect.x + tab.rect.width * 0.5,
-            tab.rect.y + tab.rect.height * 0.5,
+            tab.rect.width.mul_add(0.5, tab.rect.x),
+            tab.rect.height.mul_add(0.5, tab.rect.y),
         ];
         assert!(snapshot.stack_at(point).is_some());
         assert!(snapshot.content_at(point).is_none());

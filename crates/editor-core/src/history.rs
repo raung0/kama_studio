@@ -95,15 +95,18 @@ impl<S: Clone> HistoryGraph<S> {
 
         let label = label.into();
         let now = Instant::now();
+        let current_node = self.nodes.get(self.current);
         let can_coalesce = coalesce
             && self.current != 0
-            && self.nodes[self.current].children.is_empty()
-            && self.nodes[self.current].label == label
+            && current_node.is_some_and(|node| node.children.is_empty() && node.label == label)
             && self.last_coalesce.as_ref().is_some_and(|(last, at)| {
                 last == &label && now.saturating_duration_since(*at) <= COALESCE_WINDOW
             });
         if can_coalesce {
-            self.nodes[self.current].snapshot = after;
+            let Some(current_node) = self.nodes.get_mut(self.current) else {
+                return false;
+            };
+            current_node.snapshot = after;
             self.last_coalesce = Some((label, now));
             self.bump_revision();
             return true;
@@ -119,9 +122,12 @@ impl<S: Clone> HistoryGraph<S> {
             preferred_child: None,
             snapshot: after,
         });
-        self.next_id += 1;
-        self.nodes[parent].children.push(index);
-        self.nodes[parent].preferred_child = Some(index);
+        self.next_id = self.next_id.saturating_add(1);
+        let Some(parent_node) = self.nodes.get_mut(parent) else {
+            return false;
+        };
+        parent_node.children.push(index);
+        parent_node.preferred_child = Some(index);
         self.current = index;
         self.last_coalesce = coalesce.then_some((label, now));
         self.bump_revision();
@@ -131,7 +137,7 @@ impl<S: Clone> HistoryGraph<S> {
     pub fn undo(&mut self) -> Option<S> {
         let child = self.current;
         let parent = self.nodes.get(child)?.parent?;
-        self.nodes[parent].preferred_child = Some(child);
+        self.nodes.get_mut(parent)?.preferred_child = Some(child);
         self.select(parent)
     }
 
@@ -146,8 +152,8 @@ impl<S: Clone> HistoryGraph<S> {
             self.bump_revision();
         }
         let mut child = index;
-        while let Some(parent) = self.nodes[child].parent {
-            self.nodes[parent].preferred_child = Some(child);
+        while let Some(parent) = self.nodes.get(child)?.parent {
+            self.nodes.get_mut(parent)?.preferred_child = Some(child);
             child = parent;
         }
         self.current = index;

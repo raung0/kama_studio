@@ -47,6 +47,7 @@ impl std::fmt::Debug for Knob {
 }
 
 impl Knob {
+    #[must_use]
     pub fn new(minimum: f64, maximum: f64, default: f64) -> Self {
         let (minimum, maximum) = ordered_bounds(minimum, maximum);
         let value = default.clamp(minimum, maximum);
@@ -66,19 +67,23 @@ impl Knob {
         }
     }
 
-    pub fn step(mut self, step: f64) -> Self {
+    #[must_use]
+    pub const fn step(mut self, step: f64) -> Self {
         self.step = step.max(0.0);
         self
     }
-    pub fn precision(mut self, precision: usize) -> Self {
+    #[must_use]
+    pub const fn precision(mut self, precision: usize) -> Self {
         self.precision = precision;
         self
     }
-    pub fn sensitivity(mut self, units_per_pixel: f64) -> Self {
+    #[must_use]
+    pub const fn sensitivity(mut self, units_per_pixel: f64) -> Self {
         self.units_per_pixel = units_per_pixel.max(f64::EPSILON);
         self
     }
-    pub fn circular(mut self) -> Self {
+    #[must_use]
+    pub const fn circular(mut self) -> Self {
         self.circular = true;
         self
     }
@@ -90,10 +95,12 @@ impl Knob {
         self
     }
 
-    pub fn value(&self) -> f64 {
+    #[must_use]
+    pub const fn value(&self) -> f64 {
         self.value
     }
-    pub fn is_dragging(&self) -> bool {
+    #[must_use]
+    pub const fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
     pub fn set_value(&mut self, value: f64) {
@@ -109,6 +116,7 @@ impl Knob {
         );
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         (self.shown - normalized(self.value, self.minimum, self.maximum)).abs() > 0.001
     }
@@ -129,7 +137,10 @@ impl Knob {
         }
         self.last_click = Some(now);
         self.drag = Some(if self.circular {
-            let center = [rect.x + rect.width * 0.5, rect.y + rect.height * 0.5];
+            let center = [
+                rect.width.mul_add(0.5, rect.x),
+                rect.height.mul_add(0.5, rect.y),
+            ];
             KnobDrag::Circular {
                 center,
                 last_angle: pointer_angle(center, point),
@@ -148,7 +159,8 @@ impl Knob {
             KnobDrag::Linear {
                 start_y,
                 start_value,
-            } => self.quantize(start_value + (start_y - point[1]) as f64 * self.units_per_pixel),
+            } => self
+                .quantize(f64::from(start_y - point[1]).mul_add(self.units_per_pixel, start_value)),
             KnobDrag::Circular { center, last_angle } => {
                 let angle = pointer_angle(center, point);
                 let delta = wrap_radians(angle - last_angle).to_degrees();
@@ -166,7 +178,7 @@ impl Knob {
         Some(next)
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         self.drag.take().is_some()
     }
 
@@ -182,18 +194,21 @@ impl Knob {
                 .build()
         });
         let dial = measured.rect(dial).expect("knob dial layout");
-        let center = [dial.x + dial.width * 0.5, dial.y + dial.height * 0.5];
+        let center = [
+            dial.width.mul_add(0.5, dial.x),
+            dial.height.mul_add(0.5, dial.y),
+        ];
         let angle = if self.circular {
             ((self.value.rem_euclid(360.0) - 90.0).to_radians()) as f32
         } else {
             let start = -std::f32::consts::PI * 1.25;
-            start + self.shown.clamp(0.0, 1.0) * std::f32::consts::PI * 1.5
+            (self.shown.clamp(0.0, 1.0) * std::f32::consts::PI).mul_add(1.5, start)
         };
         let radius = dial_size * 0.34;
         let indicator_size = 2.0 * ui_scale;
         let indicator = Rect::new(
-            center[0] + angle.cos() * radius - indicator_size * 0.5,
-            center[1] + angle.sin() * radius - indicator_size * 0.5,
+            angle.cos().mul_add(radius, center[0]) - indicator_size * 0.5,
+            angle.sin().mul_add(radius, center[1]) - indicator_size * 0.5,
             indicator_size,
             indicator_size,
         );
@@ -219,7 +234,9 @@ impl Knob {
     fn quantize(&self, value: f64) -> f64 {
         let value = value.clamp(self.minimum, self.maximum);
         if self.step > 0.0 {
-            (self.minimum + ((value - self.minimum) / self.step).round() * self.step)
+            ((value - self.minimum) / self.step)
+                .round()
+                .mul_add(self.step, self.minimum)
                 .clamp(self.minimum, self.maximum)
         } else {
             value

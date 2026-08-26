@@ -18,35 +18,40 @@ pub struct Accordion {
 }
 
 impl Accordion {
-    pub fn new(open: bool) -> Self {
+    #[must_use]
+    pub const fn new(open: bool) -> Self {
         Self {
             open,
-            t: open as u8 as f32,
+            t: if open { 1.0 } else { 0.0 },
         }
     }
 
-    pub fn toggle(&mut self) {
+    pub const fn toggle(&mut self) {
         self.open = !self.open;
     }
 
     pub fn tick(&mut self, dt: f32) {
-        ease(&mut self.t, self.open as u8 as f32, SPEED, dt);
+        ease(&mut self.t, f32::from(u8::from(self.open)), SPEED, dt);
     }
 
-    pub fn is_open(&self) -> bool {
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
         self.open
     }
 
-    pub fn open_amount(&self) -> f32 {
+    #[must_use]
+    pub const fn open_amount(&self) -> f32 {
         self.t
     }
 
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.t > 0.001
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
-        (self.t - self.open as u8 as f32).abs() > 0.001
+        (self.t - f32::from(u8::from(self.open))).abs() > 0.001
     }
 
     pub fn build_header(

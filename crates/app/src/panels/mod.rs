@@ -4219,105 +4219,113 @@ fn measure_inspector_sections(
 
     let ((root, ids), measured) = kama_ui::measure_layout(rect, |ctx| {
         let mut ids = Vec::with_capacity(specs.len());
-        let root = ctx
-            .new()
-            .overlay()
-            .position((0.0, start - rect.y))
-            .width(Size::Fill)
-            .height(Size::Fit)
-            .column()
-            .children(|ctx| {
-                for (rows, open) in specs {
-                    let Some(rows) = rows else {
-                        ids.push(None);
-                        continue;
-                    };
-                    let mut header = BlockId::default();
-                    let mut body = BlockId::default();
-                    let mut content = BlockId::default();
-                    ctx.new()
-                        .width(Size::Fill)
-                        .height(Size::Fit)
-                        .column()
-                        .children(|ctx| {
+        let root =
+            ctx.new()
+                .overlay()
+                .position((0.0, start - rect.y))
+                .width(Size::Fill)
+                .height(Size::Fit)
+                .column()
+                .children(|ctx| {
+                    for (rows, open) in specs {
+                        let Some(rows) = rows else {
+                            ids.push(None);
+                            continue;
+                        };
+                        let mut header = BlockId::default();
+                        let mut body = BlockId::default();
+                        let mut content = BlockId::default();
+                        let _ =
                             ctx.new()
                                 .width(Size::Fill)
-                                .height(Size::Pixels(ACCORDION_H))
-                                .row()
+                                .height(Size::Fit)
+                                .column()
                                 .children(|ctx| {
-                                    ctx.new()
-                                        .width(Size::Pixels(7.0))
-                                        .height(Size::Fill)
-                                        .build();
-                                    header = ctx
+                                    let _ = ctx
                                         .new()
                                         .width(Size::Fill)
-                                        .height(Size::Pixels(ACCORDION_H - 4.0))
-                                        .build();
-                                    ctx.new()
-                                        .width(Size::Pixels(7.0))
-                                        .height(Size::Fill)
-                                        .build();
-                                })
-                                .build();
-                            ctx.new()
-                                .width(Size::Fill)
-                                .height(Size::FitScale(*open))
-                                .row()
-                                .children(|ctx| {
-                                    ctx.new()
-                                        .width(Size::Pixels(7.0))
-                                        .height(Size::Fill)
-                                        .build();
-                                    body = ctx
-                                        .new()
-                                        .width(Size::Fill)
-                                        .height(Size::Fill)
-                                        .padding(INSPECTOR_SECTION_PAD)
-                                        .column()
+                                        .height(Size::Pixels(ACCORDION_H))
+                                        .row()
                                         .children(|ctx| {
-                                            content = ctx
+                                            let _ = ctx
+                                                .new()
+                                                .width(Size::Pixels(7.0))
+                                                .height(Size::Fill)
+                                                .build();
+                                            header = ctx
                                                 .new()
                                                 .width(Size::Fill)
+                                                .height(Size::Pixels(ACCORDION_H - 4.0))
+                                                .build();
+                                            let _ = ctx
+                                                .new()
+                                                .width(Size::Pixels(7.0))
                                                 .height(Size::Fill)
-                                                .children(|ctx| {
+                                                .build();
+                                        })
+                                        .build();
+                                    let _ =
+                                        ctx.new()
+                                            .width(Size::Fill)
+                                            .height(Size::FitScale(*open))
+                                            .row()
+                                            .children(|ctx| {
+                                                let _ = ctx
+                                                    .new()
+                                                    .width(Size::Pixels(7.0))
+                                                    .height(Size::Fill)
+                                                    .build();
+                                                body =
                                                     ctx.new()
+                                                        .width(Size::Fill)
+                                                        .height(Size::Fill)
+                                                        .padding(INSPECTOR_SECTION_PAD)
+                                                        .column()
+                                                        .children(|ctx| {
+                                                            content =
+                                                                ctx.new()
+                                                                    .width(Size::Fill)
+                                                                    .height(Size::Fill)
+                                                                    .children(|ctx| {
+                                                                        let _ = ctx.new()
                                                         .width(Size::Fill)
                                                         .height(Size::Fit)
                                                         .column()
                                                         .children(|ctx| {
                                                             for height in rows {
-                                                                ctx.new()
+                                                                let _ = ctx.new()
                                                                     .width(Size::Fill)
                                                                     .height(Size::Pixels(*height))
                                                                     .build();
                                                             }
                                                         })
                                                         .build();
-                                                })
-                                                .build();
-                                        })
-                                        .build();
-                                    ctx.new()
-                                        .width(Size::Pixels(7.0))
-                                        .height(Size::Fill)
+                                                                    })
+                                                                    .build();
+                                                        })
+                                                        .build();
+                                                let _ = ctx
+                                                    .new()
+                                                    .width(Size::Pixels(7.0))
+                                                    .height(Size::Fill)
+                                                    .build();
+                                            })
+                                            .build();
+                                    let _ = ctx
+                                        .new()
+                                        .width(Size::Fill)
+                                        .height(Size::Pixels(INSPECTOR_SECTION_GAP))
                                         .build();
                                 })
                                 .build();
-                            ctx.new()
-                                .width(Size::Fill)
-                                .height(Size::Pixels(INSPECTOR_SECTION_GAP))
-                                .build();
-                        })
-                        .build();
-                    ids.push(Some(SectionIds {
-                        header,
-                        body,
-                        content,
-                    }));
-                }
-            })
-            .build();
+                        ids.push(Some(SectionIds {
+                            header,
+                            body,
+                            content,
+                        }));
+                    }
+                })
+                .build();
         (root, ids)
     });
 
@@ -4597,7 +4605,8 @@ fn effect_control_rows<'a>(
                 for (_, _, extent, open) in &nodes {
                     let mut header = BlockId::default();
                     let mut body = BlockId::default();
-                    ctx.new()
+                    let _ = ctx
+                        .new()
                         .width(Size::Fill)
                         .height(Size::Fit)
                         .column()
@@ -4607,7 +4616,8 @@ fn effect_control_rows<'a>(
                                 .width(Size::Fill)
                                 .height(Size::Pixels(EFFECT_NODE_HEADER_H))
                                 .build();
-                            ctx.new()
+                            let _ = ctx
+                                .new()
                                 .width(Size::Fill)
                                 .height(Size::Pixels(4.0))
                                 .build();
@@ -4616,13 +4626,15 @@ fn effect_control_rows<'a>(
                                 .width(Size::Fill)
                                 .height(Size::FitScale(*open))
                                 .children(|ctx| {
-                                    ctx.new()
+                                    let _ = ctx
+                                        .new()
                                         .width(Size::Fill)
                                         .height(Size::Pixels(*extent))
                                         .build();
                                 })
                                 .build();
-                            ctx.new()
+                            let _ = ctx
+                                .new()
                                 .width(Size::Fill)
                                 .height(Size::Pixels(EFFECT_NODE_GAP))
                                 .build();

@@ -15,12 +15,12 @@ mod host {
 }
 
 pub fn get_parameter<T: Parameter>(name: &str, fallback: T) -> T {
-    T::get(parameter_hash(name), fallback)
+    T::get(i64::from(parameter_hash(name)), fallback)
 }
 
 #[must_use]
 pub fn parameter_id(name: &str) -> u32 {
-    parameter_hash(name) as u32
+    parameter_hash(name)
 }
 
 mod private {
@@ -42,7 +42,12 @@ impl Parameter for f32 {
 impl private::Sealed for u32 {}
 impl Parameter for u32 {
     fn get(hash: i64, fallback: Self) -> Self {
-        unsafe { host::param_u32(hash, fallback.min(i32::MAX as Self) as i32) as Self }
+        unsafe {
+            let fallback = fallback.min(2_147_483_647);
+            Self::from_ne_bytes(
+                host::param_u32(hash, i32::try_from(fallback).unwrap_or(i32::MAX)).to_ne_bytes(),
+            )
+        }
     }
 }
 
@@ -59,7 +64,11 @@ macro_rules! impl_vector_parameter {
         impl Parameter for [f32; $length] {
             fn get(hash: i64, fallback: Self) -> Self {
                 std::array::from_fn(|component| unsafe {
-                    host::param_f32(hash, component as i32, fallback[component])
+                    host::param_f32(
+                        hash,
+                        i32::try_from(component).unwrap_or(i32::MAX),
+                        *fallback.get(component).unwrap_or(&0.0),
+                    )
                 })
             }
         }
@@ -82,7 +91,10 @@ impl Parameter for Vec<f32> {
                 host::param_f32_list_get(
                     hash,
                     index,
-                    fallback.get(index as usize).copied().unwrap_or(0.0),
+                    fallback
+                        .get(usize::try_from(index).unwrap_or_default())
+                        .copied()
+                        .unwrap_or(0.0),
                 )
             })
             .collect()
@@ -98,13 +110,16 @@ impl Parameter for Vec<[f32; 2]> {
         }
         (0..len)
             .map(|index| {
-                let point_fallback = fallback.get(index as usize).copied().unwrap_or([0.0; 2]);
+                let point_fallback = fallback
+                    .get(usize::try_from(index).unwrap_or_default())
+                    .copied()
+                    .unwrap_or([0.0; 2]);
                 std::array::from_fn(|component| unsafe {
                     host::param_vec2_array_get(
                         hash,
                         index,
-                        component as i32,
-                        point_fallback[component],
+                        i32::try_from(component).unwrap_or(i32::MAX),
+                        *point_fallback.get(component).unwrap_or(&0.0),
                     )
                 })
             })
@@ -130,15 +145,23 @@ pub mod generator {
         unsafe { host::render_tight_bounds() != 0 }
     }
 
+    /// # Errors
+    ///
+    /// Returns `-1` when pixel buffer cannot hold requested dimensions; otherwise returns host status.
     pub fn render_text_rgba32f(pixels: &mut [f32], width: i32, height: i32) -> Result<(), i32> {
-        let required = (width.max(0) as usize)
-            .saturating_mul(height.max(0) as usize)
+        let required = usize::try_from(width.max(0))
+            .unwrap_or_default()
+            .saturating_mul(usize::try_from(height.max(0)).unwrap_or_default())
             .saturating_mul(4);
         if pixels.len() < required {
             return Err(-1);
         }
         let status = unsafe {
-            host::render_text_rgba32f(pixels.as_mut_ptr() as usize as i32, width, height)
+            host::render_text_rgba32f(
+                i32::try_from(pixels.as_mut_ptr() as usize).unwrap_or(i32::MAX),
+                width,
+                height,
+            )
         };
         if status == 0 {
             Ok(())
@@ -157,13 +180,13 @@ pub mod audio {
     }
 }
 
-fn parameter_hash(name: &str) -> i64 {
-    let mut hash = 0x811c9dc5u32;
+fn parameter_hash(name: &str) -> u32 {
+    let mut hash = 0x811c_9dc5_u32;
     for byte in name.bytes() {
         hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x01000193);
+        hash = hash.wrapping_mul(0x0100_0193);
     }
-    i64::from(hash)
+    hash
 }
 
 #[cfg(test)]
@@ -172,8 +195,8 @@ mod tests {
 
     #[test]
     fn hashes_match_the_host_abi() {
-        assert_eq!(parameter_hash("color"), 0x3d7e6258);
-        assert_eq!(parameter_hash("border_color"), 0x94c31acf);
-        assert_eq!(parameter_hash("gain_db"), 0x046c1bf5);
+        assert_eq!(parameter_hash("color"), 0x3d7e_6258);
+        assert_eq!(parameter_hash("border_color"), 0x94c3_1acf);
+        assert_eq!(parameter_hash("gain_db"), 0x046c_1bf5);
     }
 }

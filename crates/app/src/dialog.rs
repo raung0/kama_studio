@@ -120,7 +120,8 @@ pub(crate) fn measure_search_surface(
                     .height(if constrained { Size::Fill } else { Size::Fit })
                     .vertical_scroll(scroll)
                     .children(|ctx| {
-                        ctx.new()
+                        let _ = ctx
+                            .new()
                             .column()
                             .width(Size::Fill)
                             .height(Size::Fit)

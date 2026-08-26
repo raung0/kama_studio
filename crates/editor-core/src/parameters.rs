@@ -26,7 +26,7 @@ impl HostValue {
     #[must_use]
     pub const fn scalar_count(&self) -> usize {
         match self {
-            Self::Vec2Array(values) => values.len() * 2,
+            Self::Vec2Array(values) => values.len().saturating_mul(2),
             Self::F32List(values) => values.len(),
             Self::Gpu(value) => value.component_count(),
             _ => 0,
@@ -95,7 +95,7 @@ impl KeyTrack<HostKeyframe> {
         let previous = if split == 0 {
             first
         } else {
-            &self.keys[split - 1]
+            self.keys.get(split.saturating_sub(1))?
         };
         let Some(next) = self.keys.get(split) else {
             return Some(previous.value.clone());
@@ -114,7 +114,9 @@ impl KeyTrack<HostKeyframe> {
 
     pub fn set_value(&mut self, time: f64, value: HostValue) {
         if let Some(index) = self.key_index(time) {
-            self.keys[index].value = value;
+            if let Some(v) = self.keys.get_mut(index) {
+                v.value = value;
+            }
         } else {
             let index = self.insertion_index(time);
             self.keys.insert(index, HostKeyframe { time, value });
@@ -269,7 +271,9 @@ impl HostBinding {
                 }
                 for channel in 0..count {
                     if let Some(next) = HostComponentKeyframes::scalar(&value, channel) {
-                        channels.tracks[channel].set_key(time, next, Interpolation::Linear);
+                        if let Some(track) = channels.tracks.get_mut(channel) {
+                            track.set_key(time, next, Interpolation::Linear);
+                        }
                     }
                 }
             }
@@ -292,7 +296,9 @@ impl HostBinding {
                 };
                 for channel in 0..count {
                     if let Some(next) = HostComponentKeyframes::scalar(&base, channel) {
-                        channels.tracks[channel].set_key(time, next, Interpolation::Linear);
+                        if let Some(track) = channels.tracks.get_mut(channel) {
+                            track.set_key(time, next, Interpolation::Linear);
+                        }
                     }
                 }
                 *self = Self::Components(channels);
@@ -332,7 +338,9 @@ impl HostBinding {
                 } else if let Some(value) = channels.evaluate(time) {
                     for channel in 0..channels.tracks.len() {
                         if let Some(next) = HostComponentKeyframes::scalar(&value, channel) {
-                            channels.tracks[channel].set_key(time, next, Interpolation::Linear);
+                            if let Some(track) = channels.tracks.get_mut(channel) {
+                                track.set_key(time, next, Interpolation::Linear);
+                            }
                         }
                     }
                 }
@@ -355,7 +363,9 @@ impl HostBinding {
             for key in &track.keys {
                 for channel in 0..count {
                     if let Some(value) = HostComponentKeyframes::scalar(&key.value, channel) {
-                        channels.tracks[channel].set_key(key.time, value, Interpolation::Linear);
+                        if let Some(track) = channels.tracks.get_mut(channel) {
+                            track.set_key(key.time, value, Interpolation::Linear);
+                        }
                     }
                 }
             }
@@ -401,7 +411,7 @@ impl HostBinding {
                     })
                 })
                 .collect(),
-            _ => Vec::new(),
+            Self::Constant(_) => Vec::new(),
         }
     }
 

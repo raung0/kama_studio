@@ -7,6 +7,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1.16", features = ["derive"] }
+num-traits = "0.2"
 wgpu = "30.0.1"
 winit = "0.30"
 

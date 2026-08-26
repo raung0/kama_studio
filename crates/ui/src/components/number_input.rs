@@ -27,6 +27,7 @@ pub struct NumberInput {
 }
 
 impl NumberInput {
+    #[must_use]
     pub fn new(value: f64) -> Self {
         Self {
             value,
@@ -41,35 +42,42 @@ impl NumberInput {
         }
     }
 
-    pub fn bounds(mut self, minimum: f64, maximum: f64) -> Self {
+    #[must_use]
+    pub const fn bounds(mut self, minimum: f64, maximum: f64) -> Self {
         self.minimum = minimum;
         self.maximum = maximum;
         self.value = self.value.clamp(minimum, maximum);
         self
     }
 
-    pub fn sensitivity(mut self, units_per_pixel: f64) -> Self {
+    #[must_use]
+    pub const fn sensitivity(mut self, units_per_pixel: f64) -> Self {
         self.units_per_pixel = units_per_pixel.max(f64::EPSILON);
         self
     }
 
-    pub fn precision(mut self, precision: usize) -> Self {
+    #[must_use]
+    pub const fn precision(mut self, precision: usize) -> Self {
         self.precision = precision;
         self
     }
 
-    pub fn value(&self) -> f64 {
+    #[must_use]
+    pub const fn value(&self) -> f64 {
         self.value
     }
 
-    pub fn is_editing(&self) -> bool {
+    #[must_use]
+    pub const fn is_editing(&self) -> bool {
         self.editing
     }
 
-    pub fn is_dragging(&self) -> bool {
+    #[must_use]
+    pub const fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         self.edit.is_animating()
     }
@@ -78,24 +86,24 @@ impl NumberInput {
         self.edit.tick(dt);
     }
 
-    pub fn set_value(&mut self, value: f64) {
+    pub const fn set_value(&mut self, value: f64) {
         if self.drag.is_some() || self.editing {
             return;
         }
         self.value = value.clamp(self.minimum, self.maximum);
     }
 
-    pub fn set_bounds(&mut self, minimum: f64, maximum: f64) {
+    pub const fn set_bounds(&mut self, minimum: f64, maximum: f64) {
         self.minimum = minimum;
         self.maximum = maximum;
         self.value = self.value.clamp(minimum, maximum);
     }
 
-    pub fn set_sensitivity(&mut self, units_per_pixel: f64) {
+    pub const fn set_sensitivity(&mut self, units_per_pixel: f64) {
         self.units_per_pixel = units_per_pixel.max(f64::EPSILON);
     }
 
-    pub fn set_precision(&mut self, precision: usize) {
+    pub const fn set_precision(&mut self, precision: usize) {
         self.precision = precision;
     }
 
@@ -152,7 +160,8 @@ impl NumberInput {
             return None;
         }
         let (start_y, start_value) = self.drag?;
-        let next = (start_value + (start_y - point[1]) as f64 * self.units_per_pixel)
+        let next = f64::from(start_y - point[1])
+            .mul_add(self.units_per_pixel, start_value)
             .clamp(self.minimum, self.maximum);
         if (next - self.value).abs() > f64::EPSILON {
             self.value = next;
@@ -165,8 +174,9 @@ impl NumberInput {
         if self.editing || self.drag.is_none() {
             return None;
         }
-        let next =
-            (self.value - delta_y as f64 * self.units_per_pixel).clamp(self.minimum, self.maximum);
+        let next = f64::from(delta_y)
+            .mul_add(-self.units_per_pixel, self.value)
+            .clamp(self.minimum, self.maximum);
         if (next - self.value).abs() > f64::EPSILON {
             self.value = next;
 
@@ -179,7 +189,7 @@ impl NumberInput {
         None
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         let dragged = self.drag.take().is_some();
         dragged || (self.editing && self.edit.pointer_released())
     }
@@ -228,6 +238,7 @@ impl NumberInput {
         response.changed.then(|| self.preview_text()).flatten()
     }
 
+    #[must_use]
     pub fn caret_rect(&self, rect: Rect) -> Option<Rect> {
         (self.editing && self.edit.is_focused()).then(|| self.edit.caret_rect(rect))
     }

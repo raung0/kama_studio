@@ -7,27 +7,33 @@ pub struct Item {
 }
 
 impl Item {
+    #[must_use]
     pub const fn new(width: Size, height: Size) -> Self {
         Self { width, height }
     }
 
+    #[must_use]
     pub const fn fill() -> Self {
         Self::new(Size::Fill, Size::Fill)
     }
 
+    #[must_use]
     pub const fn height(height: f32) -> Self {
         Self::new(Size::Fill, Size::Pixels(height))
     }
 
+    #[must_use]
     pub const fn width(width: f32) -> Self {
         Self::new(Size::Pixels(width), Size::Fill)
     }
 
+    #[must_use]
     pub const fn fill_portion(portion: f32) -> Self {
         Self::new(Size::FillPortion(portion), Size::Fill)
     }
 }
 
+#[must_use]
 pub fn centered(viewport: Rect, width: f32, height: f32) -> Rect {
     let (id, measured) = crate::measure_layout(viewport, |ctx| {
         ctx.new()
@@ -40,14 +46,17 @@ pub fn centered(viewport: Rect, width: f32, height: f32) -> Rect {
     measured.rect(id).expect("centered layout")
 }
 
+#[must_use]
 pub fn inset(rect: Rect, padding: f32) -> Rect {
     column(rect, &[Item::fill()], 0.0, padding, Align::Start, None)[0]
 }
 
+#[must_use]
 pub fn row(rect: Rect, items: &[Item], gap: f32, padding: f32, align: Align) -> Vec<Rect> {
     flow(rect, items, true, gap, padding, align, None).1
 }
 
+#[must_use]
 pub fn row_scrolled(
     rect: Rect,
     items: &[Item],
@@ -59,6 +68,7 @@ pub fn row_scrolled(
     flow(rect, items, true, gap, padding, align, Some(scroll)).1
 }
 
+#[must_use]
 pub fn column(
     rect: Rect,
     items: &[Item],
@@ -70,6 +80,7 @@ pub fn column(
     flow(rect, items, false, gap, padding, align, scroll).1
 }
 
+#[must_use]
 pub fn scrolled_content(rect: Rect, offset: f32) -> Rect {
     column(
         rect,
@@ -99,6 +110,7 @@ pub fn stack(rect: Rect, start_y: f32, heights: &[f32]) -> Vec<Rect> {
     .1
 }
 
+#[must_use]
 pub fn fit_column_at(
     viewport: Rect,
     position: [f32; 2],
