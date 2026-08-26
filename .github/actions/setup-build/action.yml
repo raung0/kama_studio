@@ -57,9 +57,11 @@ runs:
           cmake \
           libasound2-dev \
           libavcodec-dev \
+          libavfilter-dev \
           libavformat-dev \
           libavutil-dev \
           libdbus-1-dev \
+          libswresample-dev \
           libswscale-dev \
           libwayland-dev \
           libxkbcommon-dev \
@@ -123,5 +125,7 @@ runs:
         echo "PKG_CONFIG_PATH=${ffmpeg_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
         pkg-config --modversion libavutil
         pkg-config --modversion libavcodec
+        pkg-config --modversion libavfilter
         pkg-config --modversion libavformat
+        pkg-config --modversion libswresample
         pkg-config --modversion libswscale
