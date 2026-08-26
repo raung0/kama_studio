@@ -28,6 +28,7 @@ pub(crate) enum ExportPixelFormat {
 
     P210Le,
 
+    #[allow(dead_code)]
     Ayuv64Le,
 
     Yuva444p10Le,

@@ -21,11 +21,9 @@ struct ActiveChunk {
     start_frame: u64,
     end_frame: u64,
     next_frame: u64,
-    stdin: Option<ChildStdin>,
-    child: Child,
+    encoder: Option<CacheEncoder>,
     temp_path: PathBuf,
     signature_at_start: u64,
-    used_hardware: bool,
     input_format: ExportPixelFormat,
 }
 
@@ -47,7 +45,6 @@ struct RenderJob {
     audio_path: PathBuf,
     next_generation: u64,
     cache_encoder_failures: Vec<u8>,
-    force_software_cache: bool,
     settings: RenderSpec,
     fps: f64,
     canvas_size: [u32; 2],
@@ -98,7 +95,6 @@ impl RenderJob {
             audio_path,
             next_generation: 1,
             cache_encoder_failures,
-            force_software_cache: false,
             settings,
             fps,
             canvas_size: project.active_settings().canvas_size,
@@ -224,11 +220,56 @@ impl RenderJob {
         }
     }
 
+    fn restart(&mut self, settings: RenderSpec) {
+        self.abort_active();
+        if let Some(mut child) = self.transcode.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(task) = self.audio_mix.take() {
+            let _ = task.join();
+        }
+        let _ = fs::remove_file(&self.audio_path);
+        let _ = fs::remove_file(self.transcode_output_path());
+
+        let chunk_frames = (self.fps * cache_chunk_seconds()).round().max(1.0) as u64;
+        let mut previous = std::mem::take(&mut self.chunks);
+        let mut chunks = Vec::new();
+        let mut start = settings.begin_frame;
+        while start <= settings.end_frame {
+            let end = start
+                .saturating_add(chunk_frames.saturating_sub(1))
+                .min(settings.end_frame);
+            if let Some(index) = previous
+                .iter()
+                .position(|chunk| chunk.start == start && chunk.end == end)
+            {
+                chunks.push(previous.swap_remove(index));
+            } else {
+                let index = chunks.len();
+                chunks.push(CacheChunk {
+                    start,
+                    end,
+                    path: self.cache_dir.join(format!("chunk-{index:06}.mov")),
+                    state: ChunkState::Pending,
+                    signature: 0,
+                    generation: 0,
+                });
+            }
+            start = end.saturating_add(1);
+        }
+        self.cache_encoder_failures = vec![0; chunks.len()];
+        self.chunks = chunks;
+        self.settings = settings;
+        self.error = None;
+        self.transcode_used_vt_fast_path = false;
+        self.disable_vt_transcode_fast_path = false;
+        self.phase = RenderPhase::Rendering;
+    }
+
     fn abort_active(&mut self) {
-        if let Some(mut active) = self.active.take() {
-            active.stdin.take();
-            let _ = active.child.kill();
-            let _ = active.child.wait();
+        if let Some(active) = self.active.take() {
+            drop(active.encoder);
             let _ = fs::remove_file(active.temp_path);
             if let Some(chunk) = self.chunks.get_mut(active.index) {
                 if chunk.state == ChunkState::Rendering {
@@ -291,75 +332,18 @@ impl RenderJob {
         index: usize,
         project: &Project,
         timeline: &TimelineState,
-        direct_p210_supported: bool,
     ) -> Result<()> {
         let chunk = &self.chunks[index];
         let start_frame = chunk.start;
         let end_frame = chunk.end;
         let temp_path = chunk.path.with_extension("partial.mov");
         let _ = fs::remove_file(&temp_path);
-        let [width, height] = project.active_settings().canvas_size;
-        let input_format = cache_encoder_input_format(
-            self.force_software_cache,
-            self.settings.preset.video_codec.supports_alpha(),
-            direct_p210_supported && width.max(1) % 2 == 0,
-        );
-        let mut command = Command::new("ffmpeg");
-        command
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-y")
-            .arg("-f")
-            .arg("rawvideo")
-            .arg("-pixel_format")
-            .arg(input_format.ffmpeg_name())
-            .arg("-video_size")
-            .arg(format!("{}x{}", width.max(1), height.max(1)))
-            .arg("-framerate")
-            .arg(format!("{:.8}", self.fps))
-            .args([
-                "-color_range",
-                "tv",
-                "-colorspace",
-                "bt709",
-                "-color_primaries",
-                "bt709",
-                "-color_trc",
-                "bt709",
-            ])
-            .arg("-i")
-            .arg("pipe:0")
-            .arg("-an");
-        let used_hardware = configure_cache_video_encoder(
-            &mut command,
-            self.settings.background,
-            self.force_software_cache,
-            input_format,
-        );
-        command.args([
-            "-color_range",
-            "tv",
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-f",
-            "mov",
-        ]);
-        let mut child = command
-            .arg(&temp_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("start ProRes cache encoder (ffmpeg)")?;
-        let stdin = child
-            .stdin
-            .take()
-            .context("ffmpeg ProRes cache encoder has no stdin")?;
+        let encoder = CacheEncoder::new(
+            &temp_path,
+            project.active_settings().canvas_size,
+            self.fps,
+            render_encoder_threads(self.settings.background),
+        )?;
         let signature = range_signature(project, timeline, start_frame, end_frame, self.fps);
         self.chunks[index].state = ChunkState::Rendering;
         self.active = Some(ActiveChunk {
@@ -367,12 +351,10 @@ impl RenderJob {
             start_frame,
             end_frame,
             next_frame: start_frame,
-            stdin: Some(stdin),
-            child,
+            encoder: Some(encoder),
             temp_path,
             signature_at_start: signature,
-            used_hardware,
-            input_format,
+            input_format: ExportPixelFormat::Yuva444p10Le,
         });
         Ok(())
     }
@@ -381,18 +363,15 @@ impl RenderJob {
         let Some(mut active) = self.active.take() else {
             return Ok(());
         };
-        active.stdin.take();
-        let output = active
-            .child
-            .wait_with_output()
-            .context("wait for ProRes cache encoder")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let encoder = active
+            .encoder
+            .take()
+            .context("ProRes cache encoder disappeared")?;
+        if let Err(error) = encoder.finish() {
             return self.schedule_cache_retry(
                 active.index,
-                active.used_hardware,
                 &active.temp_path,
-                format!("encoder exited with {}: {stderr}", output.status),
+                format!("ProRes cache encoder failed: {error:#}"),
             );
         }
 
@@ -402,7 +381,6 @@ impl RenderJob {
         {
             return self.schedule_cache_retry(
                 active.index,
-                active.used_hardware,
                 &active.temp_path,
                 format!("completed ProRes chunk validation failed: {error:#}"),
             );
@@ -427,34 +405,22 @@ impl RenderJob {
     }
 
     fn retry_active_after_pipe_failure(&mut self, write_error: Error) -> Result<()> {
-        let Some(mut active) = self.active.take() else {
-            return Err(write_error).context("cache encoder pipe failed with no active chunk");
+        let Some(active) = self.active.take() else {
+            return Err(write_error).context("cache encoder failed with no active chunk");
         };
         let index = active.index;
-        let used_hardware = active.used_hardware;
         let temp_path = active.temp_path.clone();
-        active.stdin.take();
-
-        let _ = active.child.kill();
-        let stderr = active
-            .child
-            .wait_with_output()
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
-            .filter(|text| !text.is_empty())
-            .unwrap_or_default();
-        let reason = if stderr.is_empty() {
-            format!("cache encoder stdin failed: {write_error}")
-        } else {
-            format!("cache encoder stdin failed: {write_error}; ffmpeg: {stderr}")
-        };
-        self.schedule_cache_retry(index, used_hardware, &temp_path, reason)
+        drop(active.encoder);
+        self.schedule_cache_retry(
+            index,
+            &temp_path,
+            format!("cache encoder write failed: {write_error}"),
+        )
     }
 
     fn schedule_cache_retry(
         &mut self,
         index: usize,
-        used_hardware: bool,
         temp_path: &std::path::Path,
         reason: String,
     ) -> Result<()> {
@@ -469,12 +435,6 @@ impl RenderJob {
         } else {
             ChunkState::Pending
         };
-
-        if used_hardware {
-            self.force_software_cache = true;
-            self.cache_encoder_failures[index] = 0;
-            return Ok(());
-        }
 
         let failures = &mut self.cache_encoder_failures[index];
         *failures = failures.saturating_add(1);
@@ -556,7 +516,7 @@ impl RenderJob {
         let target_size = self.settings.preset.resolution.dimensions(self.canvas_size);
         let use_vt_fast_path = !self.disable_vt_transcode_fast_path
             && final_videotoolbox_pipeline_usable(self.settings.preset.video_codec);
-        let mut command = Command::new("ffmpeg");
+        let mut command = Command::new(external_tool("ffmpeg"));
         command
             .arg("-hide_banner")
             .arg("-loglevel")
@@ -859,6 +819,7 @@ impl RenderWorkerStatus {
 enum RenderWorkerCommand {
     Pause,
     Resume,
+    Restart(RenderSpec),
     SetBackground(bool),
     SetEditing(bool),
     SetInteractive(bool),
@@ -1071,6 +1032,29 @@ impl RenderTask {
         }
     }
 
+    fn restart(&mut self, settings: RenderSpec) {
+        self.live_end_frame
+            .store(settings.end_frame, Ordering::Release);
+        self.settings = settings.clone();
+        if self
+            .command_tx
+            .send(RenderWorkerCommand::Restart(settings))
+            .is_ok()
+        {
+            self.status.phase = RenderPhase::Rendering;
+            self.status.error = None;
+        }
+    }
+
+    fn can_restart(&self, project: &Project) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+            && project.active_composition == self.composition
+            && self.canvas_size == project.active_settings().canvas_size
+            && (self.fps - project.active_settings().frame_rate.max(1.0)).abs() <= f64::EPSILON
+    }
+
     fn set_background(&mut self, background: bool) {
         self.settings.background = background;
         let _ = self
@@ -1128,6 +1112,7 @@ fn run_render_worker(
             match command {
                 RenderWorkerCommand::Pause => job.pause(),
                 RenderWorkerCommand::Resume => job.resume(),
+                RenderWorkerCommand::Restart(settings) => job.restart(settings),
                 RenderWorkerCommand::SetBackground(background) => {
                     job.settings.background = background;
                 }
@@ -1182,10 +1167,7 @@ fn run_render_worker(
 
             if job.active.is_none() {
                 if let Some(index) = job.next_chunk() {
-                    let direct_p210_supported = device
-                        .features()
-                        .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
-                    job.start_chunk(index, project, timeline, direct_p210_supported)?;
+                    job.start_chunk(index, project, timeline)?;
                 } else {
                     if editing {
                         return Ok(());
@@ -1228,10 +1210,10 @@ fn run_render_worker(
                     .active
                     .as_mut()
                     .context("render chunk disappeared before frame batch")?;
-                let stdin = active
-                    .stdin
+                let encoder = active
+                    .encoder
                     .as_mut()
-                    .context("ProRes cache encoder stdin closed")?;
+                    .context("ProRes cache encoder closed")?;
                 frame_renderer.render_export_yuv_batch_to_writer_on(ExportYuvBatchArgs {
                     device: &device,
                     queue: &queue,
@@ -1242,7 +1224,7 @@ fn run_render_worker(
                     first_frame: frame,
                     live_end_frame: &live_end_frame,
                     format: input_format,
-                    writer: stdin,
+                    writer: encoder,
                 })?
             };
             let (write_error, rendered_frames) = write_result;
@@ -1300,8 +1282,17 @@ fn cache_chunk_seconds() -> f64 {
     DEFAULT_CACHE_CHUNK_SECONDS
 }
 
-fn strict_cache_validation_enabled() -> bool {
-    false
+fn external_tool(name: &str) -> PathBuf {
+    let executable_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(directory) = current_exe.parent() {
+            let bundled = directory.join(&executable_name);
+            if bundled.is_file() {
+                return bundled;
+            }
+        }
+    }
+    PathBuf::from(executable_name)
 }
 
 fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u64) -> Result<()> {
@@ -1314,88 +1305,41 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
         );
     }
 
-    if !strict_cache_validation_enabled() {
-        return Ok(());
-    }
-
-    let output = match Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,width,height,nb_frames",
-            "-of",
-            "json",
-        ])
-        .arg(path)
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(());
-        }
-        Err(error) => return Err(error).context("run ffprobe for completed cache chunk"),
+    crate::runtime::media::init_ffmpeg()?;
+    let input = ffmpeg_next::format::input(path)
+        .with_context(|| format!("open completed cache chunk {}", path.display()))?;
+    let (codec_id, width, height, frame_count) = {
+        let stream = input
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .context("completed cache chunk has no video stream")?;
+        let codec_id = stream.parameters().id();
+        let frame_count = stream.frames();
+        let decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())?
+            .decoder()
+            .video()?;
+        (codec_id, decoder.width(), decoder.height(), frame_count)
     };
-    if !output.status.success() {
-        anyhow::bail!(
-            "ffprobe rejected completed cache chunk: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parse ffprobe cache validation output")?;
-    let stream = value
-        .get("streams")
-        .and_then(|streams| streams.as_array())
-        .and_then(|streams| streams.first())
-        .context("completed cache chunk has no video stream")?;
-    if stream.get("codec_name").and_then(|value| value.as_str()) != Some("prores") {
-        anyhow::bail!("completed cache chunk is not ProRes");
-    }
-    let width = stream
-        .get("width")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0) as u32;
-    let height = stream
-        .get("height")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0) as u32;
-    if [width, height] != [expected_size[0].max(1), expected_size[1].max(1)] {
-        anyhow::bail!(
-            "completed cache chunk has size {}x{}, expected {}x{}",
-            width,
-            height,
-            expected_size[0].max(1),
-            expected_size[1].max(1)
-        );
-    }
-    if let Some(frame_count) = stream.get("nb_frames").and_then(|value| {
-        value
-            .as_u64()
-            .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
-    }) {
-        if frame_count != expected_frames {
-            anyhow::bail!(
-                "completed cache chunk has {} frames, expected {}",
-                frame_count,
-                expected_frames
-            );
-        }
-    }
+    anyhow::ensure!(
+        codec_id == ffmpeg_next::codec::Id::PRORES,
+        "completed cache chunk is not ProRes"
+    );
+    anyhow::ensure!(
+        [width, height] == [expected_size[0].max(1), expected_size[1].max(1)],
+        "completed cache chunk has size {}x{}, expected {}x{}",
+        width,
+        height,
+        expected_size[0].max(1),
+        expected_size[1].max(1)
+    );
+    anyhow::ensure!(
+        frame_count >= 0 && frame_count as u64 == expected_frames,
+        "completed cache chunk has {frame_count} frames, expected {expected_frames}"
+    );
     Ok(())
 }
 
 fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
-    // D3D12 map callbacks are less reliable with several readbacks in flight on the
-    // same device used for presentation. Serial readback also makes Windows progress
-    // visible after every frame instead of waiting for a whole batch.
-    if cfg!(target_os = "windows") {
-        return 1;
-    }
-
     let pixels = u64::from(canvas_size[0].max(1)) * u64::from(canvas_size[1].max(1));
 
     if pixels >= 3_840u64 * 2_160 {
@@ -1404,27 +1348,6 @@ fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
         5
     } else {
         6
-    }
-}
-
-fn cache_encoder_input_format(
-    force_software: bool,
-    preserve_alpha: bool,
-    direct_p210_supported: bool,
-) -> ExportPixelFormat {
-    if !preserve_alpha
-        && direct_p210_supported
-        && (force_software || prores_videotoolbox_p210_usable())
-    {
-        return ExportPixelFormat::P210Le;
-    }
-    if force_software {
-        return ExportPixelFormat::Yuva444p10Le;
-    }
-    if prores_videotoolbox_usable() {
-        ExportPixelFormat::Ayuv64Le
-    } else {
-        ExportPixelFormat::Yuva444p10Le
     }
 }
 
@@ -1476,64 +1399,6 @@ fn configure_prores_encoder(
     }
 }
 
-fn configure_cache_video_encoder(
-    command: &mut Command,
-    background: bool,
-    force_software: bool,
-    input_format: ExportPixelFormat,
-) -> bool {
-    match input_format {
-        ExportPixelFormat::Nv12 | ExportPixelFormat::P010Le => {
-            unreachable!("non-ProRes cache input format reached ProRes cache encoder")
-        }
-        ExportPixelFormat::P210Le => {
-            if force_software {
-                command.args([
-                    "-c:v",
-                    "prores_ks",
-                    "-profile:v",
-                    "hq",
-                    "-pix_fmt",
-                    "yuv422p10le",
-                ]);
-                command
-                    .arg("-threads")
-                    .arg(render_encoder_threads(background).to_string())
-                    .args(["-thread_type", "slice+frame"]);
-                false
-            } else {
-                command.args([
-                    "-c:v",
-                    "prores_videotoolbox",
-                    "-profile:v",
-                    "hq",
-                    "-allow_sw",
-                    "0",
-                    "-prio_speed",
-                    "1",
-                    "-pix_fmt",
-                    "p210le",
-                ]);
-                true
-            }
-        }
-        ExportPixelFormat::Ayuv64Le => configure_prores_encoder(
-            command,
-            !force_software,
-            Some(render_encoder_threads(background)),
-        ),
-        ExportPixelFormat::Yuva444p10Le => {
-            configure_prores_encoder(command, false, Some(render_encoder_threads(background)))
-        }
-    }
-}
-
-fn prores_videotoolbox_p210_usable() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE
-        .get_or_init(|| probe_prores_videotoolbox("color=c=black:s=16x16:r=1:d=1", "p210le", "hq"))
-}
-
 fn prores_videotoolbox_usable() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
 
@@ -1546,7 +1411,7 @@ fn probe_prores_videotoolbox(input: &str, pixel_format: &str, profile: &str) -> 
     if !cfg!(target_os = "macos") || !ffmpeg_encoder_available("prores_videotoolbox") {
         return false;
     }
-    Command::new("ffmpeg")
+    Command::new(external_tool("ffmpeg"))
         .args([
             "-hide_banner",
             "-loglevel",
@@ -1580,7 +1445,7 @@ fn ffmpeg_encoder_available(name: &str) -> bool {
     static ENCODERS: OnceLock<HashSet<String>> = OnceLock::new();
     ENCODERS
         .get_or_init(|| {
-            let Ok(output) = Command::new("ffmpeg")
+            let Ok(output) = Command::new(external_tool("ffmpeg"))
                 .args(["-hide_banner", "-encoders"])
                 .output()
             else {
@@ -1603,7 +1468,7 @@ fn ffmpeg_filter_available(name: &str) -> bool {
     static FILTERS: OnceLock<HashSet<String>> = OnceLock::new();
     FILTERS
         .get_or_init(|| {
-            let Ok(output) = Command::new("ffmpeg")
+            let Ok(output) = Command::new(external_tool("ffmpeg"))
                 .args(["-hide_banner", "-filters"])
                 .output()
             else {
@@ -2298,6 +2163,18 @@ impl Default for RenderSession {
     }
 }
 
+impl Drop for RenderSession {
+    fn drop(&mut self) {
+        if let Some(mut task) = self.task.take() {
+            task.cancel();
+            drop(task);
+        }
+        for path in self.cache_dirs.drain(..) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
+
 impl RenderSession {
     pub(super) fn phase(&self) -> RenderPhase {
         self.task
@@ -2341,9 +2218,8 @@ impl RenderSession {
             task.cancel();
             drop(task);
         }
-        for path in self.cache_dirs.drain(..) {
-            let _ = fs::remove_dir_all(path);
-        }
+        // Keep committed cache files for the lifetime of the application. Cancelling a
+        // render stops work; it must not destroy frames which are still reusable.
         self.timeline_status_version = u64::MAX;
     }
 
@@ -2356,6 +2232,12 @@ impl RenderSession {
         plugins: &PluginRegistry,
         interaction: (u64, bool, bool),
     ) -> Result<()> {
+        if let Some(task) = self.task.as_mut().filter(|task| task.can_restart(project)) {
+            task.restart(settings);
+            self.timeline_status_version = u64::MAX;
+            return Ok(());
+        }
+
         let task = RenderTask::spawn(settings, renderer, project, timeline, plugins, interaction)?;
         if !self.cache_dirs.contains(&task.cache_dir) {
             self.cache_dirs.push(task.cache_dir.clone());
@@ -2498,18 +2380,13 @@ impl RenderSession {
     }
 }
 
-impl Drop for RenderSession {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
     fs::{self, File},
     hash::{Hash, Hasher},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
@@ -2523,7 +2400,9 @@ use anyhow::{Context, Error, Result};
 use kama_ui::Renderer;
 use serde::Serialize;
 
-use super::{AudioCodec, RenderSpec, VideoCodec, DEFAULT_CACHE_CHUNK_SECONDS};
+use super::{
+    cache_encoder::CacheEncoder, AudioCodec, RenderSpec, VideoCodec, DEFAULT_CACHE_CHUNK_SECONDS,
+};
 use crate::{
     audio::render_audio_wav,
     effects::{Binding, EffectRuntime, PipelineInstance},

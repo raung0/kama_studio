@@ -21,6 +21,7 @@ use crate::{
     Renderer,
 };
 
+mod cache_encoder;
 mod engine;
 mod spec;
 
@@ -44,12 +45,6 @@ labeled_enum! {
         Vp9 => "VP9",
         Gif => "GIF",
         Ffv1 => "FFV1",
-    }
-}
-
-impl VideoCodec {
-    fn supports_alpha(self) -> bool {
-        matches!(self, Self::ProRes4444 | Self::Vp9 | Self::Ffv1)
     }
 }
 

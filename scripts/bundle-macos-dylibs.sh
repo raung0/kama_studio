@@ -20,7 +20,8 @@ BREW_PREFIX="$(brew --prefix)"
 FRAMEWORKS="$APP/Contents/Frameworks"
 INFO_PLIST="$APP/Contents/Info.plist"
 EXECUTABLE_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$INFO_PLIST")"
-EXECUTABLE="$APP/Contents/MacOS/$EXECUTABLE_NAME"
+MACOS_DIR="$APP/Contents/MacOS"
+EXECUTABLE="$MACOS_DIR/$EXECUTABLE_NAME"
 
 mkdir -p "$FRAMEWORKS"
 
@@ -33,6 +34,13 @@ PY
 }
 
 queue=("$EXECUTABLE")
+for tool in ffmpeg; do
+  if [[ ! -x "$MACOS_DIR/$tool" ]]; then
+    echo "error: bundled render tool missing: $MACOS_DIR/$tool" >&2
+    exit 1
+  fi
+  queue+=("$MACOS_DIR/$tool")
+done
 index=0
 
 while (( index < ${#queue[@]} )); do
@@ -58,7 +66,7 @@ while (( index < ${#queue[@]} )); do
       newly_bundled=1
     fi
 
-    if [[ "$binary" == "$EXECUTABLE" ]]; then
+    if [[ "$(dirname "$binary")" == "$MACOS_DIR" ]]; then
       replacement="@executable_path/../Frameworks/$name"
     else
       replacement="@loader_path/$name"
@@ -74,9 +82,12 @@ done
 find "$FRAMEWORKS" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib; do
   /usr/bin/codesign --force --sign - "$dylib"
 done
+for binary in "$EXECUTABLE" "$MACOS_DIR/ffmpeg"; do
+  /usr/bin/codesign --force --sign - "$binary"
+done
 /usr/bin/codesign --force --deep --sign - "$APP"
 
-for binary in "$EXECUTABLE" "$FRAMEWORKS"/*.dylib; do
+for binary in "$EXECUTABLE" "$MACOS_DIR/ffmpeg" "$FRAMEWORKS"/*.dylib; do
   [[ -e "$binary" ]] || continue
   if otool -L "$binary" | grep -F "$BREW_PREFIX/"; then
     echo "error: unbundled Homebrew dependency remains in $binary" >&2
