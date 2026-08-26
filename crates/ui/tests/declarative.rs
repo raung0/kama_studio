@@ -6,7 +6,7 @@ struct BadgeComponent;
 #[ui_component("Badge", stateless)]
 impl Component for BadgeComponent {
     fn ui(&mut self, ctx: &mut BuildCtx, text: String) -> BlockBuilder<'_> {
-        let _ = ctx.new().text(text)
+        let _ = ctx.new().text(text);
     }
 }
 
@@ -19,7 +19,7 @@ struct Meter {
 impl Component for Meter {
     fn ui(&mut self, ctx: &mut BuildCtx, value: f32) -> BlockBuilder<'_> {
         self.builds += 1;
-        let _ = ctx.new().text(format!("{value:.0}%"))
+        let _ = ctx.new().text(format!("{value:.0}%"));
     }
 }
 
@@ -95,7 +95,8 @@ fn measured_layout_uses_declarative_flow_geometry() {
         let mut left = Default::default();
         let mut first = Default::default();
         let mut second = Default::default();
-        let _ = ctx.new()
+        let _ = ctx
+            .new()
             .width(Size::Fill)
             .height(Size::Pixels(40.0))
             .row()
