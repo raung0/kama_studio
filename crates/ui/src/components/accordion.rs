@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::{BuildCtx, FormatKey, IconId, Rect, Size};
 
-use super::{ease, Style};
+use super::{Style, ease};
 
 const SPEED: f32 = 30.0;
 

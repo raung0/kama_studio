@@ -5,13 +5,13 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use asset_importer::{
+    Importer,
     material::{Material, TextureInfo, TextureType},
     postprocess::PostProcessSteps,
     scene::Scene,
     texture::{Texture, TextureData},
-    Importer,
 };
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -1286,8 +1286,10 @@ mod tests {
             entries[2].ty,
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
         ));
-        assert!(entries[3..]
-            .iter()
-            .all(|entry| matches!(entry.ty, wgpu::BindingType::Texture { .. })));
+        assert!(
+            entries[3..]
+                .iter()
+                .all(|entry| matches!(entry.ty, wgpu::BindingType::Texture { .. }))
+        );
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
     path::Path,
@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::{
+    RADIUS_LG, RADIUS_MD, RADIUS_SM,
     assets::{AppIcon, Icons},
     command::KeyBinding,
     effects::{
@@ -20,21 +21,20 @@ use crate::{
     i18n,
     plugin::{GeneratorDefinition, PluginRegistry},
     project::{
-        remap_pipeline_selector_binding, CompositionId, GeneratorSource, HostBinding, HostValue,
-        LayerComposite, MediaId, MediaKind, Model3dShading, PipelineSelectorRemap, Project,
-        VisualSource,
+        CompositionId, GeneratorSource, HostBinding, HostValue, LayerComposite, MediaId, MediaKind,
+        Model3dShading, PipelineSelectorRemap, Project, VisualSource,
+        remap_pipeline_selector_binding,
     },
     runtime::wasm::DEFAULT_RENDER_EXPORT,
     theme,
     waveform::WaveformTextures,
     widgets::{self, ContextMenuItem},
-    RADIUS_LG, RADIUS_MD, RADIUS_SM,
 };
 use kama_ui::dock::{LayoutSnapshot, Rect, StackId};
 use kama_ui::{self as ui, Align};
 use kama_ui::{
-    components::{Knob, ToggleButton},
     Color, CursorShape, Size,
+    components::{Knob, ToggleButton},
 };
 use serde::{Deserialize, Serialize};
 use winit::{
@@ -7976,11 +7976,13 @@ mod effect_model_tests {
             extraction.timeline.clips[0].track,
             extraction.timeline.clips[1].track
         );
-        assert!(extraction
-            .timeline
-            .clips
-            .iter()
-            .all(|clip| (clip.start - 0.0).abs() < f32::EPSILON));
+        assert!(
+            extraction
+                .timeline
+                .clips
+                .iter()
+                .all(|clip| (clip.start - 0.0).abs() < f32::EPSILON)
+        );
     }
 
     #[test]
@@ -8077,11 +8079,13 @@ mod effect_model_tests {
 
         let moved = &extraction.timeline.clips[0];
         assert_eq!(moved.start, 0.0);
-        assert!(!moved
-            .pipeline
-            .overrides
-            .iter()
-            .any(|(_, _, binding)| binding.has_keyframes()));
+        assert!(
+            !moved
+                .pipeline
+                .overrides
+                .iter()
+                .any(|(_, _, binding)| binding.has_keyframes())
+        );
         assert!(!moved.composite.opacity.has_keyframes());
         assert!(!moved.model3d.position.has_keyframes());
         let moved_row = moved_track
@@ -8156,13 +8160,15 @@ mod effect_model_tests {
             Some(88)
         );
         let reference = timeline.selected_clip().unwrap();
-        assert!(timeline
-            .tracks
-            .iter()
-            .find(|item| item.id == reference.track)
-            .unwrap()
-            .pipeline
-            .is_none());
+        assert!(
+            timeline
+                .tracks
+                .iter()
+                .find(|item| item.id == reference.track)
+                .unwrap()
+                .pipeline
+                .is_none()
+        );
     }
 
     #[test]
@@ -8210,24 +8216,32 @@ mod effect_model_tests {
                 ContextCommand::AddTrack(candidate) if candidate == kind
             )));
         }
-        assert!(items
-            .iter()
-            .any(|item| matches!(item.3, ContextCommand::InsertEffectHere)));
-        assert!(items
-            .iter()
-            .any(|item| matches!(item.3, ContextCommand::DeleteTrack)));
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.3, ContextCommand::InsertEffectHere))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item.3, ContextCommand::DeleteTrack))
+        );
 
         let empty_items = context_items(ContextKind::Empty {
             time: 0.0,
             track: Some(0),
             kind: Some(TrackKind::Effect),
         });
-        assert!(empty_items
-            .iter()
-            .any(|item| matches!(item.3, ContextCommand::InsertEffectHere)));
-        assert!(empty_items
-            .iter()
-            .any(|item| matches!(item.3, ContextCommand::AddTrack(TrackKind::Effect))));
+        assert!(
+            empty_items
+                .iter()
+                .any(|item| matches!(item.3, ContextCommand::InsertEffectHere))
+        );
+        assert!(
+            empty_items
+                .iter()
+                .any(|item| matches!(item.3, ContextCommand::AddTrack(TrackKind::Effect)))
+        );
     }
 
     #[test]
@@ -8287,16 +8301,21 @@ mod effect_model_tests {
         let right_group = right[0].group.unwrap();
         assert_ne!(right_group, left_group);
         assert!(right.iter().all(|clip| clip.group == Some(right_group)));
-        assert!(right
-            .iter()
-            .all(|clip| (clip.source_offset - 2.0).abs() < 1e-6));
+        assert!(
+            right
+                .iter()
+                .all(|clip| (clip.source_offset - 2.0).abs() < 1e-6)
+        );
         assert_eq!(timeline.selected.len(), right.len());
-        assert!(right
-            .iter()
-            .all(|clip| timeline.selected.contains(&clip.id)));
-        assert!(left
-            .iter()
-            .all(|clip| !timeline.selected.contains(&clip.id)));
+        assert!(
+            right
+                .iter()
+                .all(|clip| timeline.selected.contains(&clip.id))
+        );
+        assert!(
+            left.iter()
+                .all(|clip| !timeline.selected.contains(&clip.id))
+        );
         assert_eq!(timeline.selected_clip().unwrap().start, 2.0);
     }
 
@@ -8359,10 +8378,12 @@ mod effect_model_tests {
         timeline.clips[1].duration = 4.0;
         assert_eq!(timeline.selected_total_logical_duration(), 6.0);
         timeline.apply_speed_duration(&Project::new(), SpeedDurationMode::TotalDuration, 10.0);
-        assert!(timeline
-            .clips
-            .iter()
-            .all(|clip| (clip.duration - 5.0).abs() < 1e-6));
+        assert!(
+            timeline
+                .clips
+                .iter()
+                .all(|clip| (clip.duration - 5.0).abs() < 1e-6)
+        );
     }
 
     #[test]
@@ -8385,11 +8406,13 @@ mod effect_model_tests {
         assert!(timeline.selected.is_disjoint(&original_ids));
         let duplicate_group = timeline.selected_clip().unwrap().group.unwrap();
         assert_ne!(duplicate_group, original_group);
-        assert!(timeline
-            .clips
-            .iter()
-            .filter(|clip| timeline.selected.contains(&clip.id))
-            .all(|clip| clip.group == Some(duplicate_group)));
+        assert!(
+            timeline
+                .clips
+                .iter()
+                .filter(|clip| timeline.selected.contains(&clip.id))
+                .all(|clip| clip.group == Some(duplicate_group))
+        );
     }
 
     #[test]
@@ -8589,9 +8612,11 @@ mod effect_model_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(media_groups.len(), 2);
-        assert!(media_groups
-            .iter()
-            .all(|group| group.len() == 1 && group[0].points.len() == 2));
+        assert!(
+            media_groups
+                .iter()
+                .all(|group| group.len() == 1 && group[0].points.len() == 2)
+        );
         assert!(media_groups.iter().all(|group| {
             group[0]
                 .points
@@ -8599,12 +8624,16 @@ mod effect_model_tests {
                 .map(|point| point.time)
                 .eq([1.0, 7.0])
         }));
-        assert!(media_groups
-            .iter()
-            .any(|group| { matches!(group[0].id.group.property, KeyframeProperty::Opacity) }));
-        assert!(media_groups
-            .iter()
-            .any(|group| { matches!(group[0].id.group.property, KeyframeProperty::BlendMode) }));
+        assert!(
+            media_groups
+                .iter()
+                .any(|group| { matches!(group[0].id.group.property, KeyframeProperty::Opacity) })
+        );
+        assert!(
+            media_groups
+                .iter()
+                .any(|group| { matches!(group[0].id.group.property, KeyframeProperty::BlendMode) })
+        );
 
         let opacity = &media_groups
             .iter()
@@ -8682,22 +8711,30 @@ mod effect_model_tests {
         let VisualSource::Generator(second_generator) = &second_row.source else {
             panic!("second generator row lost its source");
         };
-        assert!(first_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(1.0));
-        assert!(!first_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(7.0));
-        assert!(second_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(7.0));
-        assert!(!second_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(1.0));
+        assert!(
+            first_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(1.0)
+        );
+        assert!(
+            !first_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(7.0)
+        );
+        assert!(
+            second_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(7.0)
+        );
+        assert!(
+            !second_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(1.0)
+        );
     }
 
     #[test]
@@ -8794,10 +8831,12 @@ mod effect_model_tests {
             .unwrap();
         assert!(row.composite.opacity.has_keyframe(1.0));
         assert!(row.composite.opacity.has_keyframe(7.0));
-        assert!(loaded
-            .clips
-            .iter()
-            .all(|clip| !clip.composite.opacity.has_keyframes()));
+        assert!(
+            loaded
+                .clips
+                .iter()
+                .all(|clip| !clip.composite.opacity.has_keyframes())
+        );
     }
 
     #[test]
@@ -8854,28 +8893,38 @@ mod effect_model_tests {
         let VisualSource::Generator(second_generator) = &second_row.source else {
             panic!("second migrated row lost its generator source");
         };
-        assert!(first_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(1.0));
-        assert!(!first_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(7.0));
-        assert!(second_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(7.0));
-        assert!(!second_generator
-            .host_binding("amount")
-            .unwrap()
-            .has_keyframe(1.0));
-        assert!(loaded.clips.iter().all(|clip| match &clip.source {
-            VisualSource::Generator(generator) => generator
-                .parameters()
-                .values()
-                .all(|binding| !binding.has_keyframes()),
-            _ => true,
+        assert!(
+            first_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(1.0)
+        );
+        assert!(
+            !first_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(7.0)
+        );
+        assert!(
+            second_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(7.0)
+        );
+        assert!(
+            !second_generator
+                .host_binding("amount")
+                .unwrap()
+                .has_keyframe(1.0)
+        );
+        assert!(loaded.clips.iter().all(|clip| {
+            match &clip.source {
+                VisualSource::Generator(generator) => generator
+                    .parameters()
+                    .values()
+                    .all(|binding| !binding.has_keyframes()),
+                _ => true,
+            }
         }));
     }
 
@@ -8935,10 +8984,12 @@ mod effect_model_tests {
         assert_eq!(layer.property_rows.len(), 1);
         let row = layer.property_row(&VisualSource::Media(42), 0).unwrap();
         assert!(row.composite.opacity.has_keyframe(2.0));
-        assert!(loaded
-            .clips
-            .iter()
-            .all(|clip| !clip.composite.opacity.has_keyframes()));
+        assert!(
+            loaded
+                .clips
+                .iter()
+                .all(|clip| !clip.composite.opacity.has_keyframes())
+        );
 
         let saved = serde_json::to_value(loaded.document()).unwrap();
         assert!(saved.get("media_property_rows").is_none());

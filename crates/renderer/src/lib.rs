@@ -4,7 +4,7 @@ pub use atlas::{AtlasEntry, AtlasFull};
 use std::sync::Arc;
 pub use types::*;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bytemuck::{Pod, Zeroable};
 use num_traits::ToPrimitive;
 use winit::{dpi::PhysicalSize, window::Window};
@@ -832,7 +832,7 @@ impl Renderer {
                 }
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(())
+                return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Lost => bail!("surface lost"),
             wgpu::CurrentSurfaceTexture::Validation => bail!("surface validation error"),

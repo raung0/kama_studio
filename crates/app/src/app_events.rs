@@ -1,12 +1,22 @@
 use std::path::{Path, PathBuf};
 
-use crate::file_io::{app_data_dir, atomic_write_json, read_json};
+use crate::{
+    file_io::{app_data_dir, atomic_write_json, read_json},
+    updater::AvailableUpdate,
+};
+use winit::window::WindowId;
 
 #[cfg(target_os = "macos")]
 use muda::MenuEvent;
 
 pub(super) enum AppEvent {
     Interrupt,
+    UpdateAvailable(AvailableUpdate),
+    UpdateFinished {
+        window_id: WindowId,
+        version: String,
+        error: Option<String>,
+    },
     #[cfg(target_os = "macos")]
     Menu(MenuEvent),
 }

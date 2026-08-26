@@ -2,8 +2,8 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use kama_ui::{
-    components::{ColorPicker, ComboBox, Slider, TextEdit},
     Color, IconId, Rect, Renderer, ScrollState,
+    components::{ColorPicker, ComboBox, Slider, TextEdit},
 };
 use serde::{Deserialize, Serialize};
 use winit::{
@@ -13,7 +13,7 @@ use winit::{
 
 use crate::{
     app_modal::PopupAnimation,
-    command::{fuzzy_score, CommandRegistry, KeyBinding},
+    command::{CommandRegistry, KeyBinding, fuzzy_score},
     dialog,
     file_io::{app_data_dir, atomic_write_json, read_json},
     runtime::media::{hardware_decoding_enabled, set_hardware_decoding_enabled},

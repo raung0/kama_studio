@@ -1,4 +1,4 @@
-use crate::{ui_component, Color, IconId, Size};
+use crate::{Color, IconId, Size, ui_component};
 
 #[derive(Default)]
 pub struct RowComponent;

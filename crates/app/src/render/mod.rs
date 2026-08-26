@@ -1,6 +1,7 @@
 use kama_ui::{
+    Align, BlockId, Color, IconId, Rect, ScrollState, Size,
     components::{Accordion, Button, ComboBox, NumberInput, SpinInput, TextEdit, ToggleButton},
-    measure_layout, Align, BlockId, Color, IconId, Rect, ScrollState, Size,
+    measure_layout,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use winit::{
 };
 
 use crate::{
+    Renderer,
     assets::{AppIcon, Icons},
     file_io::{app_data_dir, atomic_write_json, read_json},
     i18n,
@@ -18,7 +20,6 @@ use crate::{
     project::{CompositionId, Project},
     theme,
     timeline::TimelineState,
-    Renderer,
 };
 
 mod cache_encoder;

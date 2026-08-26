@@ -3,8 +3,8 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
     sync::{
-        mpsc::{self, Receiver, Sender},
         Arc,
+        mpsc::{self, Receiver, Sender},
     },
     thread,
 };

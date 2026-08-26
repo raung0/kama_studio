@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use kama_ui::{IconId, Renderer, TextureId};
 
 pub(crate) const ICON_SIZE: u32 = 80;

@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cosmic_text::{
     Align as CosmicAlign, Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping,
     SwashCache, SwashContent, Wrap,
@@ -1459,11 +1459,7 @@ const fn axis_spec(block: &Block, horizontal: bool) -> Size {
 }
 
 const fn axis_extent(rect: Rect, horizontal: bool) -> f32 {
-    if horizontal {
-        rect.width
-    } else {
-        rect.height
-    }
+    if horizontal { rect.width } else { rect.height }
 }
 
 fn axis_rect(

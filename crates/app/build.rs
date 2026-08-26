@@ -131,6 +131,14 @@ fn main() {
         std::process::exit(1);
     }
     export_app_version();
+    export_update_repository();
+}
+
+fn export_update_repository() {
+    println!("cargo:rerun-if-env-changed=GITHUB_REPOSITORY");
+    let repository =
+        env::var("GITHUB_REPOSITORY").unwrap_or_else(|_| "raung0/kama_studio".to_owned());
+    println!("cargo:rustc-env=APP_UPDATE_REPOSITORY={repository}");
 }
 
 fn export_app_version() {
@@ -231,7 +239,8 @@ fn embed_builtin_plugin(out_dir: &Path) {
                 eprintln!("launch builtin {crate_name} WASM build: {error}");
                 std::process::exit(1);
             });
-        assert!(status.success(),
+        assert!(
+            status.success(),
             "builtin {crate_name} WASM build failed; ensure wasm32-unknown-unknown is installed (the Nix flake includes it)"
         );
         let wasm = target

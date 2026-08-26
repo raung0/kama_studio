@@ -155,11 +155,7 @@ impl Model3dShading {
 
     #[must_use]
     pub const fn from_index(index: usize) -> Self {
-        if index == 1 {
-            Self::Pbr
-        } else {
-            Self::Unlit
-        }
+        if index == 1 { Self::Pbr } else { Self::Unlit }
     }
 
     #[must_use]

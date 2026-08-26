@@ -3,28 +3,28 @@ use std::{
     fs::File,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use rodio::{
+    ChannelCount, Decoder, MixerDeviceSink, Player, Sample, SampleRate, Source,
     mixer::{self, Mixer},
     source::Zero,
-    ChannelCount, Decoder, MixerDeviceSink, Player, Sample, SampleRate, Source,
 };
 
 use crate::{
     effects::{
-        resolved_node_input_cached, GpuValue, PipelineInstance, PipelineKind, ValueEvalContext,
-        ValueEvaluator,
+        GpuValue, PipelineInstance, PipelineKind, ValueEvalContext, ValueEvaluator,
+        resolved_node_input_cached,
     },
     messages,
     plugin::PluginRegistry,
     project::{CompositionId, HostValue, MediaId, MediaKind, Project, VisualSource},
-    runtime::wasm::{plugin_parameter_hash, AudioWasmProcessor, AudioWasmRuntime},
+    runtime::wasm::{AudioWasmProcessor, AudioWasmRuntime, plugin_parameter_hash},
     timeline::{Clip, TimelineDocument, TimelineState, Track},
 };
 
@@ -1417,7 +1417,7 @@ pub(crate) fn render_audio_wav(
 
 #[cfg(test)]
 mod tests {
-    use super::{looped_source_segments, next_f32_up, StereoTrackSource, TrackMixControl};
+    use super::{StereoTrackSource, TrackMixControl, looped_source_segments, next_f32_up};
     use rodio::buffer::SamplesBuffer;
     use std::sync::Arc;
 

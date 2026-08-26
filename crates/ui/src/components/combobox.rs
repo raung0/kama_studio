@@ -2,7 +2,7 @@ use std::{cell::Cell, fmt::Display};
 
 use crate::{Align, BuildCtx, Color, IconId, PopupDirection, PopupState, Rect, ScrollState, Size};
 
-use super::{ease, Style};
+use super::{Style, ease};
 
 const OPTION_H: f32 = 26.0;
 const MAX_VISIBLE_OPTIONS: usize = 10;

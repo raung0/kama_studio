@@ -1,8 +1,8 @@
 use std::hash::Hash;
 
 use crate::{
-    components::{ComboBox, Knob, NumberInput, Style, VerticalSlider},
     BuildCtx, IconId, Rect,
+    components::{ComboBox, Knob, NumberInput, Style, VerticalSlider},
 };
 use winit::keyboard::ModifiersState;
 

@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::Result;
 use kama_ui::{
+    BlockId, Color, CursorShape, FormatKey, IconId, Rect, Renderer, Size,
     components::{
         Accordion, Button, ColorButton, ColorPicker, ComboBox, EditResponse, Knob, NumberInput,
         SpinInput, Style, TextEdit, ToggleButton, VerticalSlider,
@@ -13,7 +14,6 @@ use kama_ui::{
         ComboControl, ControlRegistry, EnumControlsExt, KnobControlsExt, NumberControlsExt,
         SliderControlsExt,
     },
-    BlockId, Color, CursorShape, FormatKey, IconId, Rect, Renderer, Size,
 };
 use winit::{
     event::{Ime, KeyEvent},
@@ -21,19 +21,19 @@ use winit::{
 };
 
 use crate::{
+    RADIUS_SM,
     assets::{AppIcon, Icons},
     effects::{GpuValue, PipelineKind},
     gradient::{colors_from_values, colors_to_values, default_color},
     i18n,
     plugin::{InputType, PluginInput, PluginRegistry},
     project::{
-        AlphaBlendMode, BlendMode, CompositionId, GeneratorSource, HostValue, MediaId, MediaKind,
-        Project, ProjectBackground, MAX_CANVAS_DIMENSION, MAX_FRAME_RATE,
+        AlphaBlendMode, BlendMode, CompositionId, GeneratorSource, HostValue, MAX_CANVAS_DIMENSION,
+        MAX_FRAME_RATE, MediaId, MediaKind, Project, ProjectBackground,
     },
     theme,
-    timeline::{format_timecode, parse_timecode, TimelineState, TrackKind},
-    widgets::{build_context_menu, context_menu_hit, context_menu_rect, ContextMenuItem},
-    RADIUS_SM,
+    timeline::{TimelineState, TrackKind, format_timecode, parse_timecode},
+    widgets::{ContextMenuItem, build_context_menu, context_menu_hit, context_menu_rect},
 };
 
 const ROW_H: f32 = 29.0;
@@ -50,8 +50,8 @@ use panels_graph_cards::*;
 #[cfg(test)]
 use panels_graph_state::graph_stable_fallback;
 use panels_graph_state::{
-    graph_host_row_height, graph_property_row_height, set_eq_band, GraphCard, GRAPH_CARD_BASE_H,
-    GRAPH_CARD_W, GRAPH_IMAGE_INPUT_H, GRAPH_INPUT_H, GRAPH_TOOLBAR_H,
+    GRAPH_CARD_BASE_H, GRAPH_CARD_W, GRAPH_IMAGE_INPUT_H, GRAPH_INPUT_H, GRAPH_TOOLBAR_H,
+    GraphCard, graph_host_row_height, graph_property_row_height, set_eq_band,
 };
 pub(crate) use panels_graph_state::{
     GraphMonitorSelection, GraphNodeTarget, GraphWire, PipelineGraphAction, PipelineGraphState,
@@ -470,7 +470,7 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
     }
 
     fn is_cursor_lock_dragging(&self) -> bool {
-        self.numbers.is_dragging() || self.angles.is_number_dragging() || self.sliders.is_dragging()
+        self.numbers.is_dragging() || self.angles.is_number_dragging()
     }
 
     fn pointer_released(&mut self) -> bool {

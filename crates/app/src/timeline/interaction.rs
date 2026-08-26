@@ -969,10 +969,10 @@ impl TimelineState {
             if let Some(layout) = self.focused_layout(snapshot) {
                 match event.logical_key {
                     Key::Named(NamedKey::ArrowUp) if self.cycle_hover_target(layout, -1) => {
-                        return true
+                        return true;
                     }
                     Key::Named(NamedKey::ArrowDown) if self.cycle_hover_target(layout, 1) => {
-                        return true
+                        return true;
                     }
                     _ => {}
                 }

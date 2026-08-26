@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::{BuildCtx, FormatKey, Rect, Size};
 
-use super::{ease, Style};
+use super::{Style, ease};
 
 const SPEED: f32 = 22.0;
 const TRACK: f32 = 4.0;

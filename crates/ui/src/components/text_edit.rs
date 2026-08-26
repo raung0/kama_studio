@@ -14,7 +14,7 @@ use winit::{
     keyboard::{Key, ModifiersState, NamedKey},
 };
 
-use super::{ease, Style};
+use super::{Style, ease};
 use crate::{Align, BuildCtx, Rect};
 
 const PAD: f32 = 7.0;

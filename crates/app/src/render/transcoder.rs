@@ -1,14 +1,14 @@
 use std::{
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 use anyhow::{Context, Result};
 use ffmpeg::{
-    codec, encoder, filter, format, frame, media, software::scaling, Dictionary, Packet, Rational,
+    Dictionary, Packet, Rational, codec, encoder, filter, format, frame, media, software::scaling,
 };
 use ffmpeg_next as ffmpeg;
 
@@ -463,11 +463,11 @@ fn video_options(settings: &RenderSpec) -> Dictionary<'static> {
 mod tests {
     use std::{
         io::Write,
-        sync::{atomic::AtomicBool, Arc},
+        sync::{Arc, atomic::AtomicBool},
     };
 
     use super::*;
-    use crate::render::{cache_encoder::CacheEncoder, RenderPreset, RenderResolution};
+    use crate::render::{RenderPreset, RenderResolution, cache_encoder::CacheEncoder};
 
     #[test]
     fn transcodes_cache() {

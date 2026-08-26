@@ -13,12 +13,12 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
+    Error, Expr, FnArg, Ident, ItemImpl, LitStr, Pat, Path, ReceiverKind, Result, Token, Type,
     braced,
     ext::IdentExt,
     parenthesized,
     parse::{Parse, ParseStream},
-    parse_macro_input, Error, Expr, FnArg, Ident, ItemImpl, LitStr, Pat, Path, ReceiverKind,
-    Result, Token, Type,
+    parse_macro_input,
 };
 
 #[proc_macro]

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use kama_ui::components::TextEdit;
 
-use crate::{PendingDiscardAction, POPUP_FADE_DURATION};
+use crate::{POPUP_FADE_DURATION, PendingDiscardAction};
 
 pub(super) struct PopupAnimation {
     opened_at: Instant,

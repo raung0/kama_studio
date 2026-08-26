@@ -15,7 +15,7 @@ use crate::{
     Renderer, Size, TextureId,
 };
 
-use super::{ease, ColorButton, Style, TextEdit};
+use super::{ColorButton, Style, TextEdit, ease};
 
 const SPEED: f32 = 18.0;
 const POPUP_W: f32 = 300.0;

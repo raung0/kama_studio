@@ -441,7 +441,9 @@ impl RenderJob {
 
         anyhow::bail!(
             "ProRes cache encoder repeatedly failed for frames {}..{}; all previously committed cache chunks were preserved. Last error: {}",
-            chunk.start, chunk.end, reason
+            chunk.start,
+            chunk.end,
+            reason
         )
     }
 
@@ -2005,14 +2007,14 @@ impl RenderSession {
 }
 
 use std::{
-    collections::{hash_map::DefaultHasher, HashSet},
+    collections::{HashSet, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
-        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -2022,7 +2024,7 @@ use anyhow::{Context, Error, Result};
 use kama_ui::Renderer;
 use serde::Serialize;
 
-use super::{cache_encoder::CacheEncoder, RenderSpec, DEFAULT_CACHE_CHUNK_SECONDS};
+use super::{DEFAULT_CACHE_CHUNK_SECONDS, RenderSpec, cache_encoder::CacheEncoder};
 use crate::{
     audio::render_audio_wav,
     effects::{Binding, EffectRuntime, PipelineInstance},

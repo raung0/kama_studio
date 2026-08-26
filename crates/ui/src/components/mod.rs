@@ -7,6 +7,7 @@ mod knob;
 mod label;
 mod number_input;
 mod primitives;
+mod progress_bar;
 mod slider;
 mod spin_input;
 mod style;
@@ -26,6 +27,7 @@ pub use primitives::{
     ColumnUi, ColumnUiProps, HSpacerUi, HSpacerUiProps, IconUi, IconUiProps, RowUi, RowUiProps,
     VSpacerUi, VSpacerUiProps,
 };
+pub use progress_bar::ProgressBar;
 pub use slider::Slider;
 pub use spin_input::SpinInput;
 pub use style::Style;

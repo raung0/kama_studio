@@ -1534,9 +1534,11 @@ mod tests {
         let mut target = DockState::single("Timeline");
         let target_snapshot = target.layout(Rect::new(0.0, 0.0, 400.0, 300.0));
         let target_stack = target_snapshot.stacks[0].stack.id;
-        assert!(target
-            .drop_external(transfer, target_stack, DropZone::Center, None)
-            .is_some());
+        assert!(
+            target
+                .drop_external(transfer, target_stack, DropZone::Center, None)
+                .is_some()
+        );
 
         let result = target.layout(Rect::new(0.0, 0.0, 400.0, 300.0));
         let stack = &result.stacks[0].stack;

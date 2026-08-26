@@ -1,4 +1,4 @@
-use kama_ui::{measure_layout, ui, ui_component, Align, BuildCtx, Color, IconId, Rect, Size};
+use kama_ui::{Align, BuildCtx, Color, IconId, Rect, Size, measure_layout, ui, ui_component};
 
 #[derive(Default)]
 struct BadgeComponent;

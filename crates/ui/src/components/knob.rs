@@ -6,7 +6,7 @@ use std::{
 
 use crate::{BuildCtx, Color, FormatKey, Rect, Size};
 
-use super::{ease, Style};
+use super::{Style, ease};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(360);
 const PRESENTATION_SPEED: f32 = 24.0;
@@ -259,11 +259,7 @@ fn wrap_radians(mut value: f64) -> f64 {
 }
 
 fn ordered_bounds(a: f64, b: f64) -> (f64, f64) {
-    if a <= b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a <= b { (a, b) } else { (b, a) }
 }
 fn normalized(value: f64, minimum: f64, maximum: f64) -> f32 {
     if maximum <= minimum {

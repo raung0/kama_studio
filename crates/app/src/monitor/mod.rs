@@ -10,17 +10,17 @@ use crate::{
     i18n,
     panels::GraphMonitorSelection,
     playback::{
-        generator_content_bounds, tight_generator_source_geometry, PreviewOutput, SourceGeometry,
+        PreviewOutput, SourceGeometry, generator_content_bounds, tight_generator_source_geometry,
     },
     plugin::{EffectRole, GeneratorDefinition, InputType, MonitorHandleMode, PluginRegistry},
     project::{GeneratorSource, Project, VisualSource},
-    runtime::wasm::{plugin_parameter_hash, WasmRuntime},
+    runtime::wasm::{WasmRuntime, plugin_parameter_hash},
     theme,
     timeline::{Clip, TimelineState, TrackKind},
 };
 use kama_ui::{
-    components::{ComboBox, ComboBoxOpenDirection, ToggleButton},
     Color, IconId, Rect, Size,
+    components::{ComboBox, ComboBoxOpenDirection, ToggleButton},
 };
 use winit::keyboard::ModifiersState;
 
@@ -4213,8 +4213,8 @@ mod snap_tests {
     use crate::{
         effects::{EffectNode, ImageBinding, NodeExecution, SocketRef},
         playback::{
-            generator_render_cache_key, local_node_evaluation_order, quantize_composition_time,
-            GraphGeneratorVariants, GRAPH_GENERATOR_VARIANT_CAPACITY,
+            GRAPH_GENERATOR_VARIANT_CAPACITY, GraphGeneratorVariants, generator_render_cache_key,
+            local_node_evaluation_order, quantize_composition_time,
         },
         project::HostBinding,
     };

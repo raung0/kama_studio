@@ -1,12 +1,12 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
-        Arc, Condvar, Mutex,
     },
     thread,
 };
@@ -17,8 +17,8 @@ use kama_ui::{ExternalTextureId, Renderer};
 use crate::{
     clip_graph_cache,
     effects::{
-        resolved_node_input_cached, EffectRuntime, GpuValue, ImageBinding, ImageGraphIndex,
-        PipelineInstance, ValueEvaluator,
+        EffectRuntime, GpuValue, ImageBinding, ImageGraphIndex, PipelineInstance, ValueEvaluator,
+        resolved_node_input_cached,
     },
     embedded_vfs, messages,
     plugin::{GeneratorBackend, GeneratorDefinition, PluginRegistry},
@@ -26,7 +26,7 @@ use crate::{
         CompositionId, CompositionSettings, GeneratorSource, HostBinding, MediaKind, Project,
         ProjectBackground, VisualSource,
     },
-    runtime::media::{ExportVideoDecoder, VideoDecoder, SCRUB_PREVIEW_FPS},
+    runtime::media::{ExportVideoDecoder, SCRUB_PREVIEW_FPS, VideoDecoder},
     runtime::video::{
         CompositeArgs, CpuFrame, EffectEvalContext, EffectInputs, EffectRenderArgs, ExportPassArgs,
         GeneratorRenderArgs, GpuFrame, PresentationArgs, PresentationTexture, VideoFrame,
@@ -39,7 +39,7 @@ use crate::{
 use super::{
     decode_pool::VideoDecoderPool,
     export_readback::{ExportReadbacks, ExportRgba16Args, ExportYuvBatchArgs},
-    preload::{upcoming_video_preloads, VIDEO_CLIP_PRELOAD_LIMIT},
+    preload::{VIDEO_CLIP_PRELOAD_LIMIT, upcoming_video_preloads},
 };
 
 #[derive(Clone, Debug)]

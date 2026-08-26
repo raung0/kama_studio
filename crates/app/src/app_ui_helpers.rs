@@ -1,3 +1,5 @@
+use kama_ui::components::ProgressBar;
+
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -21,6 +23,7 @@ pub(super) fn build_active_modal(
         Modal::Composition(dialog) => build_new_composition_dialog(ctx, width, height, dialog),
         Modal::SpeedDuration(dialog) => build_speed_duration_dialog(ctx, width, height, dialog),
         Modal::MissingMedia(dialog) => build_missing_media_dialog(ctx, width, height, dialog),
+        Modal::Update(dialog) => build_update_dialog(ctx, width, height, dialog),
     }
 }
 
@@ -550,6 +553,182 @@ pub(super) fn build_missing_media_dialog(
                 &i18n::text("dialog-load-project"),
                 ModalButtonRole::Danger,
             );
+        },
+    );
+}
+
+const UPDATE_DIALOG_W: f32 = 440.0;
+const UPDATE_DIALOG_H: f32 = 190.0;
+
+pub(super) fn update_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
+    centered_dialog_rect(
+        viewport_width,
+        viewport_height,
+        UPDATE_DIALOG_W.min((viewport_width - 16.0).max(280.0)),
+        UPDATE_DIALOG_H,
+    )
+}
+
+fn update_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
+    let rows = kama_ui::layout::column(
+        dialog,
+        &[
+            kama_ui::layout::Item::height(12.0),
+            kama_ui::layout::Item::height(20.0),
+            kama_ui::layout::Item::height(8.0),
+            kama_ui::layout::Item::height(64.0),
+            kama_ui::layout::Item::height(8.0),
+            kama_ui::layout::Item::height(20.0),
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::height(24.0),
+            kama_ui::layout::Item::height(12.0),
+        ],
+        0.0,
+        0.0,
+        ui::Align::Start,
+        None,
+    );
+    let title = dialog_content_row(rows[1]);
+    let body = dialog_content_row(rows[3]);
+    let progress = dialog_content_row(rows[5]);
+    let buttons = kama_ui::layout::row(
+        rows[7],
+        &[
+            kama_ui::layout::Item::fill(),
+            kama_ui::layout::Item::width(70.0),
+            kama_ui::layout::Item::width(8.0),
+            kama_ui::layout::Item::width(92.0),
+            kama_ui::layout::Item::width(12.0),
+        ],
+        0.0,
+        0.0,
+        ui::Align::Start,
+    );
+    (title, body, progress, [buttons[1], buttons[3]])
+}
+
+pub(super) fn update_dialog_button_rect(dialog: Rect, primary: bool) -> Rect {
+    update_dialog_parts(dialog).3[primary as usize]
+}
+
+fn update_dialog_title(dialog: &UpdateDialog) -> &'static str {
+    match &dialog.state {
+        UpdateDialogState::Available => "Update available",
+        UpdateDialogState::Installing => "Updating Kama",
+        UpdateDialogState::Installed => "Update installed",
+        UpdateDialogState::Failed(_) => "Update failed",
+    }
+}
+
+fn update_dialog_message(dialog: &UpdateDialog) -> String {
+    match &dialog.state {
+        UpdateDialogState::Available => format!(
+            "Kama {} is available. You are currently using {}. Update now to install the new version.",
+            dialog.version,
+            version::VERSION,
+        ),
+        UpdateDialogState::Installing => format!(
+            "Downloading and installing Kama {}. Keep Kama open until the update finishes.",
+            dialog.version,
+        ),
+        UpdateDialogState::Installed => format!(
+            "Kama {} was installed successfully. Restart Kama when you're ready to use the new version.",
+            dialog.version,
+        ),
+        UpdateDialogState::Failed(error) => {
+            let mut error = error.replace('\n', " ");
+            if error.chars().count() > 150 {
+                error = error.chars().take(147).collect::<String>() + "...";
+            }
+            format!(
+                "The update could not be installed. You can retry or close this dialog.\n{error}"
+            )
+        }
+    }
+}
+
+pub(super) fn build_update_dialog(
+    ctx: &mut ui::BuildCtx,
+    viewport_width: f32,
+    viewport_height: f32,
+    dialog: &UpdateDialog,
+) {
+    let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
+    let rect = update_dialog_rect(viewport_width, viewport_height);
+    let local = Rect::new(0.0, 0.0, rect.width, rect.height);
+    let (title, body, progress, _) = update_dialog_parts(local);
+    build_modal(
+        ctx,
+        "update-scrim",
+        "update-dialog",
+        (viewport, rect),
+        dialog.opacity(Instant::now()),
+        |ctx| {
+            build_modal_title(ctx, "update-title", title, update_dialog_title(dialog));
+            ui::ui!(ctx, {
+                Rect("update-message", body) {
+                    font_size: 10.5;
+                    text_color: theme::popup_muted();
+                    text: update_dialog_message(dialog);
+                }
+            });
+
+            match &dialog.state {
+                UpdateDialogState::Installing => ProgressBar::build_indeterminate(
+                    ctx,
+                    "update-progress",
+                    progress,
+                    dialog.progress_phase,
+                    component_style(),
+                ),
+                UpdateDialogState::Installed => {
+                    ProgressBar::build(ctx, "update-progress", progress, 1.0, component_style())
+                }
+                UpdateDialogState::Available | UpdateDialogState::Failed(_) => {}
+            }
+
+            match &dialog.state {
+                UpdateDialogState::Available => {
+                    build_modal_button(
+                        ctx,
+                        "update-cancel",
+                        update_dialog_button_rect(local, false),
+                        "Cancel",
+                        ModalButtonRole::Secondary,
+                    );
+                    build_modal_button(
+                        ctx,
+                        "update-install",
+                        update_dialog_button_rect(local, true),
+                        "Update",
+                        ModalButtonRole::Primary,
+                    );
+                }
+                UpdateDialogState::Failed(_) => {
+                    build_modal_button(
+                        ctx,
+                        "update-close",
+                        update_dialog_button_rect(local, false),
+                        "Close",
+                        ModalButtonRole::Secondary,
+                    );
+                    build_modal_button(
+                        ctx,
+                        "update-retry",
+                        update_dialog_button_rect(local, true),
+                        "Retry",
+                        ModalButtonRole::Primary,
+                    );
+                }
+                UpdateDialogState::Installed => build_modal_button(
+                    ctx,
+                    "update-done",
+                    update_dialog_button_rect(local, true),
+                    "Close",
+                    ModalButtonRole::Primary,
+                ),
+                UpdateDialogState::Installing => {}
+            }
         },
     );
 }

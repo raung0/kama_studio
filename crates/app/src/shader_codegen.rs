@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use naga::{
     back::wgsl::{self, WriterFlags},
     front::wgsl::parse_str,
@@ -245,7 +245,9 @@ fn namespace_module(source: &str, display_name: &str, namespace: &str) -> Result
     }
     for (_, ty) in module.types.iter() {
         if ty.name.is_some() {
-            bail!("plugin module {display_name} declares a named WGSL type; plugin types must remain anonymous");
+            bail!(
+                "plugin module {display_name} declares a named WGSL type; plugin types must remain anonymous"
+            );
         }
     }
 
@@ -262,7 +264,9 @@ fn namespace_module(source: &str, display_name: &str, namespace: &str) -> Result
     }
     for (_, global) in module.global_variables.iter_mut() {
         if global.binding.is_some() {
-            bail!("plugin module {display_name} declares @group/@binding; GPU resources are host-owned");
+            bail!(
+                "plugin module {display_name} declares @group/@binding; GPU resources are host-owned"
+            );
         }
         if let Some(name) = &mut global.name {
             *name = format!("{prefix}{name}");

@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use cosmic_text::{
     Align as CosmicAlign, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache,
     SwashContent, Wrap,
@@ -1069,9 +1069,11 @@ mod monitor_tests {
             .unwrap();
         assert_eq!(overlay.handles.len(), 4);
         assert_eq!(overlay.lines.len(), 4);
-        assert!(overlay
-            .handles
-            .iter()
-            .all(|handle| handle.target == plugin_parameter_hash("size")));
+        assert!(
+            overlay
+                .handles
+                .iter()
+                .all(|handle| handle.target == plugin_parameter_hash("size"))
+        );
     }
 }

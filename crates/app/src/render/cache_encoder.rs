@@ -1,7 +1,7 @@
 use std::{io, path::Path};
 
 use anyhow::{Context, Result};
-use ffmpeg::{codec, encoder, format, frame, Dictionary, Packet, Rational};
+use ffmpeg::{Dictionary, Packet, Rational, codec, encoder, format, frame};
 use ffmpeg_next as ffmpeg;
 
 pub(super) struct CacheEncoder {

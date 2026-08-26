@@ -1,24 +1,23 @@
 use std::{
     collections::{HashMap, VecDeque},
-    ffi::{c_void, CString},
+    ffi::{CString, c_void},
     path::{Path, PathBuf},
     sync::{
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
-        Arc, Condvar, Mutex, OnceLock, Weak,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ffmpeg::{
-    codec, format,
+    Rational, codec, format,
     media::Type,
     software::scaling::{context::Context as ScalingContext, flag::Flags as ScalingFlags},
     util::frame::video::Video,
     util::{color, format::pixel::Pixel},
-    Rational,
 };
 use ffmpeg_next as ffmpeg;
 
@@ -186,7 +185,7 @@ type VTPixelTransferSessionRef = *mut c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "VideoToolbox", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn VTPixelTransferSessionCreate(
         allocator: *const c_void,
         session_out: *mut VTPixelTransferSessionRef,
@@ -201,7 +200,7 @@ extern "C" {
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CFRelease(value: *const c_void);
 }
 
@@ -740,7 +739,9 @@ impl DecoderState {
                 if hardware_rejected.is_some_and(|rejected| rejected.load(Ordering::Acquire))
                     && !*hardware_frame_seen
                 {
-                    bail!("hardware decoder rejected its surface format before producing a frame: {error}");
+                    bail!(
+                        "hardware decoder rejected its surface format before producing a frame: {error}"
+                    );
                 }
                 bail!("send FFmpeg video packet: {error}");
             }
@@ -2975,25 +2976,34 @@ unsafe extern "C" fn prefer_hardware_format(
     context: *mut ffmpeg::ffi::AVCodecContext,
     formats: *const ffmpeg::ffi::AVPixelFormat,
 ) -> ffmpeg::ffi::AVPixelFormat {
-    if context.is_null() || formats.is_null() || (*context).opaque.is_null() {
+    if context.is_null() || formats.is_null() {
         return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
     }
 
-    let selection = &*((*context).opaque as *const HardwareDecodeSelection);
+    let opaque = unsafe { (*context).opaque };
+    if opaque.is_null() {
+        return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
+    }
+
+    let selection = unsafe { &*(opaque as *const HardwareDecodeSelection) };
     let mut cursor = formats;
     let mut software_fallback = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
-    while (*cursor as i32) != -1 {
-        if *cursor == selection.pixel_format {
-            return *cursor;
+    loop {
+        let pixel_format = unsafe { *cursor };
+        if (pixel_format as i32) == -1 {
+            break;
+        }
+        if pixel_format == selection.pixel_format {
+            return pixel_format;
         }
 
         if (software_fallback as i32) < 0 {
-            let descriptor = ffmpeg::ffi::av_pix_fmt_desc_get(*cursor);
-            if !descriptor.is_null() && ((*descriptor).flags & (1 << 3)) == 0 {
-                software_fallback = *cursor;
+            let descriptor = unsafe { ffmpeg::ffi::av_pix_fmt_desc_get(pixel_format) };
+            if !descriptor.is_null() && unsafe { ((*descriptor).flags & (1 << 3)) == 0 } {
+                software_fallback = pixel_format;
             }
         }
-        cursor = cursor.add(1);
+        cursor = unsafe { cursor.add(1) };
     }
 
     selection.rejected.store(true, Ordering::Release);

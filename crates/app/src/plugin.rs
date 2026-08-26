@@ -5,19 +5,19 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::{
     effects::{
-        Binding, DynamicImageInputs, EffectNode, GpuValue, ImageBinding, NodeExecution,
-        PipelineInstance, LOCAL_TRANSFORM_NODE_ID,
+        Binding, DynamicImageInputs, EffectNode, GpuValue, ImageBinding, LOCAL_TRANSFORM_NODE_ID,
+        NodeExecution, PipelineInstance,
     },
     embedded_vfs, messages,
     project::{GeneratorSource, HostBinding, HostValue},
     runtime::wasm::{
-        plugin_parameter_hash, AudioWasmRuntime, WasmRenderRequest, WasmRuntime,
-        DEFAULT_RENDER_EXPORT,
+        AudioWasmRuntime, DEFAULT_RENDER_EXPORT, WasmRenderRequest, WasmRuntime,
+        plugin_parameter_hash,
     },
     shader_codegen::{
         build_fused_pointwise_shader, build_generator_shader, build_standalone_shader,
@@ -964,7 +964,9 @@ impl PluginRegistry {
                     bail!("effect {key} dynamic image input count must be numeric");
                 }
                 if image_inputs.len() != 2 {
-                    bail!("effect {key} dynamic compose shader must declare exactly two physical image inputs");
+                    bail!(
+                        "effect {key} dynamic compose shader must declare exactly two physical image inputs"
+                    );
                 }
             }
             let monitor = effect
@@ -1139,7 +1141,9 @@ impl PluginRegistry {
                 {
                     let Some(padding) = inputs.iter().find(|input| input.id == *padding_input)
                     else {
-                        bail!("generator {key} bounds reference missing padding input {padding_input}");
+                        bail!(
+                            "generator {key} bounds reference missing padding input {padding_input}"
+                        );
                     };
                     if !matches!(padding.ty, InputType::F32 | InputType::I32 | InputType::U32) {
                         bail!(

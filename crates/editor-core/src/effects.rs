@@ -1187,11 +1187,7 @@ enum ValueNodeOp {
 }
 
 const fn finite_or_zero(value: f32) -> f32 {
-    if value.is_finite() {
-        value
-    } else {
-        0.0
-    }
+    if value.is_finite() { value } else { 0.0 }
 }
 
 macro_rules! value_node_kinds {
@@ -1280,11 +1276,7 @@ const fn lanes(value: GpuValue) -> ([f32; 4], usize, Shape) {
 const fn result_shape(a: GpuValue, b: GpuValue) -> (usize, Shape) {
     let (_, ac, ashape) = lanes(a);
     let (_, bc, bshape) = lanes(b);
-    if ac >= bc {
-        (ac, ashape)
-    } else {
-        (bc, bshape)
-    }
+    if ac >= bc { (ac, ashape) } else { (bc, bshape) }
 }
 
 const fn from_lanes(values: [f32; 4], count: usize, shape: Shape) -> GpuValue {

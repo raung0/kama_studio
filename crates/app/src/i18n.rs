@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use i18n_embed::{
-    fluent::{fluent_language_loader, FluentLanguageLoader},
     DesktopLanguageRequester,
+    fluent::{FluentLanguageLoader, fluent_language_loader},
 };
 use rust_embed::RustEmbed;
 use unic_langid::LanguageIdentifier;
@@ -21,9 +21,11 @@ pub(crate) fn initialize(language: Option<&str>) -> Result<()> {
 
 pub(crate) fn set_language(language: Option<&str>) -> Result<()> {
     let requested_languages = match language {
-        Some(language) => vec![language
-            .parse::<LanguageIdentifier>()
-            .with_context(|| format!("invalid language preference: {language}"))?],
+        Some(language) => vec![
+            language
+                .parse::<LanguageIdentifier>()
+                .with_context(|| format!("invalid language preference: {language}"))?,
+        ],
         None => DesktopLanguageRequester::requested_languages(),
     };
     i18n_embed::select(loader(), &Localizations, &requested_languages)

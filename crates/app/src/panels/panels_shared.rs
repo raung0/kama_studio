@@ -1,6 +1,6 @@
-use kama_ui::{components::TextEdit, IconId, Rect, Size};
+use kama_ui::{IconId, Rect, Size, components::TextEdit};
 
-use super::{property_chrome, row_hit, value_row, InspectorState, KeyframeControl, ROW_H};
+use super::{InspectorState, KeyframeControl, ROW_H, property_chrome, row_hit, value_row};
 use crate::{
     theme,
     timeline::{TimelineState, TrackKind},

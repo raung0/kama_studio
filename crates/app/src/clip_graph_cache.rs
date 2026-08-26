@@ -3,14 +3,14 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        mpsc::{self, SyncSender, TrySendError},
         Arc, OnceLock,
+        mpsc::{self, SyncSender, TrySendError},
     },
     thread,
 };
 
-use anyhow::{ensure, Context, Result};
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use anyhow::{Context, Result, ensure};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 
 use crate::{
     file_io::{commit_if_absent, temporary_path},

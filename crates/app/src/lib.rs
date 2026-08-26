@@ -82,6 +82,7 @@ mod shader_codegen;
 mod theme;
 mod timeline;
 mod ui_layout;
+mod updater;
 mod version;
 mod waveform;
 mod widgets;
@@ -103,8 +104,8 @@ use app_ui_helpers::*;
 use assets::{AboutLogos, AppIcon, Icons};
 use audio::AudioPlayback;
 use command::{
-    fuzzy_score, CommandQueue, CommandRegistry, CommandScope, DockCommand, EditCommand,
-    EditorCommand, PaletteAction,
+    CommandQueue, CommandRegistry, CommandScope, DockCommand, EditCommand, EditorCommand,
+    PaletteAction, fuzzy_score,
 };
 use editor::EditorSession;
 use effects::{EffectRuntime, PipelineKind, ValueNodeKind};
@@ -113,8 +114,8 @@ use history::{HistoryPanelState, HistorySnapshot, HistoryState};
 use kama_ui as ui;
 use kama_ui::components::TextEdit;
 use kama_ui::dock::{
-    drop_preview, drop_zone, insertion_index, Axis, DockLayoutSpec, DockState, DockTransfer,
-    DropZone, LayoutSnapshot, Rect, SplitId, StackId, StackLayout, TabId,
+    Axis, DockLayoutSpec, DockState, DockTransfer, DropZone, LayoutSnapshot, Rect, SplitId,
+    StackId, StackLayout, TabId, drop_preview, drop_zone, insertion_index,
 };
 use kama_ui::{Color, CursorShape, Gui, InputState, Renderer, ScrollState, Size};
 use messages::MessagesState;
@@ -131,7 +132,7 @@ use preferences::{KeybindsDialog, SettingsDialog};
 use project::{CompositionId, MediaAsset, MediaId, MediaKind, Project};
 use render::{RenderPanelState, RenderPhase};
 use timeline::{MediaDropPreviewSpec, SpeedDurationMode, TimelineAction, TimelineState, TrackKind};
-use widgets::{component_style, WidgetGallery};
+use widgets::{WidgetGallery, component_style};
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalPosition},
@@ -139,15 +140,15 @@ use winit::{
         DeviceEvent, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase,
         WindowEvent,
     },
-    event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop, EventLoopProxy},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{CursorGrabMode, CursorIcon, CustomCursor, Theme as WindowTheme, Window, WindowId},
 };
 
 #[cfg(target_os = "macos")]
 use muda::{
-    accelerator::{Accelerator, Code, Modifiers},
     Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+    accelerator::{Accelerator, Code, Modifiers},
 };
 #[cfg(target_os = "macos")]
 use winit::platform::macos::EventLoopBuilderExtMacOS;
@@ -685,6 +686,76 @@ impl MissingMediaDialog {
 
 popup_dialog_methods!(MissingMediaDialog);
 
+#[derive(Debug)]
+enum UpdateDialogState {
+    Available,
+    Installing,
+    Installed,
+    Failed(String),
+}
+
+struct UpdateDialog {
+    version: String,
+    state: UpdateDialogState,
+    progress_phase: f32,
+    animation: PopupAnimation,
+}
+
+impl UpdateDialog {
+    fn new(version: String) -> Self {
+        Self {
+            version,
+            state: UpdateDialogState::Available,
+            progress_phase: 0.0,
+            animation: PopupAnimation::new(),
+        }
+    }
+
+    fn tick(&mut self, dt: f32) {
+        if self.installing() {
+            self.progress_phase = (self.progress_phase + dt * 0.85).rem_euclid(1.0);
+        }
+    }
+
+    fn start_installing(&mut self) {
+        self.state = UpdateDialogState::Installing;
+        self.progress_phase = 0.0;
+    }
+
+    fn finish(&mut self, error: Option<String>) {
+        self.state = match error {
+            Some(error) => UpdateDialogState::Failed(error),
+            None => UpdateDialogState::Installed,
+        };
+    }
+
+    fn installing(&self) -> bool {
+        matches!(self.state, UpdateDialogState::Installing)
+    }
+
+    fn close(&mut self) {
+        if !self.installing() {
+            self.animation.close();
+        }
+    }
+
+    fn opacity(&self, now: Instant) -> f32 {
+        self.animation.opacity(now)
+    }
+
+    fn finished(&self, now: Instant) -> bool {
+        self.animation.finished(now)
+    }
+
+    fn is_closing(&self) -> bool {
+        self.animation.is_closing()
+    }
+
+    fn is_animating(&self) -> bool {
+        self.animation.is_animating() || self.installing()
+    }
+}
+
 enum Modal {
     About(SimpleDialog),
     LayoutSave(LayoutSaveDialog),
@@ -695,6 +766,7 @@ enum Modal {
     Composition(NewCompositionDialog),
     SpeedDuration(SpeedDurationDialog),
     MissingMedia(MissingMediaDialog),
+    Update(UpdateDialog),
 }
 
 impl Modal {
@@ -705,6 +777,7 @@ impl Modal {
             Self::SpeedDuration(dialog) => dialog.editor.tick(dt),
             Self::Settings(dialog) => dialog.tick(dt),
             Self::Keybinds(dialog) => dialog.tick(dt),
+            Self::Update(dialog) => dialog.tick(dt),
             Self::About(_) | Self::Discard(_) | Self::Busy(_) | Self::MissingMedia(_) => {}
         }
     }
@@ -718,6 +791,7 @@ impl Modal {
             Self::Keybinds(dialog) => dialog.is_animating(),
             Self::About(dialog) => dialog.is_animating(),
             Self::MissingMedia(dialog) => dialog.is_animating(),
+            Self::Update(dialog) => dialog.is_animating(),
             Self::Discard(dialog) | Self::Busy(dialog) => dialog.is_animating(),
         }
     }
@@ -730,6 +804,7 @@ impl Modal {
             Self::Composition(dialog) => dialog.animation.restart(),
             Self::SpeedDuration(dialog) => dialog.animation.restart(),
             Self::MissingMedia(dialog) => dialog.animation.restart(),
+            Self::Update(dialog) => dialog.animation.restart(),
             Self::Settings(dialog) => dialog.restart_entry_animation(),
             Self::Keybinds(dialog) => dialog.restart_entry_animation(),
         }
@@ -745,6 +820,7 @@ impl Modal {
             Self::Composition(dialog) => dialog.finished(now),
             Self::SpeedDuration(dialog) => dialog.finished(now),
             Self::MissingMedia(dialog) => dialog.finished(now),
+            Self::Update(dialog) => dialog.finished(now),
         }
     }
 }
@@ -919,6 +995,7 @@ struct EditorApp {
     command_registry: CommandRegistry,
     plugin_paths: String,
     command_queue: CommandQueue,
+    event_proxy: EventLoopProxy<AppEvent>,
     snapshot: LayoutSnapshot,
     drag: Option<DragState>,
     external_drag_items: Vec<ExternalDragItem>,
@@ -963,7 +1040,7 @@ struct EditorApp {
 }
 
 impl EditorApp {
-    fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
+    fn new(event_loop: &ActiveEventLoop, event_proxy: EventLoopProxy<AppEvent>) -> Result<Self> {
         let attributes = Window::default_attributes()
             .with_title("Kama Studio")
             .with_inner_size(LogicalSize::new(1280.0, 820.0));
@@ -1027,6 +1104,7 @@ impl EditorApp {
             command_registry,
             plugin_paths,
             command_queue: CommandQueue::default(),
+            event_proxy,
             snapshot: LayoutSnapshot::default(),
             drag: None,
             external_drag_items: Vec::new(),
@@ -2317,6 +2395,21 @@ impl EditorApp {
         }
     }
 
+    fn start_update_install(&self, version: String) {
+        let proxy = self.event_proxy.clone();
+        let window_id = self.window.id();
+        std::thread::spawn(move || {
+            let error = updater::install(&version)
+                .err()
+                .map(|error| format!("{error:#}"));
+            let _ = proxy.send_event(AppEvent::UpdateFinished {
+                window_id,
+                version,
+                error,
+            });
+        });
+    }
+
     fn advance_modal_queue(&mut self) {
         if self.modal.is_some() {
             return;
@@ -2474,6 +2567,30 @@ impl EditorApp {
                     } else if missing_media_button_rect(rect, true).contains(point) {
                         self.confirm_missing_media_load(dialog);
                         dialog.close();
+                    }
+                }
+            }
+            Modal::Update(dialog) => {
+                if !dialog.is_closing() && !dialog.installing() {
+                    let rect = update_dialog_rect(width, height);
+                    let primary = update_dialog_button_rect(rect, true).contains(point);
+                    let secondary = update_dialog_button_rect(rect, false).contains(point);
+                    match &dialog.state {
+                        UpdateDialogState::Installed => {
+                            if primary || !rect.contains(point) {
+                                dialog.close();
+                            }
+                        }
+                        UpdateDialogState::Available | UpdateDialogState::Failed(_) => {
+                            if primary {
+                                let version = dialog.version.clone();
+                                dialog.start_installing();
+                                self.start_update_install(version);
+                            } else if secondary || !rect.contains(point) {
+                                dialog.close();
+                            }
+                        }
+                        UpdateDialogState::Installing => {}
                     }
                 }
             }
@@ -3033,7 +3150,8 @@ impl EditorApp {
                 | Modal::Keybinds(_)
                 | Modal::Discard(_)
                 | Modal::Busy(_)
-                | Modal::MissingMedia(_) => {}
+                | Modal::MissingMedia(_)
+                | Modal::Update(_) => {}
             }
             return;
         }
@@ -3317,7 +3435,8 @@ impl EditorApp {
                     | Modal::Keybinds(_)
                     | Modal::Discard(_)
                     | Modal::Busy(_)
-                    | Modal::MissingMedia(_) => {}
+                    | Modal::MissingMedia(_)
+                    | Modal::Update(_) => {}
                 }
             }
             return;
@@ -3437,6 +3556,7 @@ impl EditorApp {
             return false;
         };
         let mut keep = true;
+        let mut start_update = None;
         match &mut modal {
             Modal::About(dialog) => {
                 if !dialog.is_closing()
@@ -3517,6 +3637,22 @@ impl EditorApp {
                 _ => {}
             },
             Modal::MissingMedia(_) => {}
+            Modal::Update(dialog) if !dialog.is_closing() && !dialog.installing() => {
+                match event.logical_key {
+                    Key::Named(NamedKey::Escape) => dialog.close(),
+                    Key::Named(NamedKey::Enter) => match &dialog.state {
+                        UpdateDialogState::Installed => dialog.close(),
+                        UpdateDialogState::Available | UpdateDialogState::Failed(_) => {
+                            let version = dialog.version.clone();
+                            dialog.start_installing();
+                            start_update = Some(version);
+                        }
+                        UpdateDialogState::Installing => {}
+                    },
+                    _ => {}
+                }
+            }
+            Modal::Update(_) => {}
             Modal::LayoutSave(dialog) => {
                 if !dialog.is_closing() {
                     match event.logical_key {
@@ -3532,6 +3668,9 @@ impl EditorApp {
                     }
                 }
             }
+        }
+        if let Some(version) = start_update {
+            self.start_update_install(version);
         }
         self.restore_handled_modal(modal, keep);
         true
@@ -3923,7 +4062,8 @@ impl EditorApp {
                 | Modal::LayoutSave(_)
                 | Modal::Discard(_)
                 | Modal::Busy(_)
-                | Modal::MissingMedia(_) => {}
+                | Modal::MissingMedia(_)
+                | Modal::Update(_) => {}
             }
             return;
         }
@@ -4006,7 +4146,8 @@ impl EditorApp {
                 | Modal::LayoutSave(_)
                 | Modal::Discard(_)
                 | Modal::Busy(_)
-                | Modal::MissingMedia(_) => None,
+                | Modal::MissingMedia(_)
+                | Modal::Update(_) => None,
             };
         }
         if self.palette.kind.is_some() {
@@ -5437,9 +5578,10 @@ fn build_stack(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[derive(Default)]
 struct App {
     editor_app: Option<EditorApp>,
+    event_proxy: EventLoopProxy<AppEvent>,
+    update_check_started: bool,
     focused_window: Option<WindowId>,
     dock_drag_owner: Option<WindowId>,
     dock_drag_target: Option<(WindowId, [f32; 2])>,
@@ -5448,6 +5590,32 @@ struct App {
 }
 
 impl App {
+    fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
+        Self {
+            editor_app: None,
+            event_proxy,
+            update_check_started: false,
+            focused_window: None,
+            dock_drag_owner: None,
+            dock_drag_target: None,
+            dock_drag_outside_owner: false,
+            last_pointer_screen: None,
+        }
+    }
+
+    fn start_update_check(&mut self) {
+        if self.update_check_started || !updater::enabled() {
+            return;
+        }
+        self.update_check_started = true;
+        let proxy = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            if let Ok(Some(update)) = updater::check() {
+                let _ = proxy.send_event(AppEvent::UpdateAvailable(update));
+            }
+        });
+    }
+
     fn finish_dock_drag_release(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let Some(editor_app) = self.editor_app.as_mut() else {
             self.dock_drag_owner = None;
@@ -5539,12 +5707,13 @@ impl App {
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.editor_app.is_none() {
-            match EditorApp::new(event_loop) {
+            match EditorApp::new(event_loop, self.event_proxy.clone()) {
                 Ok(editor_app) => {
                     let window_id = editor_app.window.id();
                     editor_app.window.request_redraw();
                     self.focused_window = Some(window_id);
                     self.editor_app = Some(editor_app);
+                    self.start_update_check();
                 }
                 Err(_) => {
                     event_loop.exit();
@@ -6173,6 +6342,32 @@ impl ApplicationHandler<AppEvent> for App {
                 editor_app.request_exit();
                 editor_app.window.request_redraw();
             }
+            AppEvent::UpdateAvailable(update) => {
+                let Some(editor_app) = self.editor_app.as_mut() else {
+                    return;
+                };
+                editor_app.open_modal(Modal::Update(UpdateDialog::new(update.version)));
+                editor_app.window.request_redraw();
+            }
+            AppEvent::UpdateFinished {
+                window_id,
+                version,
+                error,
+            } => {
+                let Some(editor_app) = self.editor_app.as_mut() else {
+                    return;
+                };
+                if !editor_app.activate_window(window_id) {
+                    return;
+                }
+                if let Some(Modal::Update(dialog)) = editor_app.modal.as_mut()
+                    && dialog.version == version
+                    && dialog.installing()
+                {
+                    dialog.finish(error);
+                    editor_app.window.request_redraw();
+                }
+            }
             #[cfg(target_os = "macos")]
             AppEvent::Menu(event) => {
                 let Some(editor_app) = self.editor_app.as_mut() else {
@@ -6233,7 +6428,8 @@ pub fn run() -> Result<()> {
     builder.with_default_menu(false);
     let event_loop = builder.build()?;
 
-    let interrupt_proxy = event_loop.create_proxy();
+    let app_proxy = event_loop.create_proxy();
+    let interrupt_proxy = app_proxy.clone();
     ctrlc::set_handler(move || {
         let _ = interrupt_proxy.send_event(AppEvent::Interrupt);
     })
@@ -6248,7 +6444,7 @@ pub fn run() -> Result<()> {
     }
 
     event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut App::default())?;
+    event_loop.run_app(&mut App::new(app_proxy))?;
     Ok(())
 }
 

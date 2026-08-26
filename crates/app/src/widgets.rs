@@ -1,8 +1,8 @@
 use anyhow::Result;
 use kama_ui as ui;
 use kama_ui::components::{
-    Accordion, AccordionContent, Button, ColorPicker, ComboBox, Label, NumberInput, Slider, Style,
-    TextEdit, ToggleButton,
+    Accordion, AccordionContent, Button, ColorPicker, ComboBox, Label, NumberInput, ProgressBar,
+    Slider, Style, TextEdit, ToggleButton,
 };
 use kama_ui::dock::{Rect, StackId};
 use kama_ui::{Align, BlockId, Color, CursorShape, Renderer, ScrollState, Size};
@@ -12,8 +12,9 @@ use winit::{
 };
 
 use super::{
+    RADIUS_MD, RADIUS_SM,
     assets::{AppIcon, Icons},
-    theme, RADIUS_MD, RADIUS_SM,
+    theme,
 };
 
 const PAD: f32 = 16.0;
@@ -166,6 +167,7 @@ struct GalleryRects {
     toggle_action: Rect,
     combo: Field,
     combo_action: Rect,
+    progress: Field,
     accordion: Field,
     accordion_body: Rect,
     content_bottom: f32,
@@ -227,6 +229,7 @@ impl GalleryRects {
             let mut button_note = BlockId(0);
             let mut toggle = None;
             let mut combo = None;
+            let mut progress = None;
             let mut accordion = None;
             let mut accordion_body = BlockId(0);
 
@@ -284,6 +287,7 @@ impl GalleryRects {
 
                     toggle = Some(gallery_field(ctx, ROW_H, Size::Pixels(112.0)));
                     combo = Some(gallery_field(ctx, ROW_H, Size::Pixels(220.0)));
+                    progress = Some(gallery_field(ctx, ROW_H, Size::Fill));
                     accordion = Some(gallery_field(ctx, ROW_H, Size::Fill));
                     let _ = ctx
                         .new()
@@ -327,6 +331,7 @@ impl GalleryRects {
                 button_note,
                 toggle.expect("toggle field ids"),
                 combo.expect("combo field ids"),
+                progress.expect("progress field ids"),
                 accordion.expect("accordion field ids"),
                 accordion_body,
             )
@@ -345,6 +350,7 @@ impl GalleryRects {
             button_note,
             toggle,
             combo,
+            progress,
             accordion,
             accordion_body,
         ) = ids;
@@ -371,6 +377,7 @@ impl GalleryRects {
             toggle_action: toggle.control,
             combo,
             combo_action: combo.control,
+            progress: field(progress),
             accordion: field(accordion),
             accordion_body: rect(accordion_body),
             content_bottom: rect(root).bottom(),
@@ -462,7 +469,7 @@ impl WidgetGallery {
     }
 
     pub fn is_cursor_lock_dragging(&self) -> bool {
-        self.slider.is_dragging() || self.number.is_dragging()
+        self.number.is_dragging()
     }
 
     pub fn is_animating(&self) -> bool {
@@ -630,6 +637,7 @@ impl WidgetGallery {
             ("Button", layout.button.label),
             ("Toggle", layout.toggle.label),
             ("Combobox", layout.combo.label),
+            ("Progress", layout.progress.label),
             ("Accordion", layout.accordion.label),
         ];
 
@@ -735,6 +743,13 @@ impl WidgetGallery {
                         &OPTIONS,
                         icons.get(AppIcon::Chevron),
                         popup_bounds,
+                        style,
+                    );
+                    ProgressBar::build(
+                        ctx,
+                        format_args!("{} progress", stack.0),
+                        layout.progress.control,
+                        0.68,
                         style,
                     );
                     self.accordion.build(

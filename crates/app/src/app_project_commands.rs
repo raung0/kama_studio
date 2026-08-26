@@ -7,12 +7,12 @@ use std::{
 use anyhow::Result;
 
 use crate::{
+    EditorApp, MEDIA_PRESENCE_CHECK_INTERVAL, MissingMediaDialog, Modal, PendingDiscardAction,
     app_events::remember_recent_project,
     app_shared::{missing_project_media, sanitize_file_name},
     model3d,
     project::{MediaKind, Project},
-    project_io, EditorApp, MissingMediaDialog, Modal, PendingDiscardAction,
-    MEDIA_PRESENCE_CHECK_INTERVAL,
+    project_io,
 };
 
 impl EditorApp {

@@ -163,11 +163,7 @@ pub mod generator {
                 height,
             )
         };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(status)
-        }
+        if status == 0 { Ok(()) } else { Err(status) }
     }
 }
 

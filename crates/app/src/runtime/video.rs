@@ -1,15 +1,15 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     num::NonZeroU64,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bytemuck::{Pod, Zeroable};
 use ffmpeg_next::frame::Video as AvVideoFrame;
 use wgpu::util::DeviceExt;
@@ -17,8 +17,8 @@ use wgpu::util::DeviceExt;
 use crate::{
     clip_graph_cache,
     effects::{
-        resolved_node_input_cached, CompiledStage, EffectNode, EffectRuntime, GpuValue,
-        NodeExecution, PipelineInstance, ValueEvalContext, ValueEvaluator,
+        CompiledStage, EffectNode, EffectRuntime, GpuValue, NodeExecution, PipelineInstance,
+        ValueEvalContext, ValueEvaluator, resolved_node_input_cached,
     },
     messages,
     plugin::{GeneratorBackend, GeneratorDefinition, PluginRegistry},

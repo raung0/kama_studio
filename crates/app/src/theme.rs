@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use kama_ui::Color;
 use serde::{Deserialize, Serialize};

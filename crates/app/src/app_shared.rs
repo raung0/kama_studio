@@ -6,11 +6,10 @@ use std::{
 use kama_ui::dock::{Axis, DockLayoutSpec, DockState, DropZone, Rect};
 
 use crate::{
-    model3d,
+    DOCK_EDGE, PanelKind, model3d,
     project::{MediaId, Project},
     runtime,
     timeline::{MediaDropPreviewSpec, TimelineState},
-    PanelKind, DOCK_EDGE,
 };
 
 #[derive(Debug)]
