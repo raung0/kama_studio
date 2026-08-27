@@ -5,10 +5,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
-use crate::effects::BuiltinNodePreset;
+use crate::{effects::BuiltinNodePreset, file_io::atomic_write_json};
 
 use crate::{
     effects::{
@@ -16,14 +17,38 @@ use crate::{
         PipelineId, PipelineInstance, PipelineKind, SocketRef, ValueEvalContext, ValueGraphIndex,
         ValueNode, ValueNodeKind, evaluate_value_node,
     },
-    file_io::atomic_write_json,
+    file_io::atomic_write,
     plugin::{AudioEffectDefinition, EffectDefinition, GeneratorDefinition, PluginRegistry},
     runtime::media::probe_av_media,
     timeline::TimelineDocument,
 };
 
-pub const KAMA_FORMAT_VERSION: u32 = 7;
+pub const KAMA_FORMAT_VERSION: u32 = 8;
 const MIN_MIGRATABLE_FORMAT_VERSION: u32 = 5;
+
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+fn decode_project_file(data: &[u8], path: &Path) -> Result<Project> {
+    if data.starts_with(&GZIP_MAGIC) {
+        ciborium::de::from_reader(GzDecoder::new(data)).map_err(|error| {
+            anyhow::anyhow!(
+                "parse gzip-compressed CBOR project {}: {error}",
+                path.display()
+            )
+        })
+    } else {
+        serde_json::from_slice(data)
+            .with_context(|| format!("parse legacy JSON project {}", path.display()))
+    }
+}
+
+fn encode_project_file(project: &Project) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    ciborium::ser::into_writer(project, &mut encoder)
+        .map_err(|error| anyhow::anyhow!("serialize gzip-compressed CBOR project: {error}"))?;
+    encoder.finish().context("finish project gzip stream")
+}
+
 pub use kama_editor_core::document::{
     AlphaBlendMode, BlendMode, CompositionId, CompositionSettings, GeneratorSource, LayerComposite,
     MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, MediaAsset, MediaId, MediaKind, MediaTrackInfo,
@@ -126,8 +151,7 @@ impl Project {
 
     pub fn load(path: &Path) -> Result<Self> {
         let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        let mut project: Self = serde_json::from_slice(&data)
-            .with_context(|| format!("parse .kama v{KAMA_FORMAT_VERSION} {}", path.display()))?;
+        let mut project: Self = decode_project_file(&data, path)?;
         let loaded_format_version = project.format_version;
         if !(MIN_MIGRATABLE_FORMAT_VERSION..=KAMA_FORMAT_VERSION).contains(&project.format_version)
         {
@@ -764,7 +788,12 @@ impl Project {
         for composition in &mut persisted.compositions {
             composition.timeline.make_paths_relative(base);
         }
-        atomic_write_json(path, &persisted).with_context(|| format!("write {}", path.display()))
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create directory {}", parent.display()))?;
+        }
+        let data = encode_project_file(&persisted)?;
+        atomic_write(path, &data).with_context(|| format!("write {}", path.display()))
     }
 
     pub fn composition(&self, id: CompositionId) -> Option<&Composition> {
@@ -2619,10 +2648,15 @@ mod tests {
         project.active_composition_mut().timeline.tracks[0].pipeline = Some(instance);
         project.save(&project_path).unwrap();
 
-        let persisted = fs::read_to_string(&project_path).unwrap();
-        assert!(persisted.contains("\"absolute_path\""));
-        assert!(persisted.contains("\"relative_path\""));
-        assert!(persisted.contains("media/still.png") || persisted.contains("media\\\\still.png"));
+        let persisted = fs::read(&project_path).unwrap();
+        assert!(persisted.starts_with(&GZIP_MAGIC));
+        let persisted_project = decode_project_file(&persisted, &project_path).unwrap();
+        assert_eq!(persisted_project.format_version, KAMA_FORMAT_VERSION);
+        assert_eq!(persisted_project.media[0].absolute_path, media_path);
+        assert_eq!(
+            persisted_project.media[0].relative_path,
+            PathBuf::from("media").join("still.png")
+        );
         let loaded = Project::load(&project_path).unwrap();
         assert_eq!(loaded.name, "Round Trip");
         assert_eq!(loaded.media[0].path, media_path);
@@ -2662,7 +2696,7 @@ mod tests {
             name: "still.png".into(),
             path: original_media.clone(),
             absolute_path: original_media.clone(),
-            relative_path: PathBuf::from("media/still.png"),
+            relative_path: PathBuf::from("media").join("still.png"),
             kind: MediaKind::Unknown,
             duration: None,
             frame_rate: None,
@@ -2674,6 +2708,7 @@ mod tests {
             legacy_model: None,
         });
         project.next_media_id = 2;
+        project.format_version = 7;
 
         let project_path = moved.join("test.kama");
         atomic_write_json(&project_path, &project).unwrap();
