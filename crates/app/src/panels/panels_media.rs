@@ -34,6 +34,7 @@ pub enum MediaDragItem {
 #[derive(Clone, Copy, Debug)]
 struct MediaContextMenu {
     point: [f32; 2],
+    target: MediaContextTarget,
 }
 
 #[derive(Default)]
@@ -246,7 +247,7 @@ fn media_kind_sort_key(kind: MediaKind) -> u8 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MediaContextItem {
     NewComposition,
     DuplicateComposition,
@@ -259,16 +260,31 @@ enum MediaContextItem {
     Remove,
 }
 
-const MEDIA_CONTEXT_ITEMS: [(MediaContextItem, &str); 9] = [
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MediaContextTarget {
+    Empty,
+    Composition,
+    Media,
+    Stream,
+}
+
+const EMPTY_MEDIA_CONTEXT_ITEMS: [(MediaContextItem, &str); 3] = [
     (MediaContextItem::NewComposition, "New Composition…"),
+    (MediaContextItem::Import, "Import media…"),
+    (MediaContextItem::ImportClipboard, "Import from clipboard"),
+];
+
+const COMPOSITION_CONTEXT_ITEMS: [(MediaContextItem, &str); 4] = [
     (
         MediaContextItem::DuplicateComposition,
         "Duplicate Composition",
     ),
     (MediaContextItem::RenameComposition, "Rename Composition…"),
     (MediaContextItem::DeleteComposition, "Delete Composition"),
-    (MediaContextItem::Import, "Import media…"),
-    (MediaContextItem::ImportClipboard, "Import from clipboard"),
+    (MediaContextItem::Insert, "Insert selected at playhead"),
+];
+
+const MEDIA_ASSET_CONTEXT_ITEMS: [(MediaContextItem, &str); 3] = [
     (MediaContextItem::Insert, "Insert selected at playhead"),
     (
         MediaContextItem::ReplaceSelectedMedia,
@@ -276,6 +292,18 @@ const MEDIA_CONTEXT_ITEMS: [(MediaContextItem, &str); 9] = [
     ),
     (MediaContextItem::Remove, "Remove selected media"),
 ];
+
+const MEDIA_STREAM_CONTEXT_ITEMS: [(MediaContextItem, &str); 1] =
+    [(MediaContextItem::Insert, "Insert selected at playhead")];
+
+fn media_context_items(target: MediaContextTarget) -> &'static [(MediaContextItem, &'static str)] {
+    match target {
+        MediaContextTarget::Empty => &EMPTY_MEDIA_CONTEXT_ITEMS,
+        MediaContextTarget::Composition => &COMPOSITION_CONTEXT_ITEMS,
+        MediaContextTarget::Media => &MEDIA_ASSET_CONTEXT_ITEMS,
+        MediaContextTarget::Stream => &MEDIA_STREAM_CONTEXT_ITEMS,
+    }
+}
 
 fn media_context_icon(item: MediaContextItem) -> AppIcon {
     match item {
@@ -630,11 +658,12 @@ impl MediaPanelState {
         let Some(menu) = self.context_menu else {
             return;
         };
-        let rect = context_menu_rect(panel, menu.point, MEDIA_CONTEXT_ITEMS.len());
+        let context_items = media_context_items(menu.target);
+        let rect = context_menu_rect(panel, menu.point, context_items.len());
         let has_media_selection = !self.selected_media_ids(project).is_empty();
         let has_composition_selection = self.selected_composition.is_some();
         let has_insert_selection = !self.selected_drag_items(project).is_empty();
-        let items = MEDIA_CONTEXT_ITEMS
+        let items = context_items
             .iter()
             .map(|&(item, label)| ContextMenuItem {
                 label,
@@ -672,14 +701,15 @@ impl MediaPanelState {
         let local = [point[0] - rect.x, point[1] - rect.y];
         self.cursor = local;
         if let Some(menu) = self.context_menu {
+            let context_items = media_context_items(menu.target);
             let menu_rect = context_menu_rect(
                 Rect::new(0.0, 0.0, rect.width, rect.height),
                 menu.point,
-                MEDIA_CONTEXT_ITEMS.len(),
+                context_items.len(),
             );
-            if let Some(index) = context_menu_hit(menu_rect, local, MEDIA_CONTEXT_ITEMS.len()) {
+            if let Some(index) = context_menu_hit(menu_rect, local, context_items.len()) {
                 self.context_menu = None;
-                return match MEDIA_CONTEXT_ITEMS.get(index).map(|item| item.0) {
+                return match context_items.get(index).map(|item| item.0) {
                     Some(MediaContextItem::NewComposition) => MediaAction::NewComposition,
                     Some(MediaContextItem::DuplicateComposition) => self
                         .selected_composition
@@ -934,23 +964,41 @@ impl MediaPanelState {
                 std::ops::ControlFlow::Break(hit)
             },
         );
-        match hit {
+        let target = match hit {
             Some(MediaRowHit::Media(selection, _)) => {
                 if !self.selected.contains(&selection) {
                     self.selected.clear();
                     self.selected.insert(selection);
-                    self.primary = Some(selection);
                 }
+                self.primary = Some(selection);
                 self.selected_composition = None;
+                if selection.stream == MediaStream::All {
+                    MediaContextTarget::Media
+                } else {
+                    MediaContextTarget::Stream
+                }
             }
             Some(MediaRowHit::Composition { selection, .. }) => {
                 self.selected.clear();
                 self.primary = None;
                 self.selected_composition = Some(selection);
+                if selection.stream == MediaStream::All {
+                    MediaContextTarget::Composition
+                } else {
+                    MediaContextTarget::Stream
+                }
             }
-            None => {}
-        }
-        self.context_menu = Some(MediaContextMenu { point: local });
+            None => {
+                self.selected.clear();
+                self.primary = None;
+                self.selected_composition = None;
+                MediaContextTarget::Empty
+            }
+        };
+        self.context_menu = Some(MediaContextMenu {
+            point: local,
+            target,
+        });
         true
     }
 
