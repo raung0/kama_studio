@@ -29,11 +29,35 @@ const OPTIONS: [&str; 3] = ["Option A", "Option B", "Option C"];
 pub(crate) const CONTEXT_MENU_W: f32 = 218.0;
 pub(crate) const CONTEXT_MENU_ROW_H: f32 = 26.0;
 
-pub(crate) struct ContextMenuItem<'a> {
+#[derive(Clone)]
+pub(crate) struct ContextMenuItem<'a, A> {
     pub(crate) label: &'a str,
     pub(crate) shortcut: Option<String>,
     pub(crate) icon: Option<AppIcon>,
     pub(crate) enabled: bool,
+    pub(crate) action: A,
+}
+
+impl<'a, A> ContextMenuItem<'a, A> {
+    pub(crate) fn new(label: &'a str, icon: Option<AppIcon>, action: A) -> Self {
+        Self {
+            label,
+            shortcut: None,
+            icon,
+            enabled: true,
+            action,
+        }
+    }
+
+    pub(crate) fn with_shortcut(mut self, shortcut: Option<String>) -> Self {
+        self.shortcut = shortcut;
+        self
+    }
+
+    pub(crate) fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
 }
 
 pub(crate) fn context_menu_rect(panel: Rect, point: [f32; 2], item_count: usize) -> Rect {
@@ -61,7 +85,7 @@ pub(crate) fn context_menu_row(rect: Rect, index: usize) -> Rect {
     )
 }
 
-pub(crate) fn context_menu_hit(rect: Rect, point: [f32; 2], item_count: usize) -> Option<usize> {
+fn context_menu_hit(rect: Rect, point: [f32; 2], item_count: usize) -> Option<usize> {
     let local = [point[0] - rect.x - 2.0, point[1] - rect.y - 2.0];
     (local[0] >= 0.0
         && local[0] < rect.width - 4.0
@@ -70,12 +94,40 @@ pub(crate) fn context_menu_hit(rect: Rect, point: [f32; 2], item_count: usize) -
         .then_some((local[1] / CONTEXT_MENU_ROW_H) as usize)
 }
 
-pub(crate) fn build_context_menu(
+pub(crate) enum ContextMenuClick<A> {
+    Outside,
+    Disabled,
+    Action(A),
+}
+
+pub(crate) fn context_menu_click<A: Clone>(
+    rect: Rect,
+    point: [f32; 2],
+    items: &[ContextMenuItem<'_, A>],
+) -> ContextMenuClick<A> {
+    let Some(index) = context_menu_hit(rect, point, items.len()) else {
+        return if rect.contains(point) {
+            ContextMenuClick::Disabled
+        } else {
+            ContextMenuClick::Outside
+        };
+    };
+    let Some(item) = items.get(index) else {
+        return ContextMenuClick::Disabled;
+    };
+    if item.enabled {
+        ContextMenuClick::Action(item.action.clone())
+    } else {
+        ContextMenuClick::Disabled
+    }
+}
+
+pub(crate) fn build_context_menu<A>(
     ctx: &mut ui::BuildCtx,
     id: &str,
     rect: Rect,
     cursor: [f32; 2],
-    items: &[ContextMenuItem<'_>],
+    items: &[ContextMenuItem<'_, A>],
     icons: Icons,
 ) {
     ui::ui!(ctx, {

@@ -994,12 +994,14 @@ enum ContextCommand {
     AddSelectionToComposition,
 }
 
-type ContextItem = (
+type ContextSpec = (
     &'static str,
     Option<KeyBinding>,
     Option<AppIcon>,
     ContextCommand,
 );
+
+type ContextItem = ContextMenuItem<'static, ContextCommand>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TimelineTool {
@@ -5400,8 +5402,8 @@ impl TimelineState {
             .then_some(id)
     }
 
-    fn context_rect(&self, layout: TimelineLayout, menu: ContextMenu) -> Rect {
-        widgets::context_menu_rect(layout.rect, menu.point, context_items(menu.kind).len())
+    fn context_rect(layout: TimelineLayout, menu: ContextMenu, item_count: usize) -> Rect {
+        widgets::context_menu_rect(layout.rect, menu.point, item_count)
     }
 
     fn mixer_exact_rect(layout: TimelineLayout, editor: &MixerExactEditor) -> Rect {
@@ -5440,7 +5442,12 @@ impl TimelineState {
         }
     }
 
-    fn context_click(&mut self, layout: TimelineLayout, point: [f32; 2]) -> bool {
+    fn context_click(
+        &mut self,
+        layout: TimelineLayout,
+        point: [f32; 2],
+        project: &Project,
+    ) -> bool {
         let Some(menu) = self.context_menu else {
             return false;
         };
@@ -5448,15 +5455,23 @@ impl TimelineState {
             self.context_menu = None;
             return false;
         }
-        let rect = self.context_rect(layout, menu);
-        let item_count = context_items(menu.kind).len();
-        let Some(index) = widgets::context_menu_hit(rect, point, item_count) else {
-            self.context_menu = None;
-            return false;
-        };
-        self.context_menu = None;
-        self.execute_context(menu.kind, menu.point, index);
-        true
+        let items = context_items(menu.kind, self.has_compatible_replacement_media(project));
+        let rect = Self::context_rect(layout, menu, items.len());
+        match widgets::context_menu_click(rect, point, &items) {
+            widgets::ContextMenuClick::Action(command) => {
+                self.context_menu = None;
+                self.execute_context(menu.kind, menu.point, command);
+                true
+            }
+            widgets::ContextMenuClick::Disabled => {
+                self.context_menu = None;
+                true
+            }
+            widgets::ContextMenuClick::Outside => {
+                self.context_menu = None;
+                false
+            }
+        }
     }
 
     pub(crate) fn apply_action(
@@ -6775,18 +6790,18 @@ impl TimelineState {
     }
 }
 
-fn context_items(kind: ContextKind) -> Vec<ContextItem> {
+fn context_specs(kind: ContextKind) -> Vec<ContextSpec> {
     use ContextCommand::*;
     const INSERT: Option<KeyBinding> = Some(KeyBinding::shifted('a'));
     const DELETE: Option<KeyBinding> = Some(KeyBinding::delete());
-    const SET_END: ContextItem = (
+    const SET_END: ContextSpec = (
         "Set Timeline End at Playhead",
         None,
         Some(AppIcon::SkipEnd),
         ContextCommand::SetEnd,
     );
 
-    fn with_track_actions(mut items: Vec<ContextItem>, allow_delete: bool) -> Vec<ContextItem> {
+    fn with_track_actions(mut items: Vec<ContextSpec>, allow_delete: bool) -> Vec<ContextSpec> {
         items.extend([
             (
                 "Insert Video Track",
@@ -7022,6 +7037,19 @@ fn context_items(kind: ContextKind) -> Vec<ContextItem> {
             true,
         ),
     }
+}
+
+fn context_items(kind: ContextKind, replacement_enabled: bool) -> Vec<ContextItem> {
+    context_specs(kind)
+        .into_iter()
+        .map(|(label, shortcut, icon, action)| {
+            let enabled =
+                !matches!(action, ContextCommand::ReplaceSelectedClips) || replacement_enabled;
+            ContextMenuItem::new(label, icon, action)
+                .with_shortcut(shortcut.map(|binding| binding.to_string()))
+                .enabled(enabled)
+        })
+        .collect()
 }
 
 fn normalized_rect(a: [f32; 2], b: [f32; 2]) -> Rect {
@@ -8206,41 +8234,47 @@ mod effect_model_tests {
 
     #[test]
     fn context_menu_exposes_all_track_types_and_effect_clip_insertion() {
-        let items = context_items(ContextKind::Track {
-            id: 1,
-            kind: TrackKind::Effect,
-        });
+        let items = context_items(
+            ContextKind::Track {
+                id: 1,
+                kind: TrackKind::Effect,
+            },
+            true,
+        );
         for kind in [TrackKind::Video, TrackKind::Audio, TrackKind::Effect] {
             assert!(items.iter().any(|item| matches!(
-                item.3,
+                item.action,
                 ContextCommand::AddTrack(candidate) if candidate == kind
             )));
         }
         assert!(
             items
                 .iter()
-                .any(|item| matches!(item.3, ContextCommand::InsertEffectHere))
+                .any(|item| matches!(item.action, ContextCommand::InsertEffectHere))
         );
         assert!(
             items
                 .iter()
-                .any(|item| matches!(item.3, ContextCommand::DeleteTrack))
+                .any(|item| matches!(item.action, ContextCommand::DeleteTrack))
         );
 
-        let empty_items = context_items(ContextKind::Empty {
-            time: 0.0,
-            track: Some(0),
-            kind: Some(TrackKind::Effect),
-        });
-        assert!(
-            empty_items
-                .iter()
-                .any(|item| matches!(item.3, ContextCommand::InsertEffectHere))
+        let empty_items = context_items(
+            ContextKind::Empty {
+                time: 0.0,
+                track: Some(0),
+                kind: Some(TrackKind::Effect),
+            },
+            true,
         );
         assert!(
             empty_items
                 .iter()
-                .any(|item| matches!(item.3, ContextCommand::AddTrack(TrackKind::Effect)))
+                .any(|item| matches!(item.action, ContextCommand::InsertEffectHere))
+        );
+        assert!(
+            empty_items
+                .iter()
+                .any(|item| matches!(item.action, ContextCommand::AddTrack(TrackKind::Effect)))
         );
     }
 

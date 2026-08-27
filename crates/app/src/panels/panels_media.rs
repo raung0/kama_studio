@@ -248,75 +248,11 @@ fn media_kind_sort_key(kind: MediaKind) -> u8 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MediaContextItem {
-    NewComposition,
-    DuplicateComposition,
-    RenameComposition,
-    DeleteComposition,
-    Import,
-    ImportClipboard,
-    Insert,
-    ReplaceSelectedMedia,
-    Remove,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MediaContextTarget {
     Empty,
     Composition,
     Media,
     Stream,
-}
-
-const EMPTY_MEDIA_CONTEXT_ITEMS: [(MediaContextItem, &str); 3] = [
-    (MediaContextItem::NewComposition, "New Composition…"),
-    (MediaContextItem::Import, "Import media…"),
-    (MediaContextItem::ImportClipboard, "Import from clipboard"),
-];
-
-const COMPOSITION_CONTEXT_ITEMS: [(MediaContextItem, &str); 4] = [
-    (
-        MediaContextItem::DuplicateComposition,
-        "Duplicate Composition",
-    ),
-    (MediaContextItem::RenameComposition, "Rename Composition…"),
-    (MediaContextItem::DeleteComposition, "Delete Composition"),
-    (MediaContextItem::Insert, "Insert selected at playhead"),
-];
-
-const MEDIA_ASSET_CONTEXT_ITEMS: [(MediaContextItem, &str); 3] = [
-    (MediaContextItem::Insert, "Insert selected at playhead"),
-    (
-        MediaContextItem::ReplaceSelectedMedia,
-        "Replace selected media…",
-    ),
-    (MediaContextItem::Remove, "Remove selected media"),
-];
-
-const MEDIA_STREAM_CONTEXT_ITEMS: [(MediaContextItem, &str); 1] =
-    [(MediaContextItem::Insert, "Insert selected at playhead")];
-
-fn media_context_items(target: MediaContextTarget) -> &'static [(MediaContextItem, &'static str)] {
-    match target {
-        MediaContextTarget::Empty => &EMPTY_MEDIA_CONTEXT_ITEMS,
-        MediaContextTarget::Composition => &COMPOSITION_CONTEXT_ITEMS,
-        MediaContextTarget::Media => &MEDIA_ASSET_CONTEXT_ITEMS,
-        MediaContextTarget::Stream => &MEDIA_STREAM_CONTEXT_ITEMS,
-    }
-}
-
-fn media_context_icon(item: MediaContextItem) -> AppIcon {
-    match item {
-        MediaContextItem::NewComposition => AppIcon::Composition,
-        MediaContextItem::DuplicateComposition => AppIcon::Copy,
-        MediaContextItem::RenameComposition => AppIcon::Rename,
-        MediaContextItem::DeleteComposition => AppIcon::Delete,
-        MediaContextItem::Import => AppIcon::Import,
-        MediaContextItem::ImportClipboard => AppIcon::Paste,
-        MediaContextItem::Insert => AppIcon::Timeline,
-        MediaContextItem::ReplaceSelectedMedia => AppIcon::Restore,
-        MediaContextItem::Remove => AppIcon::Remove,
-    }
 }
 
 impl MediaPanelState {
@@ -648,6 +584,98 @@ impl MediaPanelState {
         self.build_context_menu(ctx, rect, project, icons);
     }
 
+    fn context_menu_items(
+        &self,
+        target: MediaContextTarget,
+        project: &Project,
+    ) -> Vec<ContextMenuItem<'static, MediaAction>> {
+        let insert_items = self.selected_drag_items(project);
+        let insert_enabled = !insert_items.is_empty();
+        let insert = || {
+            ContextMenuItem::new(
+                "Insert selected at playhead",
+                Some(AppIcon::Timeline),
+                MediaAction::InsertSelected {
+                    items: insert_items.clone(),
+                },
+            )
+            .enabled(insert_enabled)
+        };
+
+        match target {
+            MediaContextTarget::Empty => vec![
+                ContextMenuItem::new(
+                    "New Composition…",
+                    Some(AppIcon::Composition),
+                    MediaAction::NewComposition,
+                ),
+                ContextMenuItem::new("Import media…", Some(AppIcon::Import), MediaAction::Import),
+                ContextMenuItem::new(
+                    "Import from clipboard",
+                    Some(AppIcon::Paste),
+                    MediaAction::ImportClipboard,
+                ),
+            ],
+            MediaContextTarget::Composition => {
+                let selection = self.selected_composition;
+                vec![
+                    ContextMenuItem::new(
+                        "Duplicate Composition",
+                        Some(AppIcon::Copy),
+                        selection
+                            .map(|selection| {
+                                MediaAction::DuplicateComposition(selection.composition)
+                            })
+                            .unwrap_or(MediaAction::None),
+                    )
+                    .enabled(selection.is_some()),
+                    ContextMenuItem::new(
+                        "Rename Composition…",
+                        Some(AppIcon::Rename),
+                        selection
+                            .map(|selection| MediaAction::RenameComposition(selection.composition))
+                            .unwrap_or(MediaAction::None),
+                    )
+                    .enabled(selection.is_some()),
+                    ContextMenuItem::new(
+                        "Delete Composition",
+                        Some(AppIcon::Delete),
+                        selection
+                            .map(|selection| MediaAction::DeleteComposition(selection.composition))
+                            .unwrap_or(MediaAction::None),
+                    )
+                    .enabled(selection.is_some() && project.compositions.len() > 1),
+                    insert(),
+                ]
+            }
+            MediaContextTarget::Media => {
+                let primary = self.primary;
+                let selected = self.selected_media_ids(project);
+                let remove_enabled = !selected.is_empty();
+                vec![
+                    insert(),
+                    ContextMenuItem::new(
+                        "Replace selected media…",
+                        Some(AppIcon::Restore),
+                        primary
+                            .map(|selection| MediaAction::ReplaceSelectedMedia {
+                                media: selection.media,
+                            })
+                            .unwrap_or(MediaAction::None),
+                    )
+                    .enabled(primary.is_some()),
+                    ContextMenuItem::new(
+                        "Remove selected media",
+                        Some(AppIcon::Remove),
+                        MediaAction::RemoveSelected { media: selected },
+                    )
+                    .enabled(remove_enabled),
+                ]
+            }
+            MediaContextTarget::Stream => vec![insert()],
+        }
+    }
+
     fn build_context_menu(
         &self,
         ctx: &mut kama_ui::BuildCtx,
@@ -658,32 +686,8 @@ impl MediaPanelState {
         let Some(menu) = self.context_menu else {
             return;
         };
-        let context_items = media_context_items(menu.target);
-        let rect = context_menu_rect(panel, menu.point, context_items.len());
-        let has_media_selection = !self.selected_media_ids(project).is_empty();
-        let has_composition_selection = self.selected_composition.is_some();
-        let has_insert_selection = !self.selected_drag_items(project).is_empty();
-        let items = context_items
-            .iter()
-            .map(|&(item, label)| ContextMenuItem {
-                label,
-                shortcut: None,
-                icon: Some(media_context_icon(item)),
-                enabled: match item {
-                    MediaContextItem::NewComposition
-                    | MediaContextItem::Import
-                    | MediaContextItem::ImportClipboard => true,
-                    MediaContextItem::DuplicateComposition
-                    | MediaContextItem::RenameComposition => has_composition_selection,
-                    MediaContextItem::DeleteComposition => {
-                        has_composition_selection && project.compositions.len() > 1
-                    }
-                    MediaContextItem::Insert => has_insert_selection,
-                    MediaContextItem::ReplaceSelectedMedia => self.primary.is_some(),
-                    MediaContextItem::Remove => has_media_selection,
-                },
-            })
-            .collect::<Vec<_>>();
+        let items = self.context_menu_items(menu.target, project);
+        let rect = context_menu_rect(panel, menu.point, items.len());
         build_context_menu(ctx, "media", rect, self.cursor, &items, icons);
     }
 
@@ -701,57 +705,25 @@ impl MediaPanelState {
         let local = [point[0] - rect.x, point[1] - rect.y];
         self.cursor = local;
         if let Some(menu) = self.context_menu {
-            let context_items = media_context_items(menu.target);
+            let items = self.context_menu_items(menu.target, project);
             let menu_rect = context_menu_rect(
                 Rect::new(0.0, 0.0, rect.width, rect.height),
                 menu.point,
-                context_items.len(),
+                items.len(),
             );
-            if let Some(index) = context_menu_hit(menu_rect, local, context_items.len()) {
-                self.context_menu = None;
-                return match context_items.get(index).map(|item| item.0) {
-                    Some(MediaContextItem::NewComposition) => MediaAction::NewComposition,
-                    Some(MediaContextItem::DuplicateComposition) => self
-                        .selected_composition
-                        .map(|selection| MediaAction::DuplicateComposition(selection.composition))
-                        .unwrap_or(MediaAction::None),
-                    Some(MediaContextItem::RenameComposition) => self
-                        .selected_composition
-                        .map(|selection| MediaAction::RenameComposition(selection.composition))
-                        .unwrap_or(MediaAction::None),
-                    Some(MediaContextItem::DeleteComposition) => self
-                        .selected_composition
-                        .filter(|_| project.compositions.len() > 1)
-                        .map(|selection| MediaAction::DeleteComposition(selection.composition))
-                        .unwrap_or(MediaAction::None),
-                    Some(MediaContextItem::Import) => MediaAction::Import,
-                    Some(MediaContextItem::ImportClipboard) => MediaAction::ImportClipboard,
-                    Some(MediaContextItem::Insert) => {
-                        let items = self.selected_drag_items(project);
-                        if items.is_empty() {
-                            MediaAction::None
-                        } else {
-                            MediaAction::InsertSelected { items }
-                        }
-                    }
-                    Some(MediaContextItem::ReplaceSelectedMedia) => self
-                        .primary
-                        .map(|selection| MediaAction::ReplaceSelectedMedia {
-                            media: selection.media,
-                        })
-                        .unwrap_or(MediaAction::None),
-                    Some(MediaContextItem::Remove) => {
-                        let media = self.selected_media_ids(project);
-                        if media.is_empty() {
-                            MediaAction::None
-                        } else {
-                            MediaAction::RemoveSelected { media }
-                        }
-                    }
-                    None => MediaAction::None,
-                };
+            match context_menu_click(menu_rect, local, &items) {
+                ContextMenuClick::Action(action) => {
+                    self.context_menu = None;
+                    return action;
+                }
+                ContextMenuClick::Disabled => {
+                    self.context_menu = None;
+                    return MediaAction::None;
+                }
+                ContextMenuClick::Outside => {
+                    self.context_menu = None;
+                }
             }
-            self.context_menu = None;
         }
         let hit = visit_media_rows(
             rect,

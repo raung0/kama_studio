@@ -33,7 +33,10 @@ use crate::{
     },
     theme,
     timeline::{TimelineState, TrackKind, format_timecode, parse_timecode},
-    widgets::{ContextMenuItem, build_context_menu, context_menu_hit, context_menu_rect},
+    widgets::{
+        ContextMenuClick, ContextMenuItem, build_context_menu, context_menu_click,
+        context_menu_rect,
+    },
 };
 
 const ROW_H: f32 = 29.0;
@@ -621,6 +624,12 @@ struct InspectorContextMenu {
     target: InspectorContextTarget,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InspectorContextAction {
+    Copy,
+    Paste,
+}
+
 #[derive(Clone, Debug)]
 struct InspectorSourceValues {
     speed: Option<f32>,
@@ -953,6 +962,32 @@ impl InspectorState {
         }
     }
 
+    fn value_context_items(
+        &self,
+        menu: &InspectorContextMenu,
+        project: &Project,
+        timeline: &TimelineState,
+    ) -> [ContextMenuItem<'static, InspectorContextAction>; 2] {
+        let plural = matches!(&menu.target, InspectorContextTarget::Section(_));
+        [
+            ContextMenuItem::new(
+                if plural { "Copy Values" } else { "Copy Value" },
+                Some(AppIcon::Copy),
+                InspectorContextAction::Copy,
+            ),
+            ContextMenuItem::new(
+                if plural {
+                    "Paste Values"
+                } else {
+                    "Paste Value"
+                },
+                Some(AppIcon::Paste),
+                InspectorContextAction::Paste,
+            )
+            .enabled(self.context_paste_enabled(&menu.target, project, timeline)),
+        ]
+    }
+
     fn build_value_context_menu(
         &self,
         ctx: &mut kama_ui::BuildCtx,
@@ -964,26 +999,8 @@ impl InspectorState {
         let Some(menu) = self.context_menu.as_ref() else {
             return;
         };
-        let menu_rect = context_menu_rect(rect, menu.point, 2);
-        let plural = matches!(&menu.target, InspectorContextTarget::Section(_));
-        let items = [
-            ContextMenuItem {
-                label: if plural { "Copy Values" } else { "Copy Value" },
-                shortcut: None,
-                icon: Some(AppIcon::Copy),
-                enabled: true,
-            },
-            ContextMenuItem {
-                label: if plural {
-                    "Paste Values"
-                } else {
-                    "Paste Value"
-                },
-                shortcut: None,
-                icon: Some(AppIcon::Paste),
-                enabled: self.context_paste_enabled(&menu.target, project, timeline),
-            },
-        ];
+        let items = self.value_context_items(menu, project, timeline);
+        let menu_rect = context_menu_rect(rect, menu.point, items.len());
         build_context_menu(
             ctx,
             "inspector-values",
@@ -3295,30 +3312,37 @@ impl InspectorState {
         self.context_cursor = local_point;
         if media_selection.is_none() {
             if let Some(menu) = self.context_menu.clone() {
-                let menu_rect =
-                    context_menu_rect(Rect::new(0.0, 0.0, rect.width, rect.height), menu.point, 2);
-                if let Some(index) = context_menu_hit(menu_rect, local_point, 2) {
-                    let paste_enabled = self.context_paste_enabled(&menu.target, project, timeline);
-                    self.context_menu = None;
-                    match index {
-                        0 => {
-                            if let Some(value) =
-                                self.copy_context_value(&menu.target, project, timeline)
-                            {
-                                self.value_clipboard = Some(value);
+                let items = self.value_context_items(&menu, project, timeline);
+                let menu_rect = context_menu_rect(
+                    Rect::new(0.0, 0.0, rect.width, rect.height),
+                    menu.point,
+                    items.len(),
+                );
+                match context_menu_click(menu_rect, local_point, &items) {
+                    ContextMenuClick::Action(action) => {
+                        self.context_menu = None;
+                        match action {
+                            InspectorContextAction::Copy => {
+                                if let Some(value) =
+                                    self.copy_context_value(&menu.target, project, timeline)
+                                {
+                                    self.value_clipboard = Some(value);
+                                }
+                            }
+                            InspectorContextAction::Paste => {
+                                self.paste_context_value(&menu.target, project, timeline);
                             }
                         }
-                        1 if paste_enabled => {
-                            self.paste_context_value(&menu.target, project, timeline);
-                        }
-                        _ => {}
+                        return true;
                     }
-                    return true;
+                    ContextMenuClick::Disabled => {
+                        self.context_menu = None;
+                        return true;
+                    }
+                    ContextMenuClick::Outside => {
+                        self.context_menu = None;
+                    }
                 }
-                if menu_rect.contains(local_point) {
-                    return true;
-                }
-                self.context_menu = None;
             }
         } else {
             self.context_menu = None;

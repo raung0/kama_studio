@@ -113,6 +113,18 @@ struct GraphContextMenu {
     target: GraphContextTarget,
 }
 
+#[derive(Clone, Debug)]
+enum GraphContextAction {
+    None,
+    RenamePipeline,
+    CreatePipeline,
+    RemovePipeline(u64),
+    UseSharedInput { node: u64, input: String },
+    MakeInputUnique { node: u64, input: String },
+    RemoveNode(GraphNodeTarget),
+    DeleteWire(GraphWire),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphWire {
     LocalImage {
@@ -1932,20 +1944,30 @@ impl PipelineGraphState {
         &self,
         menu: &GraphContextMenu,
         timeline: &TimelineState,
-    ) -> Vec<ContextMenuItem<'static>> {
-        let item = |label: &'static str, icon: Option<AppIcon>, enabled: bool| ContextMenuItem {
-            label,
-            shortcut: None,
-            icon,
-            enabled,
-        };
+    ) -> Vec<ContextMenuItem<'static, GraphContextAction>> {
         match &menu.target {
             GraphContextTarget::PipelineSelector => {
-                let has_pipeline = self.pipeline_id.is_some();
+                let pipeline = self.pipeline_id;
                 vec![
-                    item("Rename Pipeline", Some(AppIcon::Rename), has_pipeline),
-                    item("New Pipeline", Some(AppIcon::New), true),
-                    item("Remove Pipeline", Some(AppIcon::Remove), has_pipeline),
+                    ContextMenuItem::new(
+                        "Rename Pipeline",
+                        Some(AppIcon::Rename),
+                        GraphContextAction::RenamePipeline,
+                    )
+                    .enabled(pipeline.is_some()),
+                    ContextMenuItem::new(
+                        "New Pipeline",
+                        Some(AppIcon::New),
+                        GraphContextAction::CreatePipeline,
+                    ),
+                    ContextMenuItem::new(
+                        "Remove Pipeline",
+                        Some(AppIcon::Remove),
+                        pipeline
+                            .map(GraphContextAction::RemovePipeline)
+                            .unwrap_or(GraphContextAction::None),
+                    )
+                    .enabled(pipeline.is_some()),
                 ]
             }
             GraphContextTarget::Property(key) => {
@@ -1953,65 +1975,58 @@ impl PipelineGraphState {
                     return Vec::new();
                 };
                 if timeline.pipeline_input_is_override(node, &key.input) {
-                    vec![item("Use Shared Value", None, true)]
+                    vec![ContextMenuItem::new(
+                        "Use Shared Value",
+                        None,
+                        GraphContextAction::UseSharedInput {
+                            node,
+                            input: key.input.clone(),
+                        },
+                    )]
                 } else {
-                    vec![item("Make Unique", None, true)]
+                    vec![ContextMenuItem::new(
+                        "Make Unique",
+                        None,
+                        GraphContextAction::MakeInputUnique {
+                            node,
+                            input: key.input.clone(),
+                        },
+                    )]
                 }
             }
             GraphContextTarget::Node(GraphNodeTarget::Input | GraphNodeTarget::Output) => {
                 Vec::new()
             }
-            GraphContextTarget::Node(_) => vec![item("Delete Node", Some(AppIcon::Delete), true)],
-            GraphContextTarget::Wire(_) => {
-                vec![item("Delete Connection", Some(AppIcon::Delete), true)]
-            }
+            GraphContextTarget::Node(target) => vec![ContextMenuItem::new(
+                "Delete Node",
+                Some(AppIcon::Delete),
+                GraphContextAction::RemoveNode(*target),
+            )],
+            GraphContextTarget::Wire(wire) => vec![ContextMenuItem::new(
+                "Delete Connection",
+                Some(AppIcon::Delete),
+                GraphContextAction::DeleteWire(wire.clone()),
+            )],
         }
     }
 
-    fn graph_context_action(
-        &mut self,
-        target: GraphContextTarget,
-        index: usize,
-        timeline: &TimelineState,
-    ) -> PipelineGraphAction {
-        match target {
-            GraphContextTarget::PipelineSelector => match index {
-                0 => {
-                    self.begin_pipeline_rename();
-                    PipelineGraphAction::None
-                }
-                1 => PipelineGraphAction::Create,
-                2 => self.pipeline_id.map_or(
-                    PipelineGraphAction::None,
-                    PipelineGraphAction::RemovePipeline,
-                ),
-                _ => PipelineGraphAction::None,
-            },
-            GraphContextTarget::Property(key) => {
-                if index != 0 {
-                    return PipelineGraphAction::None;
-                }
-                let GraphNodeTarget::Shared(node) = key.target else {
-                    return PipelineGraphAction::None;
-                };
-                if timeline.pipeline_input_is_override(node, &key.input) {
-                    PipelineGraphAction::UseSharedInput {
-                        node,
-                        input: key.input,
-                    }
-                } else {
-                    PipelineGraphAction::MakeInputUnique {
-                        node,
-                        input: key.input,
-                    }
-                }
-            }
-            GraphContextTarget::Node(GraphNodeTarget::Input | GraphNodeTarget::Output) => {
+    fn execute_graph_context_action(&mut self, action: GraphContextAction) -> PipelineGraphAction {
+        match action {
+            GraphContextAction::None => PipelineGraphAction::None,
+            GraphContextAction::RenamePipeline => {
+                self.begin_pipeline_rename();
                 PipelineGraphAction::None
             }
-            GraphContextTarget::Node(target) if index == 0 => PipelineGraphAction::Remove(target),
-            GraphContextTarget::Wire(wire) if index == 0 => PipelineGraphAction::DeleteWire(wire),
-            GraphContextTarget::Node(_) | GraphContextTarget::Wire(_) => PipelineGraphAction::None,
+            GraphContextAction::CreatePipeline => PipelineGraphAction::Create,
+            GraphContextAction::RemovePipeline(id) => PipelineGraphAction::RemovePipeline(id),
+            GraphContextAction::UseSharedInput { node, input } => {
+                PipelineGraphAction::UseSharedInput { node, input }
+            }
+            GraphContextAction::MakeInputUnique { node, input } => {
+                PipelineGraphAction::MakeInputUnique { node, input }
+            }
+            GraphContextAction::RemoveNode(target) => PipelineGraphAction::Remove(target),
+            GraphContextAction::DeleteWire(wire) => PipelineGraphAction::DeleteWire(wire),
         }
     }
 
@@ -2970,16 +2985,19 @@ impl PipelineGraphState {
         if let Some(menu) = self.context_menu.clone() {
             let items = self.graph_context_items(&menu, timeline);
             let menu_rect = context_menu_rect(rect, menu.point, items.len());
-            if let Some(index) = context_menu_hit(menu_rect, point, items.len()) {
-                let enabled = items.get(index).is_some_and(|item| item.enabled);
-                self.context_menu = None;
-                return if enabled {
-                    self.graph_context_action(menu.target, index, timeline)
-                } else {
-                    PipelineGraphAction::None
-                };
+            match context_menu_click(menu_rect, point, &items) {
+                ContextMenuClick::Action(action) => {
+                    self.context_menu = None;
+                    return self.execute_graph_context_action(action);
+                }
+                ContextMenuClick::Disabled => {
+                    self.context_menu = None;
+                    return PipelineGraphAction::None;
+                }
+                ContextMenuClick::Outside => {
+                    self.context_menu = None;
+                }
             }
-            self.context_menu = None;
         }
         let local_point = [point[0] - rect.x, point[1] - rect.y];
         let local_bounds = self.controls.popup_bounds;

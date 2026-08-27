@@ -1357,18 +1357,9 @@ impl TimelineState {
         let Some(menu) = self.context_menu.filter(|menu| menu.stack == stack) else {
             return;
         };
-        let rect = self.context_rect(layout, menu);
+        let items = context_items(menu.kind, self.has_compatible_replacement_media(project));
+        let rect = Self::context_rect(layout, menu, items.len());
         let cursor = [self.cursor[0] - origin[0], self.cursor[1] - origin[1]];
-        let items = context_items(menu.kind)
-            .iter()
-            .map(|&(label, shortcut, icon, command)| ContextMenuItem {
-                label,
-                shortcut: shortcut.map(|binding| binding.to_string()),
-                icon,
-                enabled: !matches!(command, ContextCommand::ReplaceSelectedClips)
-                    || self.has_compatible_replacement_media(project),
-            })
-            .collect::<Vec<_>>();
         widgets::build_context_menu(
             ctx,
             &format!("timeline-{}", stack.0),

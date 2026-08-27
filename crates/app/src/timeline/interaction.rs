@@ -7,6 +7,7 @@ impl TimelineState {
         point: [f32; 2],
         button: MouseButton,
         modifiers: ModifiersState,
+        project: &Project,
     ) -> bool {
         self.cursor = point;
         let Some((stack, layout)) = Self::active_layout(snapshot, point) else {
@@ -36,7 +37,7 @@ impl TimelineState {
                 return true;
             }
         }
-        if button == MouseButton::Left && self.context_click(layout, point) {
+        if button == MouseButton::Left && self.context_click(layout, point, project) {
             return true;
         }
         if button == MouseButton::Middle {
@@ -1095,10 +1096,12 @@ impl TimelineState {
         }
     }
 
-    pub(super) fn execute_context(&mut self, kind: ContextKind, point: [f32; 2], index: usize) {
-        let Some(command) = context_items(kind).get(index).map(|item| item.3) else {
-            return;
-        };
+    pub(super) fn execute_context(
+        &mut self,
+        kind: ContextKind,
+        point: [f32; 2],
+        command: ContextCommand,
+    ) {
         match command {
             ContextCommand::CopySelection => {
                 self.pending_action = Some(TimelineAction::CopySelection)

@@ -2916,6 +2916,7 @@ impl EditorApp {
                     self.cursor,
                     MouseButton::Left,
                     self.modifiers,
+                    &self.editor.project,
                 ) {
                     self.media.clear_selection();
                     if let Some(action) = self.editor.timeline.take_action() {
@@ -3131,6 +3132,7 @@ impl EditorApp {
                     self.cursor,
                     MouseButton::Middle,
                     self.modifiers,
+                    &self.editor.project,
                 ) {
                     return;
                 }
@@ -6330,6 +6332,7 @@ impl ApplicationHandler<AppEvent> for App {
                                     editor_app.cursor,
                                     button,
                                     editor_app.modifiers,
+                                    &editor_app.editor.project,
                                 );
                             }
                             Some((stack, PanelKind::Media)) => {
