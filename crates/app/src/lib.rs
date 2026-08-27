@@ -6029,6 +6029,9 @@ impl ApplicationHandler<AppEvent> for App {
                     let width = editor_app.renderer.logical_width();
                     let height = editor_app.renderer.logical_height();
                     match modal {
+                        Modal::Settings(dialog) => {
+                            dialog.scroll(width, height, editor_app.cursor, delta);
+                        }
                         Modal::Keybinds(dialog) => {
                             dialog.scroll(
                                 width,

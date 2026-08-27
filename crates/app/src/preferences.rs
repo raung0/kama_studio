@@ -5,7 +5,7 @@ use kama_ui::{
     Color, IconId, Rect, Renderer, ScrollState,
     components::{ColorPicker, ComboBox, Slider, TextEdit},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use winit::{
     event::{ElementState, Ime, KeyEvent},
     keyboard::{Key, ModifiersState, NamedKey},
@@ -18,6 +18,7 @@ use crate::{
     file_io::{app_data_dir, atomic_write_json, read_json},
     runtime::media::{hardware_decoding_enabled, set_hardware_decoding_enabled},
     theme::{self, ThemePreset},
+    updater::{self, ReleaseChannel},
     widgets::component_style,
 };
 
@@ -47,6 +48,11 @@ struct PreferencesFile {
     hardware_decoding: bool,
     #[serde(default)]
     language: Option<String>,
+    #[serde(
+        default = "updater::default_release_channel",
+        deserialize_with = "deserialize_release_channel"
+    )]
+    release_channel: ReleaseChannel,
 }
 
 fn default_dark_accent() -> [u8; 4] {
@@ -81,6 +87,35 @@ fn default_hardware_decoding() -> bool {
     true
 }
 
+fn deserialize_release_channel<'de, D>(
+    deserializer: D,
+) -> std::result::Result<ReleaseChannel, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<ReleaseChannel>::deserialize(deserializer)?
+        .unwrap_or_else(updater::default_release_channel))
+}
+
+fn release_channel_index(channel: ReleaseChannel) -> usize {
+    match channel {
+        ReleaseChannel::Alpha => 0,
+        ReleaseChannel::Beta => 1,
+        ReleaseChannel::Rc => 2,
+        ReleaseChannel::Stable => 3,
+    }
+}
+
+fn release_channel_at_index(index: usize) -> ReleaseChannel {
+    match index {
+        0 => ReleaseChannel::Alpha,
+        1 => ReleaseChannel::Beta,
+        2 => ReleaseChannel::Rc,
+        _ => ReleaseChannel::Stable,
+    }
+}
+
+const RELEASE_CHANNEL_OPTION_COUNT: usize = 4;
 const THEME_OPTIONS: [&str; 3] = ["System", "Light", "Dark"];
 
 fn theme_index(theme: ThemePreset) -> usize {
@@ -114,6 +149,7 @@ impl Default for PreferencesFile {
             reveal_accent_mix: default_reveal_accent_mix(),
             hardware_decoding: default_hardware_decoding(),
             language: None,
+            release_channel: updater::default_release_channel(),
         }
     }
 }
@@ -150,6 +186,7 @@ pub(crate) fn load(registry: &mut CommandRegistry) {
     kama_ui::set_reveal_accent_mix(preferences.reveal_accent_mix);
     kama_ui::set_rounded_corners_enabled(preferences.rounded_corners);
     set_hardware_decoding_enabled(preferences.hardware_decoding);
+    updater::set_release_channel(preferences.release_channel);
     for (id, binding) in preferences.keybinds {
         let id = if id == "timeline.toggle-cut-tool" {
             "timeline.toggle-razor-tool"
@@ -178,6 +215,7 @@ pub(crate) fn save(registry: &CommandRegistry, plugin_paths: &str) {
         reveal_accent_mix: kama_ui::reveal_accent_mix(),
         hardware_decoding: hardware_decoding_enabled(),
         language: crate::i18n::preference(),
+        release_channel: updater::release_channel(),
     };
     let _ = atomic_write_json(&path(), &preferences);
 }
@@ -284,6 +322,7 @@ fn preference_dialog_rects(
 enum SettingEntry {
     Language,
     Theme,
+    ReleaseChannel,
     DarkAccent,
     LightAccent,
     Brightness,
@@ -304,6 +343,10 @@ fn filtered_settings(query: &str) -> Vec<SettingEntry> {
         (
             SettingEntry::Theme,
             "Theme preset System Light Dark appearance",
+        ),
+        (
+            SettingEntry::ReleaseChannel,
+            "Release channel updates updater alpha beta rc stable prerelease",
         ),
         (
             SettingEntry::DarkAccent,
@@ -491,6 +534,7 @@ pub(crate) struct SettingsDialog {
     light_accent: ColorPicker,
     theme_combo: ComboBox,
     language_combo: ComboBox,
+    release_channel_combo: ComboBox,
     brightness: Slider,
     accent_mixing: Slider,
     reveal_strength: Slider,
@@ -522,6 +566,7 @@ impl SettingsDialog {
                     .position(|option| option.language == crate::i18n::preference())
                     .unwrap_or_default(),
             ),
+            release_channel_combo: ComboBox::new(release_channel_index(updater::release_channel())),
             brightness: Slider::new(theme::brightness()),
             accent_mixing: Slider::new(theme::accent_mixing()),
             reveal_strength: Slider::new(kama_ui::reveal_strength()),
@@ -541,6 +586,7 @@ impl SettingsDialog {
         self.light_accent.tick(dt);
         self.theme_combo.tick(dt);
         self.language_combo.tick(dt);
+        self.release_channel_combo.tick(dt);
         self.brightness.tick(dt);
         self.accent_mixing.tick(dt);
         self.reveal_strength.tick(dt);
@@ -554,6 +600,7 @@ impl SettingsDialog {
             || self.light_accent.is_animating()
             || self.theme_combo.is_animating()
             || self.language_combo.is_animating()
+            || self.release_channel_combo.is_animating()
             || self.brightness.is_animating()
             || self.accent_mixing.is_animating()
             || self.reveal_strength.is_animating()
@@ -582,6 +629,16 @@ impl SettingsDialog {
         let language_labels = language_options
             .iter()
             .map(|option| option.label.as_str())
+            .collect::<Vec<_>>();
+        let release_channel_labels = [
+            crate::i18n::text("settings-release-channel-alpha"),
+            crate::i18n::text("settings-release-channel-beta"),
+            crate::i18n::text("settings-release-channel-rc"),
+            crate::i18n::text("settings-release-channel-stable"),
+        ];
+        let release_channel_label_refs = release_channel_labels
+            .iter()
+            .map(String::as_str)
             .collect::<Vec<_>>();
         let layout = self.search.rects(rect, entries.len(), 0.57);
         dialog::build_search_dialog(
@@ -643,6 +700,13 @@ impl SettingsDialog {
                                     ThemePreset::Dark => crate::i18n::text("settings-dark"),
                                 },
                             ),
+                            SettingEntry::ReleaseChannel => (
+                                crate::i18n::text("settings-release-channel"),
+                                release_channel_labels
+                                    .get(release_channel_index(updater::release_channel()))
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            ),
                             SettingEntry::DarkAccent => {
                                 let rgba = theme::dark_accent_rgba8();
                                 (
@@ -696,6 +760,18 @@ impl SettingsDialog {
                                     "settings-theme-value",
                                     row.value,
                                     &THEME_OPTIONS,
+                                    chevron,
+                                    component_style(),
+                                );
+                            }
+                            SettingEntry::ReleaseChannel => {
+                                self.release_channel_combo
+                                    .set_selected(release_channel_index(updater::release_channel()));
+                                self.release_channel_combo.build_control(
+                                    ctx,
+                                    "settings-release-channel-value",
+                                    row.value,
+                                    &release_channel_label_refs,
                                     chevron,
                                     component_style(),
                                 );
@@ -824,6 +900,19 @@ impl SettingsDialog {
                         component_style(),
                     );
                 }
+                if let Some(index) = entries
+                    .iter()
+                    .position(|entry| *entry == SettingEntry::ReleaseChannel)
+                {
+                    self.release_channel_combo.build_popup_in(
+                        ctx,
+                        "settings-release-channel-value",
+                        layout.items[index].value,
+                        &release_channel_label_refs,
+                        Rect::new(0.0, 0.0, width, height),
+                        component_style(),
+                    );
+                }
             },
         );
     }
@@ -834,17 +923,27 @@ impl SettingsDialog {
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.language_combo.toggle();
             }
             SettingEntry::Theme => {
                 self.language_combo.close();
+                self.release_channel_combo.close();
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
                 self.theme_combo.toggle();
             }
+            SettingEntry::ReleaseChannel => {
+                self.language_combo.close();
+                self.theme_combo.close();
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                self.release_channel_combo.toggle();
+            }
             SettingEntry::DarkAccent => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.light_accent.close();
@@ -853,6 +952,7 @@ impl SettingsDialog {
             SettingEntry::LightAccent => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.dark_accent.close();
@@ -864,6 +964,7 @@ impl SettingsDialog {
             | SettingEntry::RevealAccentMix => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.dark_accent.close();
@@ -872,6 +973,7 @@ impl SettingsDialog {
             SettingEntry::RoundedCorners => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.dark_accent.close();
@@ -881,6 +983,7 @@ impl SettingsDialog {
             SettingEntry::HardwareDecoding => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.dark_accent.close();
@@ -890,6 +993,7 @@ impl SettingsDialog {
             SettingEntry::PluginPaths => {
                 self.language_combo.close();
                 self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.search.query.set_focused(false);
                 self.dark_accent.close();
                 self.light_accent.close();
@@ -924,6 +1028,8 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.theme_combo.close();
+                self.release_channel_combo.close();
                 return true;
             }
             if value.contains(point) {
@@ -931,6 +1037,8 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.theme_combo.close();
+                self.release_channel_combo.close();
                 self.language_combo.toggle();
                 return true;
             }
@@ -957,6 +1065,8 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.language_combo.close();
+                self.release_channel_combo.close();
                 return true;
             }
             if value.contains(point) {
@@ -964,6 +1074,8 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.language_combo.close();
+                self.release_channel_combo.close();
                 self.theme_combo.toggle();
                 return true;
             }
@@ -973,6 +1085,46 @@ impl SettingsDialog {
                     .popup_contains(value, point, THEME_OPTIONS.len())
             {
                 self.theme_combo.close();
+            }
+        }
+
+        if let Some(index) = entries
+            .iter()
+            .position(|entry| *entry == SettingEntry::ReleaseChannel)
+        {
+            let value = layout.items[index].value;
+            if let Some(option) =
+                self.release_channel_combo
+                    .option_at(value, point, RELEASE_CHANNEL_OPTION_COUNT)
+            {
+                self.release_channel_combo.select(option, true);
+                updater::set_release_channel(release_channel_at_index(option));
+                self.search.selected = index;
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                self.language_combo.close();
+                self.theme_combo.close();
+                return true;
+            }
+            if value.contains(point) {
+                self.search.selected = index;
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                self.language_combo.close();
+                self.theme_combo.close();
+                self.release_channel_combo.toggle();
+                return true;
+            }
+            if self.release_channel_combo.is_open()
+                && !self.release_channel_combo.popup_contains(
+                    value,
+                    point,
+                    RELEASE_CHANNEL_OPTION_COUNT,
+                )
+            {
+                self.release_channel_combo.close();
             }
         }
 
@@ -1008,6 +1160,7 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.release_channel_combo.close();
                 theme::set_brightness(self.brightness.value());
                 return true;
             }
@@ -1022,6 +1175,7 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.release_channel_combo.close();
                 theme::set_accent_mixing(self.accent_mixing.value());
                 return true;
             }
@@ -1036,6 +1190,7 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.release_channel_combo.close();
                 kama_ui::set_reveal_strength(self.reveal_strength.value());
                 return true;
             }
@@ -1050,6 +1205,7 @@ impl SettingsDialog {
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();
+                self.release_channel_combo.close();
                 kama_ui::set_reveal_accent_mix(self.reveal_accent_mix.value());
                 return true;
             }
@@ -1141,6 +1297,22 @@ impl SettingsDialog {
             | self.plugin_paths.pointer_released()
     }
 
+    pub(crate) fn scroll(
+        &mut self,
+        width: f32,
+        height: f32,
+        point: [f32; 2],
+        delta: [f32; 2],
+    ) -> bool {
+        let rect = settings_rect(width, height);
+        if !rect.contains(point) {
+            return false;
+        }
+        let count = filtered_settings(self.search.query.text()).len();
+        let _ = self.search.rects(rect, count, 0.57);
+        self.search.scroll_by(-delta[1])
+    }
+
     pub(crate) fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
         if event.state != ElementState::Pressed {
             return false;
@@ -1227,6 +1399,30 @@ impl SettingsDialog {
                 _ => {}
             }
         }
+        if self.release_channel_combo.is_open() {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
+                    self.release_channel_combo.close();
+                    return true;
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    let selected =
+                        (self.release_channel_combo.selected() + 1) % RELEASE_CHANNEL_OPTION_COUNT;
+                    self.release_channel_combo.set_selected(selected);
+                    updater::set_release_channel(release_channel_at_index(selected));
+                    return true;
+                }
+                Key::Named(NamedKey::ArrowUp) => {
+                    let selected =
+                        (self.release_channel_combo.selected() + RELEASE_CHANNEL_OPTION_COUNT - 1)
+                            % RELEASE_CHANNEL_OPTION_COUNT;
+                    self.release_channel_combo.set_selected(selected);
+                    updater::set_release_channel(release_channel_at_index(selected));
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => {
                 self.search.closed = true;
@@ -1235,10 +1431,12 @@ impl SettingsDialog {
             }
             Key::Named(NamedKey::ArrowDown) => {
                 self.search.move_selection(entries.len(), 1);
+                self.search.ensure_selected_visible();
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
                 self.search.move_selection(entries.len(), -1);
+                self.search.ensure_selected_visible();
                 true
             }
             Key::Named(NamedKey::Enter) => {
@@ -1346,13 +1544,35 @@ impl SettingsDialog {
 #[cfg(test)]
 mod tests {
     use super::PreferencesFile;
+    use crate::updater::{self, ReleaseChannel};
 
     #[test]
     fn existing_preferences_without_language_use_system_default() {
         let preferences: PreferencesFile = serde_json::from_str("{\"plugin_paths\": \"plugins\"}")
             .expect("existing settings JSON should deserialize");
         assert_eq!(preferences.language, None);
+        assert_eq!(
+            preferences.release_channel,
+            updater::default_release_channel()
+        );
         assert_eq!(preferences.plugin_paths, "plugins");
+    }
+
+    #[test]
+    fn release_channel_preference_deserializes_when_explicitly_set() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": \"beta\"}")
+            .expect("release channel setting should deserialize");
+        assert_eq!(preferences.release_channel, ReleaseChannel::Beta);
+    }
+
+    #[test]
+    fn null_release_channel_migrates_to_current_build_channel() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": null}")
+            .expect("legacy null release channel should deserialize");
+        assert_eq!(
+            preferences.release_channel,
+            updater::default_release_channel()
+        );
     }
 }
 
