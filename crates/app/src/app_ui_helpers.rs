@@ -441,29 +441,46 @@ pub(super) fn build_busy_project_dialog(
     );
 }
 
-const MISSING_MEDIA_DIALOG_W: f32 = 520.0;
+const MISSING_MEDIA_DIALOG_W: f32 = 640.0;
+const MISSING_MEDIA_ROW_H: f32 = 34.0;
+const MISSING_MEDIA_ROW_GAP: f32 = 4.0;
+const MISSING_MEDIA_LIST_MAX_H: f32 = 238.0;
+const MISSING_MEDIA_NAME_W: f32 = 190.0;
+const MISSING_MEDIA_COLUMN_GAP: f32 = 8.0;
+
+fn missing_media_list_content_height(missing: usize) -> f32 {
+    if missing == 0 {
+        0.0
+    } else {
+        missing as f32 * MISSING_MEDIA_ROW_H
+            + missing.saturating_sub(1) as f32 * MISSING_MEDIA_ROW_GAP
+    }
+}
 
 pub(super) fn missing_media_dialog_rect(
     viewport_width: f32,
     viewport_height: f32,
     missing: usize,
 ) -> Rect {
-    let desired_height = 150.0 + missing as f32 * 15.0;
-    let max_height = (viewport_height * 0.8).max(150.0);
+    let list_height = missing_media_list_content_height(missing).min(MISSING_MEDIA_LIST_MAX_H);
+    let desired_height = 122.0 + list_height.max(MISSING_MEDIA_ROW_H);
+    let max_height = (viewport_height * 0.8).max(180.0);
     centered_dialog_rect(
         viewport_width,
         viewport_height,
-        MISSING_MEDIA_DIALOG_W.min((viewport_width - 16.0).max(280.0)),
+        MISSING_MEDIA_DIALOG_W.min((viewport_width - 16.0).max(320.0)),
         desired_height.min(max_height),
     )
 }
 
-pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, [Rect; 2]) {
+pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
     let rows = kama_ui::layout::column(
         dialog,
         &[
             kama_ui::layout::Item::height(12.0),
             kama_ui::layout::Item::height(20.0),
+            kama_ui::layout::Item::height(6.0),
+            kama_ui::layout::Item::height(30.0),
             kama_ui::layout::Item::height(8.0),
             kama_ui::layout::Item::fill(),
             kama_ui::layout::Item::height(10.0),
@@ -476,9 +493,10 @@ pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, [Rect; 2]
         None,
     );
     let title = dialog_content_row(rows[1]);
-    let body = dialog_content_row(rows[3]);
+    let message = dialog_content_row(rows[3]);
+    let list = dialog_content_row(rows[5]);
     let buttons = kama_ui::layout::row(
-        rows[5],
+        rows[7],
         &[
             kama_ui::layout::Item::fill(),
             kama_ui::layout::Item::width(70.0),
@@ -490,23 +508,37 @@ pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, [Rect; 2]
         0.0,
         ui::Align::Start,
     );
-    (title, body, [buttons[1], buttons[3]])
+    (title, message, list, [buttons[1], buttons[3]])
 }
 
 pub(super) fn missing_media_button_rect(dialog: Rect, confirm: bool) -> Rect {
-    missing_media_dialog_parts(dialog).2[confirm as usize]
+    missing_media_dialog_parts(dialog).3[confirm as usize]
 }
 
-pub(super) fn missing_media_message(dialog: &MissingMediaDialog) -> String {
-    let paths = dialog
-        .missing()
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "The following media files are missing:\n{paths}\n\nAre you sure you want to load the project? Clips using these files will be deleted."
-    )
+pub(super) fn missing_media_max_scroll(dialog: Rect, missing: usize) -> f32 {
+    let list = missing_media_dialog_parts(dialog).2;
+    (missing_media_list_content_height(missing) - list.height).max(0.0)
+}
+
+pub(super) fn missing_media_picker_rect(dialog: Rect, index: usize, scroll: f32) -> Rect {
+    let list = missing_media_dialog_parts(dialog).2;
+    let row = Rect::new(
+        list.x,
+        list.y + index as f32 * (MISSING_MEDIA_ROW_H + MISSING_MEDIA_ROW_GAP) - scroll,
+        list.width,
+        MISSING_MEDIA_ROW_H,
+    );
+    kama_ui::layout::row(
+        row,
+        &[
+            kama_ui::layout::Item::width(MISSING_MEDIA_NAME_W),
+            kama_ui::layout::Item::width(MISSING_MEDIA_COLUMN_GAP),
+            kama_ui::layout::Item::fill(),
+        ],
+        0.0,
+        0.0,
+        ui::Align::Start,
+    )[2]
 }
 
 pub(super) fn build_missing_media_dialog(
@@ -518,7 +550,12 @@ pub(super) fn build_missing_media_dialog(
     let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
     let rect = missing_media_dialog_rect(viewport_width, viewport_height, dialog.missing().len());
     let local = Rect::new(0.0, 0.0, rect.width, rect.height);
-    let (title_rect, body_rect, _) = missing_media_dialog_parts(local);
+    let (title_rect, message_rect, list_rect, _) = missing_media_dialog_parts(local);
+    let message = if dialog.is_project_load() {
+        "Choose replacement paths for missing media. Apply replacements until every item is resolved, or cancel opening the project."
+    } else {
+        "Some media files are no longer available. This dialog will stay open and update until every missing item is resolved."
+    };
     build_modal(
         ctx,
         "missing-media-scrim",
@@ -533,25 +570,104 @@ pub(super) fn build_missing_media_dialog(
                 &i18n::text("dialog-missing-media"),
             );
             ui::ui!(ctx, {
-                Rect("missing-media-message", body_rect) {
+                Rect("missing-media-message", message_rect) {
                     font_size: 10.5;
                     text_color: theme::popup_muted();
-                    text: missing_media_message(dialog);
+                    text: message;
+                }
+
+                Column {
+                    id: "missing-media-list";
+                    bounds: (list_rect.x, list_rect.y, list_rect.width, list_rect.height);
+                    gap: MISSING_MEDIA_ROW_GAP;
+                    vertical_scroll: dialog.scroll;
+                    clip_children: true;
+
+                    @for (index, entry) in dialog.missing().iter().enumerate() {
+                        @let picker_text = entry.replacement.as_ref().map_or_else(
+                            || entry.missing_path.display().to_string(),
+                            |path| path.display().to_string(),
+                        );
+                        Row {
+                            id: @format("missing-media-row-{index}");
+                            width: Size::Fill;
+                            height: Size::Pixels(MISSING_MEDIA_ROW_H);
+                            gap: MISSING_MEDIA_COLUMN_GAP;
+
+                            Block {
+                                id: @format("missing-media-name-{index}");
+                                width: Size::Pixels(MISSING_MEDIA_NAME_W);
+                                height: Size::Fill;
+                                padding: 7.0;
+                                fill: theme::control();
+                                border: 1;
+                                border_color: theme::line_soft();
+                                border_radius: RADIUS_SM;
+                                font_size: 10.0;
+                                text_color: theme::popup_text();
+                                text: &entry.name;
+                                tooltip: entry.missing_path.display().to_string();
+                            }
+
+                            Row {
+                                id: @format("missing-media-picker-{index}");
+                                width: Size::Fill;
+                                height: Size::Fill;
+                                padding: 7.0;
+                                gap: 6.0;
+                                fill: theme::control();
+                                border: 1;
+                                border_color: if entry.replacement.is_some() {
+                                    theme::accent()
+                                } else {
+                                    theme::line_soft()
+                                };
+                                border_radius: RADIUS_SM;
+                                interactive;
+                                tooltip: picker_text.clone();
+
+                                Block {
+                                    width: Size::Fill;
+                                    height: Size::Fill;
+                                    font_size: 9.5;
+                                    text_color: if entry.replacement.is_some() {
+                                        theme::popup_text()
+                                    } else {
+                                        theme::popup_muted()
+                                    };
+                                    text: picker_text;
+                                }
+                                Block {
+                                    width: Size::Pixels(18.0);
+                                    height: Size::Fill;
+                                    font_size: 13.0;
+                                    text_color: theme::popup_muted();
+                                    text: "…";
+                                }
+                            }
+                        }
+                    }
                 }
             });
-            build_modal_button(
-                ctx,
-                "missing-media-cancel",
-                missing_media_button_rect(local, false),
-                &i18n::text("dialog-cancel"),
-                ModalButtonRole::Secondary,
-            );
+            if dialog.is_project_load() {
+                build_modal_button(
+                    ctx,
+                    "missing-media-cancel",
+                    missing_media_button_rect(local, false),
+                    &i18n::text("dialog-cancel"),
+                    ModalButtonRole::Secondary,
+                );
+            }
             build_modal_button(
                 ctx,
                 "missing-media-confirm",
                 missing_media_button_rect(local, true),
-                &i18n::text("dialog-load-project"),
-                ModalButtonRole::Danger,
+                &i18n::text(if dialog.is_project_load() {
+                    "dialog-load-project"
+                } else {
+                    "dialog-apply"
+                }),
+                ModalButtonRole::Primary,
             );
         },
     );

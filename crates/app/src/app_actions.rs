@@ -528,6 +528,11 @@ impl EditorApp {
                 self.set_history_gesture_label("Replace media");
                 match self.editor.project.replace_media(media, path.clone()) {
                     Ok(()) => {
+                        self.prompted_missing_media.remove(&media);
+                        if let Some(project_path) = self.editor.project_path.as_deref() {
+                            let base = project_path.parent().unwrap_or_else(|| Path::new("."));
+                            self.editor.project.update_media_path_references(base);
+                        }
                         self.waveform_textures.clear();
                         self.waveform_textures.queue_missing(&self.editor.project);
                         self.warm_project_scrub_thumbnails();
@@ -578,7 +583,7 @@ impl EditorApp {
         }
     }
 
-    pub(super) fn remove_missing_media_files(&mut self) {
+    pub(super) fn check_missing_media_files(&mut self) {
         let now = Instant::now();
         if now < self.next_media_presence_check {
             return;
@@ -588,68 +593,57 @@ impl EditorApp {
             return;
         }
 
-        let missing = missing_project_media(&self.editor.project);
-        if missing.is_empty() {
-            return;
+        if let Some(project_path) = self.editor.project_path.as_deref() {
+            let base = project_path.parent().unwrap_or_else(|| Path::new("."));
+            if self.editor.project.resolve_missing_media_paths(base) > 0 {
+                self.waveform_textures.clear();
+                self.waveform_textures.queue_missing(&self.editor.project);
+                self.warm_project_scrub_thumbnails();
+                self.playback.clear_media_caches();
+                self.audio.clear();
+                self.playback.invalidate();
+            }
         }
+
+        let missing = missing_project_media(&self.editor.project);
         let missing_ids = missing
             .iter()
             .map(|(media, _)| *media)
             .collect::<HashSet<_>>();
-        let missing_paths = missing
-            .iter()
-            .map(|(_, path)| path.display().to_string())
-            .collect::<Vec<_>>();
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        self.prompted_missing_media
+            .retain(|media| missing_ids.contains(media));
 
-        self.editor
-            .project
-            .sync_active_timeline(self.editor.timeline.document());
-        if self.editor.project.remove_media(&missing_ids) == 0 {
+        if let Some(Modal::MissingMedia(dialog)) = self.modal.as_mut() {
+            if !dialog.is_project_load() {
+                self.prompted_missing_media
+                    .extend(missing_ids.iter().copied());
+                sync_missing_media_entries(&mut dialog.missing, &self.editor.project, missing);
+                if dialog.missing.is_empty() {
+                    dialog.close();
+                }
+            }
             return;
         }
-        self.editor
-            .timeline
-            .load_history_document(self.editor.project.active_composition().timeline.clone());
-        self.editor
-            .timeline
-            .ensure_composition_visual_pipelines(&self.plugins);
-        self.editor
-            .timeline
-            .discard_media_from_clipboard(&missing_ids);
-        self.editor
-            .timeline
-            .reconcile_pipeline_overrides(&self.editor.project);
-        self.media.clear_selection();
-        self.audio.clear();
-        self.waveform_textures.clear();
-        self.waveform_textures.queue_missing(&self.editor.project);
-        self.warm_project_scrub_thumbnails();
-        self.playback.clear_caches();
-        self.monitor.clear_captured_frame();
-        self.playback.invalidate();
-        self.render_panel.sync_timeline_ranges(
-            &mut self.editor.timeline,
-            self.editor.project.active_composition,
-            self.editor.project.active_settings().frame_rate,
-        );
-        self.editor.history.record_after(
-            "Remove missing media",
-            before,
+
+        if self
+            .modal_queue
+            .iter()
+            .any(|modal| matches!(modal, Modal::MissingMedia(_)))
+        {
+            return;
+        }
+
+        let newly_missing = missing
+            .into_iter()
+            .filter(|(media, _)| self.prompted_missing_media.insert(*media))
+            .collect::<Vec<_>>();
+        if newly_missing.is_empty() {
+            return;
+        }
+        self.open_modal(Modal::MissingMedia(MissingMediaDialog::current(
             &self.editor.project,
-            &self.editor.timeline,
-            false,
-        );
-        messages::warning(
-            "Missing media",
-            format!(
-                "Removed missing media and clips using it:\n{}",
-                missing_paths.join("\n")
-            ),
-        );
+            newly_missing,
+        )));
     }
 
     pub(super) fn clear_editor_selection(&mut self) {

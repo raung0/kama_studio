@@ -652,36 +652,102 @@ struct ExternalDragItem {
 struct PendingProjectLoad {
     path: PathBuf,
     project: Project,
-    missing: Vec<(MediaId, PathBuf)>,
+}
+
+struct MissingMediaEntry {
+    media: MediaId,
+    name: String,
+    missing_path: PathBuf,
+    replacement: Option<PathBuf>,
 }
 
 struct MissingMediaDialog {
     pending: Option<PendingProjectLoad>,
-    missing_paths: Vec<PathBuf>,
+    missing: Vec<MissingMediaEntry>,
+    scroll: ScrollState,
     animation: PopupAnimation,
 }
 
 impl MissingMediaDialog {
     fn new(path: PathBuf, project: Project, missing: Vec<(MediaId, PathBuf)>) -> Self {
-        let missing_paths = missing.iter().map(|(_, path)| path.clone()).collect();
+        let missing = missing_media_entries(&project, missing);
         Self {
-            pending: Some(PendingProjectLoad {
-                path,
-                project,
-                missing,
-            }),
-            missing_paths,
+            pending: Some(PendingProjectLoad { path, project }),
+            missing,
+            scroll: ScrollState::default(),
             animation: PopupAnimation::new(),
         }
     }
 
-    fn missing(&self) -> &[PathBuf] {
-        &self.missing_paths
+    fn current(project: &Project, missing: Vec<(MediaId, PathBuf)>) -> Self {
+        Self {
+            pending: None,
+            missing: missing_media_entries(project, missing),
+            scroll: ScrollState::default(),
+            animation: PopupAnimation::new(),
+        }
+    }
+
+    fn missing(&self) -> &[MissingMediaEntry] {
+        &self.missing
+    }
+
+    fn is_project_load(&self) -> bool {
+        self.pending.is_some()
     }
 
     fn take(&mut self) -> Option<PendingProjectLoad> {
         self.pending.take()
     }
+}
+
+fn missing_media_entries(
+    project: &Project,
+    missing: Vec<(MediaId, PathBuf)>,
+) -> Vec<MissingMediaEntry> {
+    missing
+        .into_iter()
+        .map(|(media, missing_path)| MissingMediaEntry {
+            media,
+            name: project
+                .media(media)
+                .map_or_else(|| "Media".into(), |asset| asset.name.clone()),
+            missing_path,
+            replacement: None,
+        })
+        .collect()
+}
+
+fn sync_missing_media_entries(
+    entries: &mut Vec<MissingMediaEntry>,
+    project: &Project,
+    missing: Vec<(MediaId, PathBuf)>,
+) {
+    let mut existing = std::mem::take(entries)
+        .into_iter()
+        .map(|entry| (entry.media, entry))
+        .collect::<HashMap<_, _>>();
+    *entries = missing
+        .into_iter()
+        .map(|(media, missing_path)| {
+            if let Some(mut entry) = existing.remove(&media) {
+                entry.name = project
+                    .media(media)
+                    .map_or_else(|| "Media".into(), |asset| asset.name.clone());
+                entry.missing_path = missing_path;
+                entry
+            } else {
+                MissingMediaEntry {
+                    media,
+                    name: project
+                        .media(media)
+                        .map_or_else(|| "Media".into(), |asset| asset.name.clone()),
+                    missing_path,
+                    replacement: None,
+                }
+            }
+        })
+        .collect();
 }
 
 popup_dialog_methods!(MissingMediaDialog);
@@ -1015,6 +1081,7 @@ struct EditorApp {
     native_menu: NativeMenu,
     editor: EditorSession,
     next_media_presence_check: Instant,
+    prompted_missing_media: HashSet<MediaId>,
     plugins: PluginRegistry,
     effects: EffectRuntime,
     waveform_textures: waveform::WaveformTextures,
@@ -1124,6 +1191,7 @@ impl EditorApp {
             native_menu,
             editor,
             next_media_presence_check: Instant::now() + MEDIA_PRESENCE_CHECK_INTERVAL,
+            prompted_missing_media: HashSet::new(),
             plugins,
             effects,
             waveform_textures,
@@ -1487,7 +1555,7 @@ impl EditorApp {
     }
 
     fn draw(&mut self) -> Result<()> {
-        self.remove_missing_media_files();
+        self.check_missing_media_files();
         let width = self.renderer.logical_width();
         let height = self.renderer.logical_height();
         let workspace = self.workspace_rect();
@@ -2560,13 +2628,23 @@ impl EditorApp {
             Modal::MissingMedia(dialog) => {
                 if !dialog.is_closing() {
                     let rect = missing_media_dialog_rect(width, height, dialog.missing().len());
-                    if missing_media_button_rect(rect, false).contains(point)
-                        || !rect.contains(point)
+                    if dialog.is_project_load()
+                        && (missing_media_button_rect(rect, false).contains(point)
+                            || !rect.contains(point))
                     {
                         dialog.close();
                     } else if missing_media_button_rect(rect, true).contains(point) {
-                        self.confirm_missing_media_load(dialog);
-                        dialog.close();
+                        if self.apply_missing_media_dialog(dialog) {
+                            dialog.close();
+                        }
+                    } else if missing_media_dialog_parts(rect).2.contains(point) {
+                        let selected = (0..dialog.missing().len()).find(|&index| {
+                            missing_media_picker_rect(rect, index, dialog.scroll.offset)
+                                .contains(point)
+                        });
+                        if let Some(index) = selected {
+                            self.choose_missing_media_replacement(dialog, index);
+                        }
                     }
                 }
             }
@@ -3629,10 +3707,11 @@ impl EditorApp {
                 }
             }
             Modal::MissingMedia(dialog) if !dialog.is_closing() => match event.logical_key {
-                Key::Named(NamedKey::Escape) => dialog.close(),
+                Key::Named(NamedKey::Escape) if dialog.is_project_load() => dialog.close(),
                 Key::Named(NamedKey::Enter) => {
-                    self.confirm_missing_media_load(dialog);
-                    dialog.close();
+                    if self.apply_missing_media_dialog(dialog) {
+                        dialog.close();
+                    }
                 }
                 _ => {}
             },
@@ -4502,6 +4581,10 @@ impl EditorApp {
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"));
         let media = project_io::import_media(&mut self.editor.project, path.clone())?;
+        if let Some(project_path) = self.editor.project_path.as_deref() {
+            let base = project_path.parent().unwrap_or_else(|| Path::new("."));
+            self.editor.project.update_media_path_references(base);
+        }
         if let Some(asset) = self.editor.project.media(media) {
             self.waveform_textures.queue_asset(asset);
             Self::warm_media_scrub_thumbnails(asset);
@@ -5941,16 +6024,30 @@ impl ApplicationHandler<AppEvent> for App {
                     return;
                 }
                 if let Some(modal) = editor_app.modal.as_mut() {
-                    if let Modal::Keybinds(dialog) = modal {
-                        let width = editor_app.renderer.logical_width();
-                        let height = editor_app.renderer.logical_height();
-                        dialog.scroll(
-                            width,
-                            height,
-                            editor_app.cursor,
-                            delta,
-                            &editor_app.command_registry,
-                        );
+                    let width = editor_app.renderer.logical_width();
+                    let height = editor_app.renderer.logical_height();
+                    match modal {
+                        Modal::Keybinds(dialog) => {
+                            dialog.scroll(
+                                width,
+                                height,
+                                editor_app.cursor,
+                                delta,
+                                &editor_app.command_registry,
+                            );
+                        }
+                        Modal::MissingMedia(dialog) if !dialog.is_closing() => {
+                            let rect =
+                                missing_media_dialog_rect(width, height, dialog.missing().len());
+                            if missing_media_dialog_parts(rect)
+                                .2
+                                .contains(editor_app.cursor)
+                            {
+                                let max = missing_media_max_scroll(rect, dialog.missing().len());
+                                let _ = dialog.scroll.scroll_by(-delta[1], max);
+                            }
+                        }
+                        _ => {}
                     }
                     editor_app.window.request_redraw();
                     return;

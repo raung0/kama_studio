@@ -121,7 +121,7 @@ pub(super) fn missing_project_media(project: &Project) -> Vec<(MediaId, PathBuf)
     project
         .media
         .iter()
-        .filter(|asset| !asset.path.exists())
+        .filter(|asset| !asset.path.is_file())
         .map(|asset| (asset.id, asset.path.clone()))
         .collect()
 }

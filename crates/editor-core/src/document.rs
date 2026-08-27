@@ -244,7 +244,12 @@ const fn legacy_model3d_scale() -> [f32; 3] {
 pub struct MediaAsset {
     pub id: MediaId,
     pub name: String,
+    #[serde(skip)]
     pub path: PathBuf,
+    #[serde(default, alias = "path")]
+    pub absolute_path: PathBuf,
+    #[serde(default)]
+    pub relative_path: PathBuf,
     pub kind: MediaKind,
     pub duration: Option<f64>,
     pub frame_rate: Option<f64>,

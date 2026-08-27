@@ -22,7 +22,7 @@ use crate::{
     timeline::TimelineDocument,
 };
 
-pub const KAMA_FORMAT_VERSION: u32 = 6;
+pub const KAMA_FORMAT_VERSION: u32 = 7;
 const MIN_MIGRATABLE_FORMAT_VERSION: u32 = 5;
 pub use kama_editor_core::document::{
     AlphaBlendMode, BlendMode, CompositionId, CompositionSettings, GeneratorSource, LayerComposite,
@@ -128,6 +128,7 @@ impl Project {
         let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let mut project: Self = serde_json::from_slice(&data)
             .with_context(|| format!("parse .kama v{KAMA_FORMAT_VERSION} {}", path.display()))?;
+        let loaded_format_version = project.format_version;
         if !(MIN_MIGRATABLE_FORMAT_VERSION..=KAMA_FORMAT_VERSION).contains(&project.format_version)
         {
             anyhow::bail!(
@@ -144,9 +145,7 @@ impl Project {
         );
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         for asset in &mut project.media {
-            if asset.path.is_relative() {
-                asset.path = base.join(&asset.path);
-            }
+            migrate_and_resolve_media_path(asset, base, loaded_format_version);
             if asset.kind == MediaKind::Unknown && crate::model3d::is_supported_path(&asset.path) {
                 asset.kind = MediaKind::Model3d;
             }
@@ -758,9 +757,9 @@ impl Project {
         let mut persisted = self.clone();
         persisted.format_version = KAMA_FORMAT_VERSION;
         for asset in &mut persisted.media {
-            if let Ok(relative) = asset.path.strip_prefix(base) {
-                asset.path = relative.to_path_buf();
-            }
+            let absolute = absolute_media_path(base, &asset.path);
+            asset.absolute_path = absolute.clone();
+            asset.relative_path = relative_media_path(base, &absolute).unwrap_or_default();
         }
         for composition in &mut persisted.compositions {
             composition.timeline.make_paths_relative(base);
@@ -978,24 +977,45 @@ impl Project {
             anyhow::bail!("media asset {id} does not exist");
         };
         let replacement = media_asset_from_path(id, path)?;
-        let current = &self.media[index];
-        let track_count = |asset: &MediaAsset, kind: MediaTrackKind| {
-            asset
-                .tracks
-                .iter()
-                .filter(|track| track.kind == kind)
-                .count()
-        };
-        let old_video = track_count(current, MediaTrackKind::Video);
-        let old_audio = track_count(current, MediaTrackKind::Audio);
-        let new_video = track_count(&replacement, MediaTrackKind::Video);
-        let new_audio = track_count(&replacement, MediaTrackKind::Audio);
-        anyhow::ensure!(
-            new_video >= old_video && new_audio >= old_audio,
-            "replacement needs at least {old_video} video and {old_audio} audio track(s); selected file has {new_video} video and {new_audio} audio track(s)"
-        );
+        ensure_media_replacement_compatible(self.media[index].kind, replacement.kind)?;
         self.media[index] = replacement;
         Ok(())
+    }
+
+    pub fn validate_media_replacement(&self, id: MediaId, path: &Path) -> Result<()> {
+        let Some(current) = self.media(id) else {
+            anyhow::bail!("media asset {id} does not exist");
+        };
+        let replacement = media_asset_from_path(id, path.to_path_buf())?;
+        ensure_media_replacement_compatible(current.kind, replacement.kind)
+    }
+
+    pub(crate) fn resolve_missing_media_paths(&mut self, base: &Path) -> usize {
+        let mut resolved = 0;
+        for asset in &mut self.media {
+            if asset.path.is_file() {
+                continue;
+            }
+            let candidate = resolve_stored_media_path(asset, base);
+            if candidate.is_file() && candidate != asset.path {
+                asset.path = candidate.clone();
+                asset.absolute_path = absolute_media_path(base, &candidate);
+                if asset.relative_path.as_os_str().is_empty() {
+                    asset.relative_path =
+                        relative_media_path(base, &asset.absolute_path).unwrap_or_default();
+                }
+                resolved += 1;
+            }
+        }
+        resolved
+    }
+
+    pub(crate) fn update_media_path_references(&mut self, base: &Path) {
+        for asset in &mut self.media {
+            let absolute = absolute_media_path(base, &asset.path);
+            asset.absolute_path = absolute.clone();
+            asset.relative_path = relative_media_path(base, &absolute).unwrap_or_default();
+        }
     }
 
     pub fn media(&self, id: MediaId) -> Option<&MediaAsset> {
@@ -2201,6 +2221,7 @@ fn next_u64_id(current: u64, ids: impl Iterator<Item = u64>) -> u64 {
 }
 
 fn media_asset_from_path(id: MediaId, path: PathBuf) -> Result<MediaAsset> {
+    let path = absolute_media_path(Path::new("."), &path);
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2275,6 +2296,8 @@ fn media_asset_from_path(id: MediaId, path: PathBuf) -> Result<MediaAsset> {
     Ok(MediaAsset {
         id,
         name,
+        absolute_path: path.clone(),
+        relative_path: PathBuf::new(),
         path,
         kind,
         duration,
@@ -2286,6 +2309,126 @@ fn media_asset_from_path(id: MediaId, path: PathBuf) -> Result<MediaAsset> {
         waveform: None,
         legacy_model: None,
     })
+}
+
+fn ensure_media_replacement_compatible(current: MediaKind, replacement: MediaKind) -> Result<()> {
+    let compatible = match current {
+        MediaKind::Image { .. } | MediaKind::Video => {
+            matches!(replacement, MediaKind::Image { .. } | MediaKind::Video)
+        }
+        MediaKind::Audio => matches!(replacement, MediaKind::Audio),
+        MediaKind::Model3d => matches!(replacement, MediaKind::Model3d),
+        MediaKind::WasmPlugin => matches!(replacement, MediaKind::WasmPlugin),
+        MediaKind::Unknown => matches!(replacement, MediaKind::Unknown),
+    };
+    anyhow::ensure!(
+        compatible,
+        "replacement for {} media must be {}; selected file is {}",
+        media_kind_label(current),
+        media_replacement_requirement(current),
+        media_kind_label(replacement),
+    );
+    Ok(())
+}
+
+fn media_kind_label(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Image { .. } => "image",
+        MediaKind::Video => "video",
+        MediaKind::Audio => "audio",
+        MediaKind::Model3d => "3D model",
+        MediaKind::WasmPlugin => "WASM plugin",
+        MediaKind::Unknown => "unknown",
+    }
+}
+
+fn media_replacement_requirement(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Image { .. } | MediaKind::Video => "an image or video",
+        MediaKind::Audio => "audio",
+        MediaKind::Model3d => "a 3D model",
+        MediaKind::WasmPlugin => "a WASM plugin",
+        MediaKind::Unknown => "the same media type",
+    }
+}
+
+fn migrate_and_resolve_media_path(asset: &mut MediaAsset, base: &Path, format_version: u32) {
+    if format_version < 7 {
+        let legacy = asset.absolute_path.clone();
+        if legacy.is_relative() {
+            asset.relative_path = legacy.clone();
+            asset.absolute_path = absolute_media_path(base, &legacy);
+        } else {
+            asset.absolute_path = legacy;
+            asset.relative_path =
+                relative_media_path(base, &asset.absolute_path).unwrap_or_default();
+        }
+    }
+
+    let resolved = resolve_stored_media_path(asset, base);
+    asset.path = resolved.clone();
+    asset.absolute_path = absolute_media_path(base, &resolved);
+    if asset.relative_path.as_os_str().is_empty() {
+        asset.relative_path = relative_media_path(base, &asset.absolute_path).unwrap_or_default();
+    }
+}
+
+fn resolve_stored_media_path(asset: &MediaAsset, base: &Path) -> PathBuf {
+    let absolute = (!asset.absolute_path.as_os_str().is_empty())
+        .then(|| absolute_media_path(base, &asset.absolute_path));
+    if let Some(path) = absolute.as_ref().filter(|path| path.is_file()) {
+        return path.clone();
+    }
+
+    let relative = (!asset.relative_path.as_os_str().is_empty())
+        .then(|| absolute_media_path(base, &asset.relative_path));
+    if let Some(path) = relative.as_ref().filter(|path| path.is_file()) {
+        return path.clone();
+    }
+
+    absolute.or(relative).unwrap_or_default()
+}
+
+fn absolute_media_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let base = if base.is_absolute() {
+            base.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(base)
+        };
+        base.join(path)
+    }
+}
+
+fn relative_media_path(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base = absolute_media_path(Path::new("."), base);
+    let target = absolute_media_path(Path::new("."), target);
+    let base_components = base.components().collect::<Vec<_>>();
+    let target_components = target.components().collect::<Vec<_>>();
+
+    let common = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == 0 && (base.is_absolute() || target.is_absolute()) {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for component in &base_components[common..] {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &target_components[common..] {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
 }
 
 fn guess_media_kind(path: &Path) -> MediaKind {
@@ -2354,6 +2497,19 @@ fn validate_image_graph(nodes: &[EffectNode], output: &ImageBinding, label: &str
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn media_replacement_compatibility_keeps_visual_and_audio_categories_separate() {
+        let image = MediaKind::Image {
+            width: 1,
+            height: 1,
+        };
+        assert!(ensure_media_replacement_compatible(image, MediaKind::Video).is_ok());
+        assert!(ensure_media_replacement_compatible(MediaKind::Video, image).is_ok());
+        assert!(ensure_media_replacement_compatible(MediaKind::Audio, MediaKind::Audio).is_ok());
+        assert!(ensure_media_replacement_compatible(MediaKind::Audio, MediaKind::Video).is_err());
+        assert!(ensure_media_replacement_compatible(MediaKind::Video, MediaKind::Audio).is_err());
+    }
 
     #[test]
     fn composition_duplicate_names_are_unique_and_delete_keeps_project_valid() {
@@ -2434,6 +2590,8 @@ mod tests {
             id: 1,
             name: "still.png".into(),
             path: media_path.clone(),
+            absolute_path: media_path.clone(),
+            relative_path: PathBuf::new(),
             kind: MediaKind::Image {
                 width: 64,
                 height: 64,
@@ -2462,6 +2620,8 @@ mod tests {
         project.save(&project_path).unwrap();
 
         let persisted = fs::read_to_string(&project_path).unwrap();
+        assert!(persisted.contains("\"absolute_path\""));
+        assert!(persisted.contains("\"relative_path\""));
         assert!(persisted.contains("media/still.png") || persisted.contains("media\\\\still.png"));
         let loaded = Project::load(&project_path).unwrap();
         assert_eq!(loaded.name, "Round Trip");
@@ -2473,6 +2633,56 @@ mod tests {
             .and_then(|instance| instance.overrides.get(exposure, "exposure"))
             .and_then(|binding| binding.evaluate(0.0));
         assert_eq!(loaded_override, Some(GpuValue::F32(1.25)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn kama_load_prefers_absolute_media_path_then_relative_fallback() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "kama-project-path-test-{}-{unique}",
+            std::process::id()
+        ));
+        let original = root.join("original");
+        let moved = root.join("moved");
+        fs::create_dir_all(original.join("media")).unwrap();
+        fs::create_dir_all(moved.join("media")).unwrap();
+        let original_media = original.join("media").join("still.png");
+        let moved_media = moved.join("media").join("still.png");
+        fs::write(&original_media, b"original").unwrap();
+        fs::write(&moved_media, b"moved").unwrap();
+
+        let mut project = Project::new();
+        project.media.push(MediaAsset {
+            id: 1,
+            name: "still.png".into(),
+            path: original_media.clone(),
+            absolute_path: original_media.clone(),
+            relative_path: PathBuf::from("media/still.png"),
+            kind: MediaKind::Unknown,
+            duration: None,
+            frame_rate: None,
+            video_width: None,
+            video_height: None,
+            has_audio: false,
+            tracks: Vec::new(),
+            waveform: None,
+            legacy_model: None,
+        });
+        project.next_media_id = 2;
+
+        let project_path = moved.join("test.kama");
+        atomic_write_json(&project_path, &project).unwrap();
+        let loaded = Project::load(&project_path).unwrap();
+        assert_eq!(loaded.media[0].path, original_media);
+
+        fs::remove_file(&original_media).unwrap();
+        let loaded = Project::load(&project_path).unwrap();
+        assert_eq!(loaded.media[0].path, moved_media);
 
         let _ = fs::remove_dir_all(root);
     }
