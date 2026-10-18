@@ -36,7 +36,7 @@ naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out"] }
 open = "5"
 cosmic-text = "0.19"
 rfd = "0.17.2"
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
 ciborium = "0.2"
