@@ -459,6 +459,79 @@ impl TimelineState {
         self.expanded_keyframe_lanes.contains(&id.group)
     }
 
+    pub(super) fn keyframe_component_is_visible(&self, id: &KeyframeLaneId) -> bool {
+        !self
+            .hidden_keyframe_components
+            .get(&id.group)
+            .is_some_and(|components| components.contains(&id.component))
+    }
+
+    pub(super) fn toggle_keyframe_component(&mut self, id: &KeyframeLaneId) {
+        let components = self
+            .hidden_keyframe_components
+            .entry(id.group.clone())
+            .or_default();
+        if components.remove(&id.component) {
+            return;
+        }
+        components.insert(id.component);
+        self.selected_keyframes.retain(|selected| {
+            selected.lane.group != id.group || selected.lane.component != id.component
+        });
+    }
+
+    pub(super) fn keyframe_component_rows(
+        property: &[KeyframeLane],
+        rect: Rect,
+    ) -> impl Iterator<Item = (&KeyframeLane, Rect)> {
+        let toggle = Self::keyframe_lane_toggle_rect(rect);
+        let mut seen = HashSet::new();
+        property
+            .iter()
+            .filter(move |lane| seen.insert(lane.id.component))
+            .enumerate()
+            .map(move |(offset, lane)| {
+                let y = (offset as f32).mul_add(18.0, rect.y + KEYFRAME_LANE_H + 4.0);
+                (
+                    lane,
+                    Rect::new(
+                        toggle.right() + 3.0,
+                        y,
+                        (rect.right() - toggle.right() - 7.0).max(1.0),
+                        16.0,
+                    ),
+                )
+            })
+            .take_while(move |(_, row)| row.bottom() <= rect.bottom())
+    }
+
+    pub(super) fn keyframe_component_at(
+        &self,
+        layout: TimelineLayout,
+        index: usize,
+        point: [f32; 2],
+    ) -> Option<KeyframeLaneId> {
+        let lanes = self.keyframe_lanes_for_track(index);
+        for (start, end, rect) in self.keyframe_property_rects(layout, index, true) {
+            let Some(property) = lanes.get(start..end) else {
+                continue;
+            };
+            if !rect.contains(point)
+                || !property
+                    .first()
+                    .is_some_and(|lane| self.keyframe_property_open_amount(&lane.id) > 0.001)
+            {
+                continue;
+            }
+            if let Some((lane, _)) =
+                Self::keyframe_component_rows(property, rect).find(|(_, row)| row.contains(point))
+            {
+                return Some(lane.id.clone());
+            }
+        }
+        None
+    }
+
     pub(super) fn keyframe_property_graph_is_settled(&self, id: &KeyframeLaneId) -> bool {
         if !self.keyframe_property_is_expanded(id) {
             return false;
@@ -568,6 +641,9 @@ impl TimelineState {
                 let axis_range =
                     expanded.then(|| keyframe_property_axis_range(property, rect.height));
                 for lane in property {
+                    if !self.keyframe_component_is_visible(&lane.id) {
+                        continue;
+                    }
                     if let Some(hit) = lane.points.iter().min_by(|a, b| {
                         let a_x = self.time_x(layout, a.time as f32);
                         let b_x = self.time_x(layout, b.time as f32);
@@ -616,6 +692,9 @@ impl TimelineState {
                 }
                 let axis_range = keyframe_property_axis_range(property, rect.height);
                 for lane in property {
+                    if !self.keyframe_component_is_visible(&lane.id) {
+                        continue;
+                    }
                     for pair in lane.points.windows(2) {
                         let [a, b] = *pair else { continue };
                         if a.interpolation == Interpolation::Step || b.time <= a.time {

@@ -205,6 +205,10 @@ impl TimelineState {
                 }
                 return true;
             }
+            if let Some(component) = self.keyframe_component_at(layout, track, point) {
+                self.toggle_keyframe_component(&component);
+                return true;
+            }
             for (start, _, rect) in self.keyframe_property_rects(layout, track, true) {
                 if Self::keyframe_lane_toggle_rect(rect).contains(point) {
                     let Some(target) = self
@@ -741,6 +745,9 @@ impl TimelineState {
                                 let axis = expanded
                                     .then(|| keyframe_property_axis_range(group, rect.height));
                                 for lane in group {
+                                    if !self.keyframe_component_is_visible(&lane.id) {
+                                        continue;
+                                    }
                                     for key in &lane.points {
                                         let key_point = [
                                             self.time_x(layout, key.time as f32),

@@ -166,6 +166,9 @@ impl TimelineState {
             });
 
             for (component_offset, lane) in property.iter().enumerate() {
+                if !self.keyframe_component_is_visible(&lane.id) {
+                    continue;
+                }
                 let color = keyframe_property_color(&lane.id);
                 let visible_points = self.visible_keyframe_points(layout, &lane.points);
                 if let (Some(&first), Some(&last)) = (visible_points.first(), visible_points.last())
@@ -366,7 +369,6 @@ impl TimelineState {
                 for (label_index, (text, y)) in labels.into_iter().enumerate() {
                     ui::ui!(ctx, {
                         Rect(("keyframe-range-label", stack.0, track.id, property_index, label_index), Rect::new(rect.x + 4.0, y - 8.0, 62.0, 16.0)) {
-                            fill: theme::timeline_bg();
                             font_size: 8.5;
                             text_color: theme::timeline_muted();
                             padding: 2.0;
@@ -457,12 +459,11 @@ impl TimelineState {
                     .iter()
                     .filter(|lane| seen.insert(lane.id.component))
                     .collect::<Vec<_>>();
-                for (component_offset, lane) in components.iter().enumerate() {
-                    let row_y =
-                        (component_offset as f32).mul_add(18.0, rect.y + KEYFRAME_LANE_H + 4.0);
-                    if row_y + 16.0 > rect.bottom() {
-                        break;
-                    }
+                for (component_offset, (lane, row)) in
+                    Self::keyframe_component_rows(property, rect).enumerate()
+                {
+                    let row_y = row.y;
+                    let visible = self.keyframe_component_is_visible(&lane.id);
                     let component_label =
                         keyframe_component_label(lane.id.component, components.len());
                     ui::ui!(ctx, {
@@ -470,7 +471,9 @@ impl TimelineState {
                             ("keyframe-header-component", stack.0, track.id, property_index, component_offset),
                             Rect::new(toggle.right() + 5.0, row_y + 4.0, 7.0, 7.0),
                         ) {
-                            fill: keyframe_property_color(&lane.id);
+                            fill: if visible { keyframe_property_color(&lane.id) } else { Color::TRANSPARENT };
+                            border: u32::from(!visible);
+                            border_color: theme::timeline_muted();
                             border_radius: 3.5;
                         }
                         Rect(

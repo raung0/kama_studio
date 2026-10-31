@@ -1686,6 +1686,7 @@ pub struct TimelineState {
     expanded_keyframe_tracks: HashSet<u32>,
 
     expanded_keyframe_lanes: HashSet<KeyframeLaneGroup>,
+    hidden_keyframe_components: HashMap<KeyframeLaneGroup, HashSet<usize>>,
     keyframe_track_expansion: HashMap<u32, f32>,
     keyframe_lane_expansion: HashMap<KeyframeLaneGroup, f32>,
 
@@ -2201,6 +2202,7 @@ impl TimelineState {
             render_output_range: None,
             expanded_keyframe_tracks: HashSet::new(),
             expanded_keyframe_lanes: HashSet::new(),
+            hidden_keyframe_components: HashMap::new(),
             keyframe_track_expansion: HashMap::new(),
             keyframe_lane_expansion: HashMap::new(),
             keyframe_lane_snapshot: Vec::new(),
@@ -8851,6 +8853,113 @@ mod effect_model_tests {
             .and_then(|track| track.property_row(&clip.source, clip.source_instance))
             .unwrap();
         assert!(row.composite.opacity.has_keyframe(12.0));
+    }
+
+    #[test]
+    fn automation_component_visibility_filters_hits_without_changing_animation() {
+        let mut timeline = TimelineState::default();
+        insert_test_generator(&mut timeline);
+        timeline.playhead = 1.0;
+        timeline.set_generator_value("scale", GpuValue::Vec2([1.0, 1.0]));
+        timeline.toggle_generator_keyframe("scale");
+        let track = timeline.tracks[0].id;
+        let lanes = timeline.build_keyframe_lanes_for_track(0);
+        let x = lanes
+            .iter()
+            .find(|lane| lane.id.component == 0)
+            .unwrap()
+            .clone();
+        let y = lanes
+            .iter()
+            .find(|lane| lane.id.component == 1)
+            .unwrap()
+            .clone();
+        timeline.expanded_keyframe_tracks.insert(track);
+        timeline.expanded_keyframe_lanes.insert(x.id.group.clone());
+        timeline.keyframe_lane_snapshot = vec![lanes];
+        let layout = TimelineLayout::new(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        let (_, _, rect) = timeline.keyframe_property_rects(layout, 0, false)[0];
+        let axis = keyframe_property_axis_range(timeline.keyframe_lanes_for_track(0), rect.height);
+        let point = [
+            timeline.time_x(layout, 1.0),
+            keyframe_value_y(rect, Some(axis), x.points[0].value),
+        ];
+        let before = serde_json::to_value(timeline.document()).unwrap();
+        timeline.selected_keyframes = vec![
+            SelectedKeyframe {
+                lane: x.id.clone(),
+                time: 1.0,
+            },
+            SelectedKeyframe {
+                lane: y.id.clone(),
+                time: 1.0,
+            },
+        ];
+        assert_eq!(timeline.keyframes_at(layout, point).len(), 2);
+
+        timeline.toggle_keyframe_component(&x.id);
+
+        assert_eq!(
+            timeline.keyframes_at(layout, point),
+            vec![(y.id.clone(), 1.0)]
+        );
+        assert_eq!(timeline.selected_keyframes.len(), 1);
+        assert_eq!(timeline.selected_keyframes[0].lane, y.id);
+        assert_eq!(serde_json::to_value(timeline.document()).unwrap(), before);
+
+        timeline.toggle_keyframe_component(&x.id);
+        assert_eq!(timeline.keyframes_at(layout, point).len(), 2);
+    }
+
+    #[test]
+    fn automation_component_rows_hit_both_dot_and_label_but_not_collapsed_headers() {
+        let mut timeline = TimelineState::default();
+        insert_test_generator(&mut timeline);
+        timeline.set_generator_value("scale", GpuValue::Vec2([1.0, 1.0]));
+        timeline.toggle_generator_keyframe("scale");
+        let track = timeline.tracks[0].id;
+        let lanes = timeline.build_keyframe_lanes_for_track(0);
+        let x = lanes
+            .iter()
+            .find(|lane| lane.id.component == 0)
+            .unwrap()
+            .id
+            .clone();
+        let y = lanes
+            .iter()
+            .find(|lane| lane.id.component == 1)
+            .unwrap()
+            .id
+            .clone();
+        timeline.expanded_keyframe_tracks.insert(track);
+        timeline.expanded_keyframe_lanes.insert(x.group.clone());
+        timeline.keyframe_lane_snapshot = vec![lanes];
+        let layout = TimelineLayout::new(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        let (_, _, rect) = timeline.keyframe_property_rects(layout, 0, true)[0];
+        let first_row_y = rect.y + KEYFRAME_LANE_H + 12.0;
+
+        assert_eq!(
+            timeline.keyframe_component_at(layout, 0, [rect.x + 30.0, first_row_y]),
+            Some(x.clone())
+        );
+        assert_eq!(
+            timeline.keyframe_component_at(layout, 0, [rect.x + 80.0, first_row_y]),
+            Some(x.clone())
+        );
+        assert_eq!(
+            timeline.keyframe_component_at(layout, 0, [rect.x + 80.0, first_row_y + 18.0]),
+            Some(y)
+        );
+        assert_eq!(
+            timeline.keyframe_component_at(layout, 0, [rect.x + 80.0, rect.y + 10.0]),
+            None
+        );
+
+        timeline.expanded_keyframe_lanes.remove(&x.group);
+        assert_eq!(
+            timeline.keyframe_component_at(layout, 0, [rect.x + 80.0, first_row_y]),
+            None
+        );
     }
 
     #[test]
