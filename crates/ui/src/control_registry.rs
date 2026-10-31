@@ -88,7 +88,7 @@ pub struct ControlRegistry<K, C> {
 impl<K, C> Default for ControlRegistry<K, C> {
     fn default() -> Self {
         Self {
-            slots: Default::default(),
+            slots: std::collections::HashMap::default(),
         }
     }
 }

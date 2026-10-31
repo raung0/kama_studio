@@ -122,7 +122,7 @@ struct MeteredSource<S> {
 }
 
 impl<S> MeteredSource<S> {
-    fn new(inner: S, meter: Arc<AudioMeter>) -> Self {
+    const fn new(inner: S, meter: Arc<AudioMeter>) -> Self {
         Self {
             inner,
             meter,
@@ -153,9 +153,15 @@ impl<S: Source> Iterator for MeteredSource<S> {
                 }
             }
         }
-        self.channel = (self.channel + 1) % channels.max(1);
-        self.samples_since_publish += 1;
-        if self.samples_since_publish >= channels.max(1) * 256 {
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "max(1) guarantees a nonzero channel divisor"
+        )]
+        {
+            self.channel = self.channel.saturating_add(1) % channels.max(1);
+        }
+        self.samples_since_publish = self.samples_since_publish.saturating_add(1);
+        if self.samples_since_publish >= channels.max(1).saturating_mul(256) {
             self.meter.publish(self.peak);
             self.peak = [0.0; 2];
             self.samples_since_publish = 0;
@@ -313,7 +319,14 @@ impl<S: Source> AudioFxSource<S> {
             };
             self.output.push(sample);
         }
-        let complete = self.output.len() / channels.max(1) * channels.max(1);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "max(1) guarantees a nonzero channel divisor"
+        )]
+        let complete = self
+            .output
+            .len()
+            .saturating_sub(self.output.len() % channels.max(1));
         self.output.truncate(complete);
         if self.output.is_empty() {
             return false;
@@ -336,8 +349,8 @@ impl<S: Source> Iterator for AudioFxSource<S> {
         if self.cursor >= self.output.len() && !self.refill() {
             return None;
         }
-        let sample = self.output[self.cursor];
-        self.cursor += 1;
+        let sample = *self.output.get(self.cursor)?;
+        self.cursor = self.cursor.saturating_add(1);
         Some(sample)
     }
 }
@@ -430,18 +443,23 @@ impl<S: Source> Iterator for StereoTrackSource<S> {
         if self.output_channel == 0 {
             self.read_frame()?;
         }
-        let sample = self.frame[self.output_channel];
+        let sample = *self.frame.get(self.output_channel)?;
         self.output_channel ^= 1;
         Some(sample)
     }
 }
 
 impl<S: Source> Source for StereoTrackSource<S> {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "max(1) guarantees a nonzero channel divisor"
+    )]
     fn current_span_len(&self) -> Option<usize> {
         self.inner
             .current_span_len()
-            .map(|samples| samples / self.source_channels.max(1) * 2)
+            .and_then(|samples| (samples / self.source_channels.max(1)).checked_mul(2))
     }
+    #[expect(clippy::expect_used, reason = "two is a valid nonzero channel count")]
     fn channels(&self) -> ChannelCount {
         ChannelCount::new(2).expect("stereo channel count")
     }
@@ -460,6 +478,10 @@ fn audio_pipeline_settings(
     keyframe_time: f64,
     local_time: f64,
 ) -> Vec<AudioEffectSettings> {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "keyframe time is clamped to zero and frame rate to at least one before conversion"
+    )]
     fn append_pipeline_settings(
         project: &Project,
         plugins: &PluginRegistry,
@@ -650,7 +672,7 @@ impl AudioPlayback {
         self.last_playhead = None;
     }
 
-    pub fn set_master_muted(&mut self, muted: bool) {
+    pub const fn set_master_muted(&mut self, muted: bool) {
         self.master_muted = muted;
     }
 
@@ -803,11 +825,13 @@ impl AudioPlayback {
 
         if playing && !started_playing && !positive_leads.is_empty() {
             positive_leads.sort_by(f32::total_cmp);
-            self.clock_lead = positive_leads[positive_leads.len() / 2].clamp(0.0, 0.250);
+            if let Some(lead) = positive_leads.get(positive_leads.len() / 2) {
+                self.clock_lead = lead.clamp(0.0, 0.250);
+            }
         }
     }
 
-    pub fn clock_lead(&self) -> f32 {
+    pub const fn clock_lead(&self) -> f32 {
         self.clock_lead
     }
 
@@ -920,7 +944,7 @@ fn collect_audio_routes<'a>(
                 if !matches!(asset.kind, MediaKind::Video | MediaKind::Audio) {
                     continue;
                 }
-                let mut layers = Vec::with_capacity(outer_layers.len() + 1);
+                let mut layers = Vec::with_capacity(outer_layers.len().saturating_add(1));
                 layers.push(layer);
                 layers.extend(outer_layers.iter().rev().copied());
                 let source_offset = (time_offset - clip.start).mul_add(speed, clip.source_offset);
@@ -952,7 +976,7 @@ fn collect_audio_routes<'a>(
                 let child_offset = (time_offset - clip.start).mul_add(speed, clip.source_offset);
                 let child_rate = time_rate * speed;
                 let child_duration = project.composition_duration(*composition_id);
-                let mut next_outer = Vec::with_capacity(outer_layers.len() + 1);
+                let mut next_outer = Vec::with_capacity(outer_layers.len().saturating_add(1));
                 next_outer.extend_from_slice(outer_layers);
                 next_outer.push(layer);
                 for (root_start, root_end, child_offset) in looped_source_segments(
@@ -971,7 +995,7 @@ fn collect_audio_routes<'a>(
                         child_rate,
                         Some(output_track),
                         &next_outer,
-                        depth + 1,
+                        depth.saturating_add(1),
                         routes,
                     );
                 }
@@ -981,6 +1005,10 @@ fn collect_audio_routes<'a>(
     }
 }
 
+#[expect(
+    clippy::while_float,
+    reason = "the finite range loop explicitly advances to the next representable float or exits"
+)]
 fn looped_source_segments(
     root_range: (f32, f32),
     source_offset: f32,
@@ -1098,7 +1126,11 @@ fn next_f32_up(value: f32) -> f32 {
         return f32::from_bits(1);
     }
     let bits = value.to_bits();
-    f32::from_bits(if value > 0.0 { bits + 1 } else { bits - 1 })
+    f32::from_bits(if value > 0.0 {
+        bits.saturating_add(1)
+    } else {
+        bits.saturating_sub(1)
+    })
 }
 
 fn collect_desired_voices(
@@ -1256,6 +1288,14 @@ fn clip_volume(local: f32, duration: f32, fade_in: f32, fade_out: f32) -> f32 {
     volume
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "frame count is derived from a nonnegative duration and output offsets are clamped to zero before conversion"
+)]
+#[expect(
+    clippy::while_float,
+    reason = "finite source positions are reduced by one until below one for interpolation"
+)]
 pub fn render_audio_wav(
     project: &Project,
     plugins: &PluginRegistry,
@@ -1278,13 +1318,18 @@ pub fn render_audio_wav(
     );
     let duration = (f64::from(end) - f64::from(start)).max(0.0);
     let frames = (duration * f64::from(sample_rate)).ceil();
-    let max_frames = ((u32::MAX - 36) as usize) / (2 * std::mem::size_of::<f32>());
+    let max_frames = (u32::MAX.saturating_sub(36) as usize) / 8;
     anyhow::ensure!(
         frames <= max_frames as f64,
         "audio render exceeds RIFF/WAV 4 GiB limit"
     );
     let frames = frames as usize;
-    let mut mix = vec![0.0f32; frames * 2];
+    let mut mix = vec![
+        0.0f32;
+        frames
+            .checked_mul(2)
+            .context("audio sample count overflow")?
+    ];
     let mut routes = Vec::new();
     collect_audio_routes(
         project,
@@ -1333,6 +1378,7 @@ pub fn render_audio_wav(
         };
         let mut b = read_frame().unwrap_or([0.0; 2]);
         let step = source_sample_rate as f32 / sample_rate as f32 * route.source_rate.max(0.01);
+        anyhow::ensure!(step.is_finite(), "audio source rate is not finite");
         let mut source_pos = 0.0f32;
         let out_first = (f64::from(route.root_start - start) * f64::from(sample_rate))
             .round()
@@ -1362,7 +1408,7 @@ pub fn render_audio_wav(
 
             block.clear();
             gains.clear();
-            let block_frames = AUDIO_BLOCK_FRAMES.min(output_end - output_frame);
+            let block_frames = AUDIO_BLOCK_FRAMES.min(output_end.saturating_sub(output_frame));
             for offset in 0..block_frames {
                 while source_pos >= 1.0 {
                     a = b;
@@ -1374,18 +1420,30 @@ pub fn render_audio_wav(
                     f32::mul_add(b[1] - a[1], source_pos, a[1]),
                 ]);
                 source_pos += step;
-                let frame_time = start + (output_frame + offset) as f32 / sample_rate as f32;
+                let frame_time =
+                    start + output_frame.saturating_add(offset) as f32 / sample_rate as f32;
                 let (volume, pan) = audio_route_mix(&route, frame_time);
                 gains.push(stereo_mix_gains(volume, pan));
             }
             chain.process(&mut block, &settings);
             for (offset, (stereo, gain)) in block.as_chunks::<2>().0.iter().zip(&gains).enumerate()
             {
-                let target = (output_frame + offset) * 2;
-                mix[target] = f32::mul_add(stereo[0], gain[0], mix[target]);
-                mix[target + 1] = f32::mul_add(stereo[1], gain[1], mix[target + 1]);
+                let target = output_frame
+                    .checked_add(offset)
+                    .and_then(|frame| frame.checked_mul(2))
+                    .context("audio mix offset overflow")?;
+                let samples = mix
+                    .get_mut(target..target.checked_add(2).context("audio mix offset overflow")?)
+                    .context("audio mix frame out of bounds")?;
+                let [left, right] = samples else {
+                    anyhow::bail!("invalid stereo mix frame")
+                };
+                *left = f32::mul_add(stereo[0], gain[0], *left);
+                *right = f32::mul_add(stereo[1], gain[1], *right);
             }
-            output_frame += block_frames;
+            output_frame = output_frame
+                .checked_add(block_frames)
+                .context("audio frame count overflow")?;
         }
     }
 

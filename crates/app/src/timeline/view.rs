@@ -35,7 +35,7 @@ impl TimelineState {
         ctx: &mut ui::BuildCtx,
         stack: StackId,
         content: Rect,
-        icons: Icons,
+        icons: &Icons,
         project: &Project,
         waveform_textures: &WaveformTextures,
     ) {
@@ -115,8 +115,12 @@ impl TimelineState {
         let first_visible = points.partition_point(|point| point.time < visible_start);
         let first = first_visible.saturating_sub(1);
         let after_visible = points.partition_point(|point| point.time <= visible_end);
-        let end = (after_visible + 1).min(points.len());
-        &points[first..end.max(first + 1)]
+        let end = after_visible.saturating_add(1).min(points.len());
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "partition_point is at most len, first is at most len - 1, and end is clamped to len"
+        )]
+        &points[first..end.max(first.saturating_add(1))]
     }
 
     fn build_keyframe_body_lanes(
@@ -126,6 +130,9 @@ impl TimelineState {
         stack: StackId,
         index: usize,
     ) {
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
         let lanes = self.keyframe_lanes_for_track(index);
         for (property_index, (start, end, rect)) in self
             .keyframe_property_rects(layout, index, false)
@@ -138,15 +145,20 @@ impl TimelineState {
             if rect.bottom() < layout.body.y {
                 continue;
             }
-            let property = &lanes[start..end];
-            let property_id = &property[0].id;
+            let Some(property) = lanes.get(start..end) else {
+                continue;
+            };
+            let Some(first_lane) = property.first() else {
+                continue;
+            };
+            let property_id = &first_lane.id;
             let open_amount = self.keyframe_property_open_amount(property_id);
             let graph_settled = self.keyframe_property_graph_is_settled(property_id);
             let axis_range =
                 (open_amount > 0.001).then(|| keyframe_property_axis_range(property, rect.height));
 
             ui::ui!(ctx, {
-                Rect(("keyframe-property-bg", stack.0, self.tracks[index].id, property_index), rect) {
+                Rect(("keyframe-property-bg", stack.0, track.id, property_index), rect) {
                     fill: if property_index % 2 == 0 { theme::timeline_bg_alt() } else { theme::timeline_bg() };
                     border: 1;
                     border_color: theme::timeline_line();
@@ -156,20 +168,19 @@ impl TimelineState {
             for (component_offset, lane) in property.iter().enumerate() {
                 let color = keyframe_property_color(&lane.id);
                 let visible_points = self.visible_keyframe_points(layout, &lane.points);
-                if !visible_points.is_empty() {
+                if let (Some(&first), Some(&last)) = (visible_points.first(), visible_points.last())
+                {
                     let mut vertices = Vec::new();
                     if axis_range.is_none() {
                         let y = rect.height * 0.5;
                         push_line_vertices(&mut vertices, [0.0, y], [rect.width, y], 1.5);
                     } else {
-                        let first = visible_points[0];
                         let first_x = self.time_x(layout, first.time as f32) - rect.x;
                         let first_y = keyframe_value_y(rect, axis_range, first.value) - rect.y;
                         push_line_vertices(&mut vertices, [0.0, first_y], [first_x, first_y], 1.5);
 
                         for pair in visible_points.windows(2) {
-                            let a = pair[0];
-                            let b = pair[1];
+                            let [a, b] = *pair else { continue };
                             let span = b.time - a.time;
                             if span <= 0.0 {
                                 continue;
@@ -204,7 +215,6 @@ impl TimelineState {
                             }
                         }
 
-                        let last = *visible_points.last().unwrap();
                         let last_x = self.time_x(layout, last.time as f32) - rect.x;
                         let last_y = keyframe_value_y(rect, axis_range, last.value) - rect.y;
                         push_line_vertices(
@@ -217,7 +227,7 @@ impl TimelineState {
 
                     if !vertices.is_empty() {
                         ui::ui!(ctx, {
-                            Rect(("keyframe-curve", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                            Rect(("keyframe-curve", stack.0, track.id, property_index, component_offset), rect) {
                                 fill: color;
                                 vertices: vertices;
                             }
@@ -230,8 +240,7 @@ impl TimelineState {
                     let mut control_vertices = Vec::new();
                     let mut control_line_vertices = Vec::new();
                     for pair in visible_points.windows(2) {
-                        let a = pair[0];
-                        let b = pair[1];
+                        let [a, b] = *pair else { continue };
                         if a.interpolation == Interpolation::Step || b.time <= a.time {
                             continue;
                         }
@@ -288,7 +297,7 @@ impl TimelineState {
                     }
                     if !control_line_vertices.is_empty() {
                         ui::ui!(ctx, {
-                            Rect(("keyframe-ease-lines", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                            Rect(("keyframe-ease-lines", stack.0, track.id, property_index, component_offset), rect) {
                                 fill: color;
                                 vertices: control_line_vertices;
                             }
@@ -296,7 +305,7 @@ impl TimelineState {
                     }
                     if !midpoint_vertices.is_empty() {
                         ui::ui!(ctx, {
-                            Rect(("keyframe-ease-midpoints", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                            Rect(("keyframe-ease-midpoints", stack.0, track.id, property_index, component_offset), rect) {
                                 fill: color;
                                 vertices: midpoint_vertices;
                             }
@@ -304,7 +313,7 @@ impl TimelineState {
                     }
                     if !control_vertices.is_empty() {
                         ui::ui!(ctx, {
-                            Rect(("keyframe-ease-controls", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                            Rect(("keyframe-ease-controls", stack.0, track.id, property_index, component_offset), rect) {
                                 fill: theme::timeline_text();
                                 vertices: control_vertices;
                             }
@@ -328,7 +337,7 @@ impl TimelineState {
                 }
                 if !selected_vertices.is_empty() {
                     ui::ui!(ctx, {
-                        Rect(("keyframe-selected-points", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                        Rect(("keyframe-selected-points", stack.0, track.id, property_index, component_offset), rect) {
                             fill: theme::timeline_text();
                             vertices: selected_vertices;
                         }
@@ -336,7 +345,7 @@ impl TimelineState {
                 }
                 if !key_vertices.is_empty() {
                     ui::ui!(ctx, {
-                        Rect(("keyframe-points", stack.0, self.tracks[index].id, property_index, component_offset), rect) {
+                        Rect(("keyframe-points", stack.0, track.id, property_index, component_offset), rect) {
                             fill: color;
                             vertices: key_vertices;
                         }
@@ -344,9 +353,7 @@ impl TimelineState {
                 }
             }
 
-            if graph_settled {
-                let (minimum, maximum) =
-                    axis_range.expect("expanded keyframe property has an axis range");
+            if graph_settled && let Some((minimum, maximum)) = axis_range {
                 let middle = f64::midpoint(minimum, maximum);
                 let labels = [
                     (format_keyframe_value(maximum as f32), rect.y + 8.0),
@@ -358,7 +365,7 @@ impl TimelineState {
                 ];
                 for (label_index, (text, y)) in labels.into_iter().enumerate() {
                     ui::ui!(ctx, {
-                        Rect(("keyframe-range-label", stack.0, self.tracks[index].id, property_index, label_index), Rect::new(rect.x + 4.0, y - 8.0, 62.0, 16.0)) {
+                        Rect(("keyframe-range-label", stack.0, track.id, property_index, label_index), Rect::new(rect.x + 4.0, y - 8.0, 62.0, 16.0)) {
                             fill: theme::timeline_bg();
                             font_size: 8.5;
                             text_color: theme::timeline_muted();
@@ -384,8 +391,11 @@ impl TimelineState {
         layout: TimelineLayout,
         stack: StackId,
         index: usize,
-        icons: Icons,
+        icons: &Icons,
     ) {
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
         let lanes = self.keyframe_lanes_for_track(index);
         for (property_index, (start, end, rect)) in self
             .keyframe_property_rects(layout, index, true)
@@ -398,23 +408,27 @@ impl TimelineState {
             if rect.bottom() < layout.header_body.y {
                 continue;
             }
-            let property = &lanes[start..end];
-            let lane = &property[0];
+            let Some(property) = lanes.get(start..end) else {
+                continue;
+            };
+            let Some(lane) = property.first() else {
+                continue;
+            };
             let open_amount = self.keyframe_property_open_amount(&lane.id);
             let toggle = Self::keyframe_lane_toggle_rect(rect);
             ui::ui!(ctx, {
-                Rect(("keyframe-header-bg", stack.0, self.tracks[index].id, property_index), rect) {
+                Rect(("keyframe-header-bg", stack.0, track.id, property_index), rect) {
                     fill: theme::timeline_header();
                     border: 1;
                     border_color: theme::timeline_line();
                 }
                 Block {
-                    id: @format("keyframe-header-chevron-{}-{}-{}", stack.0, self.tracks[index].id, property_index);
+                    id: @format("keyframe-header-chevron-{}-{}-{}", stack.0, track.id, property_index);
                     bounds: (toggle.x, toggle.y, toggle.width, toggle.height);
                     content_centered;
 
                     Icon {
-                        id: @format("keyframe-header-chevron-icon-{}-{}-{}", stack.0, self.tracks[index].id, property_index);
+                        id: @format("keyframe-header-chevron-icon-{}-{}-{}", stack.0, track.id, property_index);
                         icon!: icons.get(AppIcon::Chevron);
                         color!: theme::timeline_muted();
                         texture_rotation: std::f32::consts::FRAC_PI_2 * open_amount;
@@ -423,7 +437,7 @@ impl TimelineState {
                     }
                 }
                 Rect(
-                    ("keyframe-header-label", stack.0, self.tracks[index].id, property_index),
+                    ("keyframe-header-label", stack.0, track.id, property_index),
                     Rect::new(
                         toggle.right() + 3.0,
                         rect.y + 3.0,
@@ -453,14 +467,14 @@ impl TimelineState {
                         keyframe_component_label(lane.id.component, components.len());
                     ui::ui!(ctx, {
                         Rect(
-                            ("keyframe-header-component", stack.0, self.tracks[index].id, property_index, component_offset),
+                            ("keyframe-header-component", stack.0, track.id, property_index, component_offset),
                             Rect::new(toggle.right() + 5.0, row_y + 4.0, 7.0, 7.0),
                         ) {
                             fill: keyframe_property_color(&lane.id);
                             border_radius: 3.5;
                         }
                         Rect(
-                            ("keyframe-header-component-label", stack.0, self.tracks[index].id, property_index, component_offset),
+                            ("keyframe-header-component-label", stack.0, track.id, property_index, component_offset),
                             Rect::new(
                                 toggle.right() + 18.0,
                                 row_y,
@@ -486,7 +500,9 @@ impl TimelineState {
         stack: StackId,
         index: usize,
     ) {
-        let track = &self.tracks[index];
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
         let y = self.track_y(layout, index);
         if y + self.display_track_height(index) < layout.body.y || y > layout.body.bottom() {
             return;
@@ -616,7 +632,7 @@ impl TimelineState {
                 if rect.x + x >= layout.body.x - 4.0 && rect.x + x <= layout.body.right() + 4.0 {
                     loop_markers.push((marker_index, x));
                 }
-                marker_index += 1;
+                marker_index = marker_index.saturating_add(1);
                 local_time += period;
             }
         }
@@ -761,11 +777,15 @@ impl TimelineState {
         layout: TimelineLayout,
         stack: StackId,
         index: usize,
-        icons: Icons,
+        icons: &Icons,
     ) {
-        let track = &self.tracks[index];
-        let number = self.tracks[..=index]
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
+        let number = self
+            .tracks
             .iter()
+            .take(index.saturating_add(1))
             .filter(|candidate| candidate.kind == track.kind)
             .count();
         let header = self.track_header_rect(layout, index);
@@ -848,7 +868,7 @@ impl TimelineState {
                                 padding: 3.0;
                                 font_size: 10.0;
                                 text_color: theme::timeline_text();
-                                text: format!("{}│", rename.unwrap().value);
+                                text: rename.map_or_else(String::new, |rename| format!("{}│", rename.value));
                             }
                         } @else {
                             Block {
@@ -982,7 +1002,7 @@ impl TimelineState {
         ctx: &mut ui::BuildCtx,
         layout: TimelineLayout,
         stack: StackId,
-        icons: Icons,
+        icons: &Icons,
     ) {
         ui::ui!(ctx, {
             Block {
@@ -1011,7 +1031,7 @@ impl TimelineState {
         ctx: &mut ui::BuildCtx,
         layout: TimelineLayout,
         stack: StackId,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let sticky = layout.corner;
         let (controls, _) = Self::transport_parts(layout);
@@ -1113,14 +1133,16 @@ impl TimelineState {
         ctx: &mut ui::BuildCtx,
         layout: TimelineLayout,
         stack: StackId,
-        icons: Icons,
+        icons: &Icons,
         project: &Project,
         waveform_textures: &WaveformTextures,
     ) {
         let Some(index) = self.dragged_track() else {
             return;
         };
-        let track = &self.tracks[index];
+        let Some(track) = self.tracks.get(index) else {
+            return;
+        };
         self.build_track_row(ctx, layout, stack, index);
         let y = self.track_y(layout, index);
         for (index, x, _) in
@@ -1146,7 +1168,7 @@ impl TimelineState {
         ctx: &mut ui::BuildCtx,
         layout: TimelineLayout,
         stack: StackId,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let body = layout.overview_body;
         let total = self.overview_duration(layout);
@@ -1234,6 +1256,10 @@ impl TimelineState {
             );
         }
         let lane_h = ((body.height - 8.0) / self.tracks.len().max(1) as f32).max(2.0);
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "max clamps the batch count to at least one"
+        )]
         let batch_count = (body.width / OVERVIEW_BATCH_W).ceil().max(1.0) as usize;
         let mut overview_clips: HashMap<u32, Vec<&Clip>> = HashMap::new();
         for clip in &self.clips {
@@ -1247,26 +1273,37 @@ impl TimelineState {
             };
             let mut batches: Vec<[Vec<[f32; 2]>; 2]> =
                 (0..batch_count).map(|_| [Vec::new(), Vec::new()]).collect();
-            for &clip in overview_clips
-                .get(&track.id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-            {
+            for &clip in overview_clips.get(&track.id).map_or(&[][..], Vec::as_slice) {
                 let x = body.x + (f64::from(clip.start) / total * f64::from(body.width)) as f32;
                 let right =
                     x + (f64::from(clip.duration) / total * f64::from(body.width)).max(1.0) as f32;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "max clamps the batch coordinate to zero"
+                )]
                 let first = ((x - body.x) / OVERVIEW_BATCH_W).floor().max(0.0) as usize;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "max clamps the batch coordinate to zero"
+                )]
                 let last = ((right - body.x) / OVERVIEW_BATCH_W).floor().max(0.0) as usize;
-                let first = first.min(batch_count - 1);
-                let last = last.min(batch_count - 1);
+                let first = first.min(batch_count.saturating_sub(1));
+                let last = last.min(batch_count.saturating_sub(1));
                 let color = usize::from(clip.color.color() == colors[1]);
-                for (batch, vertices) in batches.iter_mut().enumerate().take(last + 1).skip(first) {
+                for (batch, vertices) in batches
+                    .iter_mut()
+                    .enumerate()
+                    .take(last.saturating_add(1))
+                    .skip(first)
+                {
                     let batch_x = (batch as f32).mul_add(OVERVIEW_BATCH_W, body.x);
                     let left = x.max(batch_x) - batch_x;
                     let right = right.min(batch_x + OVERVIEW_BATCH_W) - batch_x;
-                    if right > left {
+                    if right > left
+                        && let Some(vertices) = vertices.get_mut(color)
+                    {
                         push_rect_vertices(
-                            &mut vertices[color],
+                            vertices,
                             Rect::new(left, 0.0, right - left, (lane_h - 1.0).max(1.0)),
                         );
                     }
@@ -1276,11 +1313,12 @@ impl TimelineState {
             for (batch, colors_vertices) in batches.into_iter().enumerate() {
                 let x = (batch as f32).mul_add(OVERVIEW_BATCH_W, body.x);
                 let width = OVERVIEW_BATCH_W.min(body.right() - x);
-                for (color, vertices) in colors_vertices.into_iter().enumerate() {
+                for (color, (vertices, fill)) in colors_vertices.into_iter().zip(colors).enumerate()
+                {
                     if !vertices.is_empty() {
                         ui::ui!(ctx, {
                             Rect(("overview-clips", stack.0, track.id, batch, color), Rect::new(x, y, width, (lane_h - 1.0).max(1.0))) {
-                                fill: colors[color];
+                                fill: fill;
                                 vertices: vertices;
                             }
                         });
@@ -1382,7 +1420,7 @@ impl TimelineState {
         layout: TimelineLayout,
         stack: StackId,
         origin: [f32; 2],
-        icons: Icons,
+        icons: &Icons,
         project: &Project,
     ) {
         let Some(menu) = self.context_menu.filter(|menu| menu.stack == stack) else {
@@ -1428,8 +1466,11 @@ impl TimelineState {
             ui::Align::Start,
             None,
         );
-        let label_rect = crate::ui_layout::row(
-            rows[1],
+        let [_, label_row, _, value_row, ..] = rows.as_slice() else {
+            return;
+        };
+        let label_parts = crate::ui_layout::row(
+            *label_row,
             &[
                 crate::ui_layout::Item::width(7.0),
                 crate::ui_layout::Item::fill(),
@@ -1438,9 +1479,9 @@ impl TimelineState {
             0.0,
             0.0,
             ui::Align::Start,
-        )[1];
-        let value_rect = crate::ui_layout::row(
-            rows[3],
+        );
+        let value_parts = crate::ui_layout::row(
+            *value_row,
             &[
                 crate::ui_layout::Item::width(7.0),
                 crate::ui_layout::Item::fill(),
@@ -1449,7 +1490,11 @@ impl TimelineState {
             0.0,
             0.0,
             ui::Align::Start,
-        )[1];
+        );
+        let (Some(&label_rect), Some(&value_rect)) = (label_parts.get(1), value_parts.get(1))
+        else {
+            return;
+        };
         ui::ui!(ctx, {
             Rect(("mixer-exact", stack.0), popup) {
                 overlay;

@@ -68,10 +68,10 @@ pub fn read_to_string(path: &Path) -> Result<Option<String>> {
 
 pub fn fingerprint(path: &Path) -> Option<u64> {
     let bytes = read(path).ok().flatten()?;
-    let mut hash = 0xcbf29ce484222325u64;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
         hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     Some(hash)
 }

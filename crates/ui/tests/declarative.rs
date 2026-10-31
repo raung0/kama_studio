@@ -1,4 +1,6 @@
-use kama_ui::{Align, BuildCtx, Color, IconId, Rect, Size, measure_layout, ui, ui_component};
+use kama_ui::{
+    Align, BlockId, BuildCtx, Color, IconId, Rect, Size, measure_layout, ui, ui_component,
+};
 
 #[derive(Default)]
 struct BadgeComponent;
@@ -18,7 +20,7 @@ struct Meter {
 #[ui_component("Meter")]
 impl Component for Meter {
     fn ui(&mut self, ctx: &mut BuildCtx, value: f32) -> BlockBuilder<'_> {
-        self.builds += 1;
+        self.builds = self.builds.saturating_add(1);
         ctx.new().text(format!("{value:.0}%"))
     }
 }
@@ -92,9 +94,9 @@ fn build_tree(ctx: &mut BuildCtx, meter: &mut Meter, show: bool, items: &[u32], 
 #[test]
 fn measured_layout_uses_declarative_flow_geometry() {
     let ((left, first, second), layout) = measure_layout(Rect::new(0.0, 0.0, 120.0, 40.0), |ctx| {
-        let mut left = Default::default();
-        let mut first = Default::default();
-        let mut second = Default::default();
+        let mut left = BlockId::default();
+        let mut first = BlockId::default();
+        let mut second = BlockId::default();
         let _ = ctx
             .new()
             .width(Size::Fill)

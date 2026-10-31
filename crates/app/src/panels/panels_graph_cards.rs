@@ -11,6 +11,10 @@ pub(super) fn graph_image_socket_label(kind: PipelineKind) -> &'static str {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_property_label_parts(
     label: Rect,
     unique: bool,
@@ -32,6 +36,10 @@ pub(super) fn graph_property_label_parts(
     (parts[0], Some(parts[1]))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "column and row return one rectangle per supplied layout item"
+)]
 pub(super) fn graph_card_header_parts(card: Rect) -> (Rect, Rect) {
     let scale = graph_card_scale(card);
     let header = crate::ui_layout::column(
@@ -59,33 +67,51 @@ pub(super) fn graph_card_header_parts(card: Rect) -> (Rect, Rect) {
     (header, title)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "column returns one rectangle per item, including the requested row"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "index comes from an allocated input collection and is smaller than its length"
+)]
 pub(super) fn graph_image_input_row(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
-    let mut items = Vec::with_capacity(index + 2);
+    let count = index + 1;
+    let mut items = Vec::new();
     items.push(crate::ui_layout::Item::height(27.0 * scale));
     items.extend(std::iter::repeat_n(
         crate::ui_layout::Item::height(GRAPH_IMAGE_INPUT_H * scale),
-        index + 1,
+        count,
     ));
-    crate::ui_layout::column(card, &items, 0.0, 0.0, kama_ui::Align::Start, None)[index + 1]
+    crate::ui_layout::column(card, &items, 0.0, 0.0, kama_ui::Align::Start, None)[count]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "column returns one rectangle per item, including the requested row"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "index comes from an allocated input collection and is smaller than its length"
+)]
 pub(super) fn graph_value_input_row(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
-    let mut items = Vec::with_capacity(index + 2);
+    let count = index + 1;
+    let mut items = Vec::new();
     items.push(crate::ui_layout::Item::height(GRAPH_CARD_BASE_H * scale));
     items.extend(std::iter::repeat_n(
         crate::ui_layout::Item::height(GRAPH_INPUT_H * scale),
-        index + 1,
+        count,
     ));
-    crate::ui_layout::column(card, &items, 0.0, 0.0, kama_ui::Align::Start, None)[index + 1]
+    crate::ui_layout::column(card, &items, 0.0, 0.0, kama_ui::Align::Start, None)[count]
 }
 
 pub(super) fn graph_card_content_rows(card_rect: Rect, card: &GraphCard) -> (Vec<Rect>, Vec<Rect>) {
     let scale = graph_card_scale(card_rect);
     let base = (card.image_inputs.len().saturating_sub(1) as f32)
         .mul_add(GRAPH_IMAGE_INPUT_H, GRAPH_CARD_BASE_H);
-    let mut items = Vec::with_capacity(1 + card.inputs.len() + card.host_inputs.len());
+    let mut items = Vec::new();
     items.push(crate::ui_layout::Item::height(base * scale));
     items.extend(card.inputs.iter().map(|input| {
         crate::ui_layout::Item::height(graph_property_row_height(input.definition.as_ref()) * scale)
@@ -96,13 +122,15 @@ pub(super) fn graph_card_content_rows(card_rect: Rect, card: &GraphCard) -> (Vec
             .map(|input| crate::ui_layout::Item::height(graph_host_row_height(input) * scale)),
     );
     let rows = crate::ui_layout::column(card_rect, &items, 0.0, 0.0, kama_ui::Align::Start, None);
-    let property_end = 1 + card.inputs.len();
-    (
-        rows[1..property_end].to_vec(),
-        rows[property_end..].to_vec(),
-    )
+    let mut rows = rows.into_iter().skip(1);
+    let properties = rows.by_ref().take(card.inputs.len()).collect();
+    (properties, rows.collect())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_image_input_label_rect(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
     let row = graph_image_input_row(card, index);
@@ -119,6 +147,10 @@ pub(super) fn graph_image_input_label_rect(card: Rect, index: usize) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_output_label_rect(card: Rect) -> Rect {
     let scale = graph_card_scale(card);
     let row = graph_image_input_row(card, 0);
@@ -135,6 +167,10 @@ pub(super) fn graph_output_label_rect(card: Rect) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "stack and row return one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_detail_rect(card: Rect) -> Rect {
     let rows = crate::ui_layout::stack(card, card.y, &[29.0, 16.0]);
     crate::ui_layout::row(
@@ -208,6 +244,10 @@ pub(super) fn graph_value_output_point(card: Rect) -> [f32; 2] {
     ]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "input index is obtained by enumerating this card's inputs"
+)]
 pub(super) fn graph_property_row_rect(
     card_rect: Rect,
     card: &GraphCard,
@@ -216,10 +256,18 @@ pub(super) fn graph_property_row_rect(
     graph_card_content_rows(card_rect, card).0[input_index]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "host index is obtained by enumerating this card's host inputs"
+)]
 pub(super) fn graph_host_row_rect(card_rect: Rect, card: &GraphCard, host_index: usize) -> Rect {
     graph_card_content_rows(card_rect, card).1[host_index]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row and column return one rectangle per supplied layout item"
+)]
 pub(super) fn graph_host_eq_parts(row: Rect, scale: f32) -> (Rect, Rect, Rect) {
     let top = crate::ui_layout::row(
         row,
@@ -284,6 +332,10 @@ pub(super) fn graph_host_eq_parts(row: Rect, scale: f32) -> (Rect, Rect, Rect) {
     (label, keyframe, viewport)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_host_value_parts(row: Rect, scale: f32) -> (Rect, Rect) {
     let parts = crate::ui_layout::row(
         row,
@@ -350,6 +402,10 @@ pub(super) fn graph_value_input_point(card: Rect, index: usize) -> [f32; 2] {
     ]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_input_label_rect(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
     let row = graph_value_input_row(card, index);
@@ -366,6 +422,10 @@ pub(super) fn graph_value_input_label_rect(card: Rect, index: usize) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_input_area(card: Rect, index: usize, linkable: bool) -> Rect {
     let scale = graph_card_scale(card);
     let reserve = if linkable { 20.0 * scale } else { 0.0 };
@@ -383,6 +443,10 @@ pub(super) fn graph_value_input_area(card: Rect, index: usize, linkable: bool) -
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_input_link_rect(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
     let row = graph_value_input_row(card, index);
@@ -399,11 +463,15 @@ pub(super) fn graph_value_input_link_rect(card: Rect, index: usize) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the clamped component index is below the nonzero item count"
+)]
 pub(super) fn graph_component_rect(area: Rect, scale: f32, component: usize, count: usize) -> Rect {
     let count = count.max(1);
     let items = std::iter::repeat_n(crate::ui_layout::Item::fill(), count).collect::<Vec<_>>();
     crate::ui_layout::row(area, &items, 2.0 * scale, 0.0, kama_ui::Align::Start)
-        [component.min(count - 1)]
+        [component.min(count.saturating_sub(1))]
 }
 
 pub(super) fn graph_value_input_component_rect(
@@ -421,6 +489,10 @@ pub(super) fn graph_value_input_component_rect(
     )
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fit_column_at and row return one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_swatch_rect(card: Rect) -> Rect {
     let scale = graph_card_scale(card);
     let (_, rows) = crate::ui_layout::fit_column_at(
@@ -444,6 +516,10 @@ pub(super) fn graph_value_swatch_rect(card: Rect) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_component_rect(card: Rect, component: usize, linkable: bool) -> Rect {
     let scale = graph_card_scale(card);
     let reserve = if linkable { 22.0 * scale } else { 0.0 };
@@ -461,6 +537,10 @@ pub(super) fn graph_value_component_rect(card: Rect, component: usize, linkable:
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 pub(super) fn graph_value_link_rect(card: Rect) -> Rect {
     let scale = graph_card_scale(card);
     let row = graph_value_input_row(card, 0);

@@ -35,7 +35,7 @@ labeled_enum! {
 }
 
 impl PreviewResolution {
-    fn divisor(self) -> u32 {
+    const fn divisor(self) -> u32 {
         match self {
             Self::Full => 1,
             Self::Half => 2,
@@ -120,15 +120,16 @@ fn gizmo_scale_change(
         canvas,
     );
     let corners = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let selected_corner = corners.get(index)?;
     let corner = [
-        corners[index][0] * source_size[0],
-        corners[index][1] * source_size[1],
+        selected_corner[0] * source_size[0],
+        selected_corner[1] * source_size[1],
     ];
 
     let pivot_source = if modifiers.control_key() || drag.keep_position_on_scale {
         [source_size[0] * 0.5, source_size[1] * 0.5]
     } else {
-        let opposite = corners[(index + 2) % 4];
+        let opposite = corners.get(index.wrapping_add(2) % 4)?;
         [opposite[0] * source_size[0], opposite[1] * source_size[1]]
     };
     let pivot = transform_source_point(
@@ -158,11 +159,11 @@ fn gizmo_scale_change(
         };
         scale = [drag.scale[0] * factor, drag.scale[1] * factor];
     }
-    scale.iter_mut().for_each(|value| {
+    for value in &mut scale {
         if value.is_finite() && value.abs() < 0.01 {
             *value = value.signum() * 0.01;
         }
-    });
+    }
     scale.iter().all(|value| value.is_finite()).then(|| {
         let moved_pivot = transform_source_point(
             pivot_source,
@@ -243,7 +244,7 @@ enum PenEditTarget {
 }
 
 impl PenEditTarget {
-    fn follows_clip(&self) -> bool {
+    const fn follows_clip(&self) -> bool {
         matches!(
             self,
             Self::Clip { .. }
@@ -443,7 +444,7 @@ enum GeneratorVec2EditTarget {
 }
 
 impl GeneratorVec2EditTarget {
-    fn follows_clip(&self) -> bool {
+    const fn follows_clip(&self) -> bool {
         matches!(
             self,
             Self::Clip { .. }
@@ -560,6 +561,7 @@ pub enum MonitorAction {
     CaptureTemporaryFrame,
 }
 
+#[derive(Clone, Copy)]
 pub struct MonitorBuildContext<'a> {
     pub project: &'a Project,
     pub timeline: &'a TimelineState,
@@ -606,8 +608,7 @@ default_state! {
 
 impl MonitorState {
     pub(crate) fn preview_render_size(&self, project: &Project) -> [u32; 2] {
-        let (width, height) = self.preview_dimensions(project);
-        [width, height]
+        self.preview_dimensions(project).into()
     }
 
     pub(crate) fn preview_render_scale(&self, project: &Project) -> f32 {
@@ -639,14 +640,14 @@ impl MonitorState {
         }
     }
 
-    pub fn zoom_to_fit(&mut self) {
+    pub const fn zoom_to_fit(&mut self) {
         self.view_zoom = 1.0;
         self.view_pan = [0.0, 0.0];
         self.view_pan_drag = None;
     }
 
     pub fn cycle_hover_selection(
-        &mut self,
+        &self,
         rect: Rect,
         point: [f32; 2],
         project: &Project,
@@ -666,18 +667,38 @@ impl MonitorState {
         let current_id = timeline.selected_clip().map(|clip| clip.id);
         let current =
             current_id.and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-        let len = candidates.len() as i32;
+        let len = candidates.len();
+        let Ok(magnitude) = usize::try_from(direction.unsigned_abs()) else {
+            return false;
+        };
+        let Some(offset) = magnitude.checked_rem(len) else {
+            return false;
+        };
         let next = current.map_or_else(
             || {
                 if direction < 0 {
-                    candidates.len() - 1
+                    len.saturating_sub(1)
                 } else {
                     0
                 }
             },
-            |index| (index as i32 + direction).rem_euclid(len) as usize,
+            |index| {
+                if direction < 0 {
+                    if index >= offset {
+                        index.saturating_sub(offset)
+                    } else {
+                        len.saturating_sub(offset.saturating_sub(index))
+                    }
+                } else if offset >= len.saturating_sub(index) {
+                    offset.saturating_sub(len.saturating_sub(index))
+                } else {
+                    index.saturating_add(offset)
+                }
+            },
         );
-        timeline.select_clip_by_id(candidates[next], false)
+        candidates
+            .get(next)
+            .is_some_and(|id| timeline.select_clip_by_id(*id, false))
     }
 
     fn preview_rect(&self, rect: Rect, project: &Project) -> Rect {
@@ -722,11 +743,11 @@ impl MonitorState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn master_muted(&self) -> bool {
+    pub(crate) const fn master_muted(&self) -> bool {
         self.master_muted
     }
 
-    pub(crate) fn take_action(&mut self) -> Option<MonitorAction> {
+    pub(crate) const fn take_action(&mut self) -> Option<MonitorAction> {
         self.pending_action.take()
     }
 
@@ -734,7 +755,7 @@ impl MonitorState {
         self.captured_frame = Some((size, pixels));
     }
 
-    pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, view: MonitorBuildContext<'_>) {
+    pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, view: &MonitorBuildContext<'_>) {
         let MonitorBuildContext {
             project,
             timeline,
@@ -743,7 +764,7 @@ impl MonitorState {
             output,
             popup_bounds,
             icons,
-        } = view;
+        } = *view;
         let source_geometry = output.source_geometry;
         let chevron = icons.get(AppIcon::Chevron);
         let local_rect = Rect::new(0.0, 0.0, rect.width, rect.height);
@@ -895,7 +916,7 @@ impl MonitorState {
             }
             .context(project, timeline);
             if let Some((handles, lines)) = selected_generator_pen_handles(edit) {
-                draw_pen_tool_handles(ctx, handles, lines, self.selected_pen_point);
+                draw_pen_tool_handles(ctx, &handles, &lines, self.selected_pen_point);
             }
             if let Some(handles) = selected_gradient_midpoint_handles(edit) {
                 draw_gradient_midpoint_handles(ctx, handles);
@@ -989,7 +1010,7 @@ impl MonitorState {
         true
     }
 
-    pub fn pointer_middle_released(&mut self) -> bool {
+    pub const fn pointer_middle_released(&mut self) -> bool {
         self.view_pan_drag.take().is_some()
     }
 
@@ -1041,12 +1062,11 @@ impl MonitorState {
         let Some(index) = self.selected_pen_point else {
             return false;
         };
-        let (render_width, render_height) = self.preview_dimensions(project);
         let view = MonitorEditView {
             preview: self.preview_rect(rect, project),
             plugins,
             graph_selection,
-            render_size: [render_width, render_height],
+            render_size: self.preview_dimensions(project).into(),
             source_geometry,
             monitor_wasm: &self.monitor_wasm,
         };
@@ -1072,33 +1092,23 @@ impl MonitorState {
         setup.points.remove(index);
         let remaining = setup.points.len();
         setup.target.set_points(project, timeline, setup.points);
-        if let Some(colors) = gradient_colors.as_mut() {
+        if let (Some(colors), Some(input)) =
+            (gradient_colors.as_mut(), setup.colors_input.as_deref())
+        {
             if index < colors.len() {
                 colors.remove(index);
             }
-            set_pen_gradient_colors(
-                &setup.target,
-                setup.colors_input.as_deref().expect("colors input exists"),
-                project,
-                timeline,
-                colors,
-            );
+            set_pen_gradient_colors(&setup.target, input, project, timeline, colors);
         }
-        if let Some(midpoints) = gradient_midpoints.as_mut() {
+        if let (Some(midpoints), Some(input)) = (
+            gradient_midpoints.as_mut(),
+            setup.midpoints_input.as_deref(),
+        ) {
             remove_midpoint(midpoints, index, old_point_count);
-            set_pen_gradient_midpoints(
-                &setup.target,
-                setup
-                    .midpoints_input
-                    .as_deref()
-                    .expect("midpoints input exists"),
-                project,
-                timeline,
-                midpoints.clone(),
-            );
+            set_pen_gradient_midpoints(&setup.target, input, project, timeline, midpoints.clone());
         }
         self.pen_drag = None;
-        self.selected_pen_point = (remaining > 0).then_some(index.min(remaining - 1));
+        self.selected_pen_point = remaining.checked_sub(1).map(|last| index.min(last));
         true
     }
 
@@ -1645,16 +1655,16 @@ impl MonitorState {
         {
             match drag.handle {
                 TransformGizmoHandle::Move => {
-                    let screen_dx = point[0] - drag.start[0];
-                    let screen_dy = point[1] - drag.start[1];
+                    let horizontal = point[0] - drag.start[0];
+                    let vertical = point[1] - drag.start[1];
                     let correction = drag.snap.snap(
-                        drag.screen_x.map(|value| value + screen_dx),
-                        drag.screen_y.map(|value| value + screen_dy),
+                        drag.screen_x.map(|value| value + horizontal),
+                        drag.screen_y.map(|value| value + vertical),
                         8.0,
                     );
                     let delta = [
-                        (screen_dx + correction[0]) / drag.preview.width.max(1.0),
-                        (screen_dy + correction[1]) / drag.preview.height.max(1.0),
+                        (horizontal + correction[0]) / drag.preview.width.max(1.0),
+                        (vertical + correction[1]) / drag.preview.height.max(1.0),
                     ];
                     for member in &group.members {
                         timeline.set_clip_transform_value_at(
@@ -1733,7 +1743,7 @@ impl MonitorState {
                         }
                     }
                 }
-                TransformGizmoHandle::Anchor => unreachable!(),
+                TransformGizmoHandle::Anchor => return false,
             }
             self.gizmo_drag = Some(drag);
             return true;
@@ -1746,15 +1756,15 @@ impl MonitorState {
         ];
         match drag.handle {
             TransformGizmoHandle::Move => {
-                let screen_dx = point[0] - drag.start[0];
-                let screen_dy = point[1] - drag.start[1];
+                let horizontal = point[0] - drag.start[0];
+                let vertical = point[1] - drag.start[1];
                 let correction = drag.snap.snap(
-                    drag.screen_x.map(|value| value + screen_dx),
-                    drag.screen_y.map(|value| value + screen_dy),
+                    drag.screen_x.map(|value| value + horizontal),
+                    drag.screen_y.map(|value| value + vertical),
                     8.0,
                 );
-                let dx = (screen_dx + correction[0]) / drag.preview.width.max(1.0);
-                let dy = (screen_dy + correction[1]) / drag.preview.height.max(1.0);
+                let dx = (horizontal + correction[0]) / drag.preview.width.max(1.0);
+                let dy = (vertical + correction[1]) / drag.preview.height.max(1.0);
                 timeline.set_transform_value(
                     "position",
                     GpuValue::Vec2([drag.position[0] + dx, drag.position[1] + dy]),
@@ -1813,7 +1823,7 @@ struct MonitorChromeRects {
 }
 
 fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
-    let vertical = kama_ui::layout::column(
+    let [_, fit_stage, _, status, _] = kama_ui::layout::column_array(
         rect,
         &[
             kama_ui::layout::Item::height(0.0),
@@ -1827,10 +1837,26 @@ fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
         kama_ui::Align::Start,
         None,
     );
-    let fit_stage = vertical[1];
-    let status = vertical[3];
     let combo_w = 172.0_f32.min((status.width - 8.0).max(1.0));
-    let parts = kama_ui::layout::row(
+    let [
+        _,
+        combo,
+        _,
+        frame_snap,
+        _,
+        clip_snap,
+        _,
+        pen,
+        _,
+        mute,
+        _,
+        capture_first,
+        _,
+        capture_second,
+        _,
+        capture_third,
+        _,
+    ] = kama_ui::layout::row_array(
         status,
         &[
             kama_ui::layout::Item::width(4.0),
@@ -1857,12 +1883,12 @@ fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
     );
     MonitorChromeRects {
         fit_stage,
-        combo: parts[1],
-        frame_snap: parts[3],
-        clip_snap: parts[5],
-        pen: parts[7],
-        mute: parts[9],
-        capture: [parts[11], parts[13], parts[15]],
+        combo,
+        frame_snap,
+        clip_snap,
+        pen,
+        mute,
+        capture: [capture_first, capture_second, capture_third],
     }
 }
 
@@ -1932,6 +1958,10 @@ fn monitor_mute_button_rect(rect: Rect) -> Rect {
     monitor_chrome_rects(rect).mute
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "every caller supplies capture button index 0, 1, or 2"
+)]
 fn monitor_capture_button_rect(rect: Rect, index: usize) -> Rect {
     monitor_chrome_rects(rect).capture[index]
 }
@@ -1939,7 +1969,7 @@ fn monitor_capture_button_rect(rect: Rect, index: usize) -> Rect {
 const MONITOR_MIN_ZOOM: f32 = 0.05;
 const MONITOR_MAX_ZOOM: f32 = 16.0;
 
-fn monitor_stage_rect(rect: Rect) -> Rect {
+const fn monitor_stage_rect(rect: Rect) -> Rect {
     rect
 }
 
@@ -2284,9 +2314,11 @@ fn snap_axis(
     lock: &mut Option<SnapLock>,
 ) -> f32 {
     if let Some(locked) = *lock {
-        let distance = locked.target - features[locked.feature];
-        if distance.abs() <= tolerance * 1.75 {
-            return distance;
+        if let Some(feature) = features.get(locked.feature) {
+            let distance = locked.target - feature;
+            if distance.abs() <= tolerance * 1.75 {
+                return distance;
+            }
         }
         *lock = None;
     }
@@ -2495,10 +2527,9 @@ fn draw_snap_badge(
 ) {
     let feature = match (axis, feature) {
         ("X", 0) => "left",
-        ("X", 1) => "center",
+        ("X" | "Y", 1) => "center",
         ("X", 2) => "right",
         ("Y", 0) => "top",
-        ("Y", 1) => "center",
         ("Y", 2) => "bottom",
         _ => "edge",
     };
@@ -2522,7 +2553,7 @@ struct MonitorEditView<'a> {
 }
 
 impl<'a> MonitorEditView<'a> {
-    fn context<'b>(
+    const fn context<'b>(
         self,
         project: &'b Project,
         timeline: &'b TimelineState,
@@ -3090,12 +3121,16 @@ fn generator_size_transform_value(
         drag.source_geometry.size.0.max(1) as f32,
         drag.source_geometry.size.1.max(1) as f32,
     ];
-    let corner_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    let corner_uv = corner_uvs[drag.handle.min(3)];
+    let (corner_uv, opposite_uv) = match drag.handle {
+        0 => ([0.0, 0.0], [1.0, 1.0]),
+        1 => ([1.0, 0.0], [0.0, 1.0]),
+        2 => ([1.0, 1.0], [0.0, 0.0]),
+        _ => ([0.0, 1.0], [1.0, 0.0]),
+    };
     let pivot_uv = if modifiers.control_key() {
         [0.5, 0.5]
     } else {
-        corner_uvs[(drag.handle.min(3) + 2) % 4]
+        opposite_uv
     };
     let pivot_source = [pivot_uv[0] * source_size[0], pivot_uv[1] * source_size[1]];
     let effective_position = [
@@ -3118,11 +3153,17 @@ fn generator_size_transform_value(
     );
     let direction = [corner_uv[0] - pivot_uv[0], corner_uv[1] - pivot_uv[1]];
     let mut next = drag.value;
-    for axis in 0..2 {
-        let denominator = direction[axis] * safe_scale(resize.scale[axis]);
+    for ((((value, direction), scale), delta), parameter_scale) in next
+        .iter_mut()
+        .zip(direction)
+        .zip(resize.scale)
+        .zip(local_delta)
+        .zip(drag.parameter_scale)
+    {
+        let denominator = direction * safe_scale(scale);
         if denominator.abs() > 0.000_001 {
-            let next_source_size = local_delta[axis] / denominator;
-            next[axis] = next_source_size / drag.parameter_scale[axis].max(0.000_001);
+            let next_source_size = delta / denominator;
+            *value = next_source_size / parameter_scale.max(0.000_001);
         }
     }
     if modifiers.shift_key() {
@@ -3158,9 +3199,8 @@ fn generator_size_transform_value(
 }
 
 fn uniform_vec2_resize(start: [f32; 2], candidate: [f32; 2], min: f32, max: f32) -> [f32; 2] {
-    let factor_for = |axis: usize| candidate[axis] / start[axis].max(0.000_001);
-    let x_factor = factor_for(0);
-    let y_factor = factor_for(1);
+    let x_factor = candidate[0] / start[0].max(0.000_001);
+    let y_factor = candidate[1] / start[1].max(0.000_001);
     let mut factor = if (x_factor - 1.0).abs() >= (y_factor - 1.0).abs() {
         x_factor
     } else {
@@ -3218,8 +3258,12 @@ fn generator_point_overlay(
     let mut indexed = overlay
         .handles
         .iter()
-        .map(|handle| (handle.element as usize, handle.position))
-        .collect::<Vec<_>>();
+        .map(|handle| {
+            usize::try_from(handle.element)
+                .ok()
+                .map(|index| (index, handle.position))
+        })
+        .collect::<Option<Vec<_>>>()?;
     indexed.sort_unstable_by_key(|(index, _)| *index);
     if indexed
         .iter()
@@ -3235,10 +3279,14 @@ fn generator_point_overlay(
 }
 
 impl PenEditSetup {
-    fn has_gradient_stops(&self) -> bool {
+    const fn has_gradient_stops(&self) -> bool {
         self.colors_input.is_some() || self.midpoints_input.is_some()
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "pen_edit_setup attaches a clip whenever the target follows one"
+    )]
     fn source_to_screen(&self, source: [f32; 2]) -> [f32; 2] {
         let source = [
             (source[0] - self.source_origin[0]) * self.source_scale[0],
@@ -3270,6 +3318,10 @@ impl PenEditSetup {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "pen_edit_setup attaches a clip whenever the target follows one"
+    )]
     fn screen_to_source(&self, point: [f32; 2]) -> [f32; 2] {
         let mut source = if self.target.follows_clip() {
             let clip = self
@@ -3507,11 +3559,12 @@ fn selected_gradient_midpoint_handles(
         points
             .windows(2)
             .enumerate()
-            .map(|(segment, pair)| {
-                let start = pair[0].point;
-                let end = pair[1].point;
+            .filter_map(|(segment, pair)| {
+                let [start, end] = pair else { return None };
+                let start = start.point;
+                let end = end.point;
                 let midpoint = midpoints.get(segment).copied().unwrap_or(0.5);
-                GradientMidpointHandle {
+                Some(GradientMidpointHandle {
                     segment,
                     point: [
                         f32::mul_add(end[0] - start[0], midpoint, start[0]),
@@ -3519,7 +3572,7 @@ fn selected_gradient_midpoint_handles(
                     ],
                     start,
                     end,
-                }
+                })
             })
             .collect(),
     )
@@ -3596,26 +3649,22 @@ fn handle_selected_generator_pen_press(
             });
             setup.points.remove(handle.index);
             setup.target.set_points(project, timeline, setup.points);
-            if let Some(colors) = gradient_colors.as_mut() {
+            if let (Some(colors), Some(input)) =
+                (gradient_colors.as_mut(), setup.colors_input.as_deref())
+            {
                 if handle.index < colors.len() {
                     colors.remove(handle.index);
                 }
-                set_pen_gradient_colors(
-                    &setup.target,
-                    setup.colors_input.as_deref().expect("colors input exists"),
-                    project,
-                    timeline,
-                    colors,
-                );
+                set_pen_gradient_colors(&setup.target, input, project, timeline, colors);
             }
-            if let Some(midpoints) = gradient_midpoints.as_mut() {
+            if let (Some(midpoints), Some(input)) = (
+                gradient_midpoints.as_mut(),
+                setup.midpoints_input.as_deref(),
+            ) {
                 remove_midpoint(midpoints, handle.index, old_point_count);
                 set_pen_gradient_midpoints(
                     &setup.target,
-                    setup
-                        .midpoints_input
-                        .as_deref()
-                        .expect("midpoints input exists"),
+                    input,
                     project,
                     timeline,
                     midpoints.clone(),
@@ -3649,15 +3698,22 @@ fn handle_selected_generator_pen_press(
     });
     if gradient_stops && !setup.points.is_empty() {
         if index == setup.points.len() {
-            let endpoint = *setup
-                .points
-                .last()
-                .expect("gradient has at least one point");
+            let Some(&endpoint) = setup.points.last() else {
+                return false;
+            };
             setup.points.push(endpoint);
         } else {
-            let projected = projected_unselected.unwrap_or_else(|| {
-                project_point_to_segment(point, handles[index - 1].point, handles[index].point)
-            });
+            let projected = if let Some(projected) = projected_unselected {
+                projected
+            } else {
+                let Some(previous) = index.checked_sub(1).and_then(|i| handles.get(i)) else {
+                    return false;
+                };
+                let Some(next) = handles.get(index) else {
+                    return false;
+                };
+                project_point_to_segment(point, previous.point, next.point)
+            };
             setup
                 .points
                 .insert(index, setup.screen_to_source(projected));
@@ -3668,29 +3724,17 @@ fn handle_selected_generator_pen_press(
     setup
         .target
         .set_points(project, timeline, setup.points.clone());
-    if let Some(colors) = gradient_colors.as_mut() {
+    if let (Some(colors), Some(input)) = (gradient_colors.as_mut(), setup.colors_input.as_deref()) {
         let color = inserted_color(colors, index);
         colors.insert(index, color);
-        set_pen_gradient_colors(
-            &setup.target,
-            setup.colors_input.as_deref().expect("colors input exists"),
-            project,
-            timeline,
-            colors,
-        );
+        set_pen_gradient_colors(&setup.target, input, project, timeline, colors);
     }
-    if let Some(midpoints) = gradient_midpoints.as_mut() {
+    if let (Some(midpoints), Some(input)) = (
+        gradient_midpoints.as_mut(),
+        setup.midpoints_input.as_deref(),
+    ) {
         insert_midpoint(midpoints, index, old_point_count);
-        set_pen_gradient_midpoints(
-            &setup.target,
-            setup
-                .midpoints_input
-                .as_deref()
-                .expect("midpoints input exists"),
-            project,
-            timeline,
-            midpoints.clone(),
-        );
+        set_pen_gradient_midpoints(&setup.target, input, project, timeline, midpoints.clone());
     }
 
     let next_drag = setup.drag(index, snap);
@@ -3699,7 +3743,7 @@ fn handle_selected_generator_pen_press(
     true
 }
 
-fn shared_graph_selection(selection: GraphMonitorSelection) -> Option<(u64, u64, bool)> {
+const fn shared_graph_selection(selection: GraphMonitorSelection) -> Option<(u64, u64, bool)> {
     match selection {
         GraphMonitorSelection::Shared {
             pipeline,
@@ -3881,7 +3925,7 @@ fn screen_to_selected_clip_source_point(
 fn pen_insert_index(selected: Option<usize>, point_count: usize) -> usize {
     selected
         .filter(|index| *index < point_count)
-        .map_or(point_count, |index| index + 1)
+        .map_or(point_count, |index| index.saturating_add(1))
 }
 
 fn gradient_pen_insert_target(
@@ -3889,15 +3933,16 @@ fn gradient_pen_insert_target(
     handles: &[PenPointHandle],
     point: [f32; 2],
 ) -> (usize, Option<[f32; 2]>) {
+    const SEGMENT_HIT_RADIUS: f32 = 14.0;
     if let Some(index) = selected.filter(|index| *index < handles.len()) {
-        return (index + 1, None);
+        return (index.saturating_add(1), None);
     }
 
-    const SEGMENT_HIT_RADIUS: f32 = 14.0;
     let mut best: Option<(f32, usize, [f32; 2])> = None;
-    for index in 0..handles.len().saturating_sub(1) {
-        let a = handles[index].point;
-        let b = handles[index + 1].point;
+    for (index, pair) in handles.windows(2).enumerate() {
+        let [a, b] = pair else { continue };
+        let a = a.point;
+        let b = b.point;
         let delta = [b[0] - a[0], b[1] - a[1]];
         let length_sq = delta[1].mul_add(delta[1], delta[0] * delta[0]);
         if length_sq <= 1.0e-6 {
@@ -3918,7 +3963,7 @@ fn gradient_pen_insert_target(
             .as_ref()
             .is_none_or(|(best_distance, _, _)| distance_sq < *best_distance)
         {
-            best = Some((distance_sq, index + 1, projected));
+            best = Some((distance_sq, index.saturating_add(1), projected));
         }
     }
     best.map_or((handles.len(), None), |(_, index, projected)| {
@@ -3962,14 +4007,14 @@ fn draw_gradient_midpoint_handles(
 
 fn draw_pen_tool_handles(
     ctx: &mut kama_ui::BuildCtx,
-    handles: Vec<PenPointHandle>,
-    lines: Vec<[usize; 2]>,
+    handles: &[PenPointHandle],
+    lines: &[[usize; 2]],
     selected: Option<usize>,
 ) {
     draw_monitor_handle_set(
         ctx,
-        &handles,
-        &lines,
+        handles,
+        lines,
         (
             "monitor-pen-handle",
             10_000,
@@ -4032,8 +4077,9 @@ fn draw_monitor_handle_set<T>(
         };
         let (_, a) = point(a);
         let (_, b) = point(b);
-        draw_gizmo_line(ctx, line_id + index * 2, a, b, 3.0, shadow);
-        draw_gizmo_line(ctx, line_id + index * 2 + 1, a, b, 1.25, accent);
+        let line = line_id.saturating_add(index.saturating_mul(2));
+        draw_gizmo_line(ctx, line, a, b, 3.0, shadow);
+        draw_gizmo_line(ctx, line.saturating_add(1), a, b, 1.25, accent);
     }
     for handle in handles {
         let (index, point) = point(handle);
@@ -4052,11 +4098,15 @@ fn draw_monitor_handle_set<T>(
 fn draw_transform_gizmo(ctx: &mut kama_ui::BuildCtx, geometry: TransformGizmoGeometry) {
     let accent = Color::rgb8(0xf0, 0xa2, 0x15);
     let shadow = Color::rgba8(0x00, 0x00, 0x00, 0xa0);
-    for edge in 0..4 {
-        let a = geometry.corners[edge];
-        let b = geometry.corners[(edge + 1) % 4];
-        draw_gizmo_line(ctx, edge * 2, a, b, 3.5, shadow);
-        draw_gizmo_line(ctx, edge * 2 + 1, a, b, 1.7, accent);
+    for (edge, (a, b)) in geometry
+        .corners
+        .into_iter()
+        .zip(geometry.corners.into_iter().cycle().skip(1))
+        .enumerate()
+    {
+        let line = edge.saturating_mul(2);
+        draw_gizmo_line(ctx, line, a, b, 3.5, shadow);
+        draw_gizmo_line(ctx, line.saturating_add(1), a, b, 1.7, accent);
     }
     for (index, point) in geometry.corners.into_iter().enumerate() {
         kama_ui::ui!(ctx, {
@@ -4170,11 +4220,11 @@ fn rotate(value: [f32; 2], degrees: f32) -> [f32; 2] {
 }
 
 fn safe_scale(value: f32) -> f32 {
-    if value.abs() < 0.000001 {
+    if value.abs() < 0.000_001 {
         if value.is_sign_negative() {
-            -0.000001
+            -0.000_001
         } else {
-            0.000001
+            0.000_001
         }
     } else {
         value
@@ -4189,16 +4239,14 @@ fn distance_sq(a: [f32; 2], b: [f32; 2]) -> f32 {
 
 fn point_in_quad(point: [f32; 2], corners: [[f32; 2]; 4]) -> bool {
     let mut sign = 0.0f32;
-    for index in 0..4 {
-        let a = corners[index];
-        let b = corners[(index + 1) % 4];
+    for (a, b) in corners.into_iter().zip(corners.into_iter().cycle().skip(1)) {
         let cross = (b[1] - a[1]).mul_add(-(point[0] - a[0]), (b[0] - a[0]) * (point[1] - a[1]));
         if cross.abs() <= 0.001 {
             continue;
         }
         if sign == 0.0 {
             sign = cross.signum();
-        } else if cross.signum() != sign {
+        } else if cross.signum().partial_cmp(&sign) != Some(std::cmp::Ordering::Equal) {
             return false;
         }
     }

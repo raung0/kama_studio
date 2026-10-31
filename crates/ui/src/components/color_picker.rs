@@ -443,9 +443,8 @@ impl ColorPicker {
                 let srgb = linear_to_srgb_rgba(self.linear);
                 let (rows, labels) = rgb_channel_layout(layout.plane);
                 crate::ui!(ctx, {
-                    @for channel in 0..3 {
-                        @let row = rows[channel];
-                        @let x = srgb[channel].clamp(0.0, 1.0).mul_add(layout.plane.width, layout.plane.x);
+                    @for (channel, ((row, label), (value, name))) in rows.into_iter().zip(labels).zip(srgb.into_iter().zip(["R", "G", "B"])).enumerate() {
+                        @let x = value.clamp(0.0, 1.0).mul_add(layout.plane.width, layout.plane.x);
                         @let y = row.height.mul_add(0.5, row.y);
                         Rect(@format("color-picker-rgb-handle {id} {channel}"), Rect::new(
                             x - 2.0, row.height.mul_add(-0.36, y), 4.0, row.height * 0.72,
@@ -453,10 +452,10 @@ impl ColorPicker {
                             top_overlay; opacity: opacity; fill: Color::WHITE; border: 1;
                             border_color: Color::BLACK; border_radius: 2.0;
                         }
-                        Rect(@format("color-picker-rgb-label {id} {channel}"), labels[channel]) {
+                        Rect(@format("color-picker-rgb-label {id} {channel}"), label) {
                             top_overlay; opacity: opacity; font_size: 8.5;
-                            text_color: if srgb[channel] > 0.62 { Color::BLACK } else { Color::WHITE };
-                            text_centered; text: ["R", "G", "B"][channel];
+                            text_color: if value > 0.62 { Color::BLACK } else { Color::WHITE };
+                            text_centered; text: name;
                         }
                     }
                 });
@@ -464,9 +463,7 @@ impl ColorPicker {
                     Rect(@format("color-picker-rgb-values {id}"), layout.hue) {
                         top_overlay; opacity: opacity; font_size: 8.5; text_color: style.muted; text_centered;
                         text: format!("R {:03}   G {:03}   B {:03}",
-                            (srgb[0] * 255.0).round() as u8,
-                            (srgb[1] * 255.0).round() as u8,
-                            (srgb[2] * 255.0).round() as u8,
+                            byte(srgb[0]), byte(srgb[1]), byte(srgb[2]),
                         );
                     }
                 });
@@ -495,6 +492,10 @@ impl ColorPicker {
         strip_handle(ctx, &id, layout.alpha, self.linear[3], "alpha", opacity);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "measure_content creates every required block before measuring its layout"
+    )]
     fn layout(&self, rect: Rect, bounds: Option<Rect>) -> Layout {
         let width = POPUP_W;
         let max_plane_size = (width - 16.0).clamp(1.0, 210.0);
@@ -505,14 +506,15 @@ impl ColorPicker {
             .expect("color picker content layout")
             .height;
 
-        let mut placement = if let Some(bounds) = bounds {
-            crate::place_popup_with_direction(rect, [width, desired_height], bounds, false, 4.0)
-        } else {
-            crate::PopupPlacement {
+        let mut placement = bounds.map_or_else(
+            || crate::PopupPlacement {
                 rect: Rect::new(rect.x, rect.bottom() + 4.0, width, desired_height),
                 direction: PopupDirection::Down,
-            }
-        };
+            },
+            |bounds| {
+                crate::place_popup_with_direction(rect, [width, desired_height], bounds, false, 4.0)
+            },
+        );
 
         let overflow = (desired_height - placement.rect.height).max(0.0);
         let plane_size = (max_plane_size - overflow).max(48.0);
@@ -693,12 +695,16 @@ impl ColorPicker {
                     Mode::Rgb => {
                         let x = ((point[0] - layout.plane.x) / layout.plane.width.max(1.0))
                             .clamp(0.0, 1.0);
-                        let row = ((point[1] - layout.plane.y)
-                            / (layout.plane.height / 3.0).max(1.0))
-                        .floor()
-                        .clamp(0.0, 2.0) as usize;
+                        let row =
+                            (point[1] - layout.plane.y) / (layout.plane.height / 3.0).max(1.0);
                         let mut srgb = linear_to_srgb_rgba(self.linear);
-                        srgb[row] = x;
+                        if row >= 2.0 {
+                            srgb[2] = x;
+                        } else if row >= 1.0 {
+                            srgb[1] = x;
+                        } else {
+                            srgb[0] = x;
+                        }
                         self.set_linear(srgb_to_linear_rgba(srgb));
                     }
                 }
@@ -744,27 +750,34 @@ impl ColorPicker {
     }
 
     fn plane_pixels(&self) -> Vec<u8> {
-        let width = TEXTURE_WIDTH as usize;
-        let height = COLOR_AREA_HEIGHT as usize;
-        let mut pixels = vec![0u8; width * height * 4];
+        const WIDTH: usize = TEXTURE_WIDTH as usize;
+        const HEIGHT: usize = COLOR_AREA_HEIGHT as usize;
+        let mut pixels = vec![0u8; WIDTH * HEIGHT * 4];
         let srgb_current = linear_to_srgb_rgba(self.linear);
-        let texture_rect = Rect::new(0.0, 0.0, width as f32, height as f32);
+        let texture_rect = Rect::new(0.0, 0.0, WIDTH as f32, HEIGHT as f32);
         let hue = self.current_hue();
         let geometry = wheel_geometry(texture_rect, hue);
 
-        for y in 0..height {
-            let fy = y as f32 / (height - 1) as f32;
-            for x in 0..width {
-                let fx = x as f32 / (width - 1) as f32;
+        let (rows, _) = pixels.as_chunks_mut::<{ WIDTH * 4 }>();
+        for (y, row) in rows.iter_mut().enumerate() {
+            let fy = y as f32 / (HEIGHT - 1) as f32;
+            let (rgba_pixels, _) = row.as_chunks_mut::<4>();
+            for (x, pixel) in rgba_pixels.iter_mut().enumerate() {
+                let fx = x as f32 / (WIDTH - 1) as f32;
                 let srgb = if self.mode == Mode::Rgb {
-                    let channel = ((fy * 3.0).floor() as usize).min(2);
                     let mut rgb = srgb_current;
-                    rgb[channel] = fx;
+                    if fy * 3.0 >= 2.0 {
+                        rgb[2] = fx;
+                    } else if fy * 3.0 >= 1.0 {
+                        rgb[1] = fx;
+                    } else {
+                        rgb[0] = fx;
+                    }
                     [rgb[0], rgb[1], rgb[2], 1.0]
                 } else {
                     wheel_triangle_pixel(self.mode, hue, geometry, [x as f32 + 0.5, y as f32 + 0.5])
                 };
-                write_pixel(&mut pixels, (y * width + x) * 4, srgb);
+                write_pixel(pixel, srgb);
             }
         }
         pixels
@@ -1066,6 +1079,10 @@ fn strip_handle(
     });
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "each row and label ID is created in the measured layout"
+)]
 fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
     let ((rows, labels), measured) = crate::measure_layout(plane, |ctx| {
         let mut rows = [BlockId(0); 3];
@@ -1076,8 +1093,8 @@ fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
             .width(Size::Fill)
             .height(Size::Fill)
             .children(|ctx| {
-                for channel in 0..3 {
-                    rows[channel] = ctx
+                for (row, label) in rows.iter_mut().zip(&mut labels) {
+                    *row = ctx
                         .new()
                         .row()
                         .width(Size::Fill)
@@ -1088,7 +1105,7 @@ fn rgb_channel_layout(plane: Rect) -> ([Rect; 3], [Rect; 3]) {
                                 .width(Size::Pixels(6.0))
                                 .height(Size::Fill)
                                 .build();
-                            labels[channel] = ctx
+                            *label = ctx
                                 .new()
                                 .width(Size::Pixels(18.0))
                                 .height(Size::Fill)
@@ -1123,21 +1140,22 @@ fn sync_texture(
 }
 
 fn alpha_pixels(linear: [f32; 4]) -> Vec<u8> {
-    let width = TEXTURE_WIDTH as usize;
-    let height = STRIP_HEIGHT as usize;
+    const WIDTH: usize = TEXTURE_WIDTH as usize;
+    const HEIGHT: usize = STRIP_HEIGHT as usize;
     let straight = linear_to_srgb_rgba([linear[0], linear[1], linear[2], 1.0]);
-    let mut pixels = vec![0u8; width * height * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let alpha = x as f32 / (width - 1) as f32;
-            let checker = if ((x / 8) + (y / 8)) % 2 == 0 {
+    let mut pixels = vec![0u8; WIDTH * HEIGHT * 4];
+    let (rows, _) = pixels.as_chunks_mut::<{ WIDTH * 4 }>();
+    for (y, row) in rows.iter_mut().enumerate() {
+        let (rgba_pixels, _) = row.as_chunks_mut::<4>();
+        for (x, pixel) in rgba_pixels.iter_mut().enumerate() {
+            let alpha = x as f32 / (WIDTH - 1) as f32;
+            let checker = if (x / 8) % 2 == (y / 8) % 2 {
                 0.30
             } else {
                 0.52
             };
             write_pixel(
-                &mut pixels,
-                (y * width + x) * 4,
+                pixel,
                 [
                     straight[0].mul_add(alpha, checker * (1.0 - alpha)),
                     straight[1].mul_add(alpha, checker * (1.0 - alpha)),
@@ -1150,9 +1168,9 @@ fn alpha_pixels(linear: [f32; 4]) -> Vec<u8> {
     pixels
 }
 
-fn write_pixel(pixels: &mut [u8], offset: usize, srgb: [f32; 4]) {
-    for channel in 0..4 {
-        pixels[offset + channel] = (srgb[channel].clamp(0.0, 1.0) * 255.0).round() as u8;
+fn write_pixel(pixel: &mut [u8], srgb: [f32; 4]) {
+    for (output, channel) in pixel.iter_mut().zip(srgb) {
+        *output = byte(channel);
     }
 }
 
@@ -1191,6 +1209,10 @@ fn srgb_to_linear(value: f32) -> f32 {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "the maximum is selected directly from the input channels, not computed approximately"
+)]
 fn rgb_to_hsv(rgb: [f32; 3]) -> [f32; 3] {
     let [red, green, blue] = rgb;
     let max = red.max(green).max(blue);
@@ -1244,15 +1266,22 @@ fn rgba_hex(linear: [f32; 4]) -> String {
 fn parse_rgba_hex(text: &str) -> Option<[f32; 4]> {
     let text = text.trim().trim_start_matches('#');
     let (rgb, alpha) = match text.len() {
-        6 => (&text[..6], 255),
-        8 => (&text[..6], u8::from_str_radix(&text[6..8], 16).ok()?),
+        6 => (text, 255),
+        8 => (
+            text.get(..6)?,
+            u8::from_str_radix(text.get(6..8)?, 16).ok()?,
+        ),
         _ => return None,
     };
-    let r = f32::from(u8::from_str_radix(&rgb[0..2], 16).ok()?) / 255.0;
-    let g = f32::from(u8::from_str_radix(&rgb[2..4], 16).ok()?) / 255.0;
-    let b = f32::from(u8::from_str_radix(&rgb[4..6], 16).ok()?) / 255.0;
+    let r = f32::from(u8::from_str_radix(rgb.get(0..2)?, 16).ok()?) / 255.0;
+    let g = f32::from(u8::from_str_radix(rgb.get(2..4)?, 16).ok()?) / 255.0;
+    let b = f32::from(u8::from_str_radix(rgb.get(4..6)?, 16).ok()?) / 255.0;
     Some(srgb_to_linear_rgba([r, g, b, f32::from(alpha) / 255.0]))
 }
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "clamping makes the rounded value nonnegative; NaN casts to zero"
+)]
 fn byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }

@@ -104,7 +104,11 @@ pub(super) fn transcode(
             .decoder()
             .video()?;
         let mut decoded_frame = 0u64;
-        let selected_frames = chunk.skip_frames..chunk.skip_frames + chunk.frame_count;
+        let selected_frames = chunk.skip_frames
+            ..chunk
+                .skip_frames
+                .checked_add(chunk.frame_count)
+                .context("cache frame range overflow")?;
         let initial_pts = pts;
         for (packet_stream, packet) in input.packets() {
             if packet_stream.index() != stream_index {
@@ -116,13 +120,15 @@ pub(super) fn transcode(
                 &mut scaler,
                 &mut video,
                 &mut output,
-                video_stream,
-                video_time_base,
-                video_output_tb,
-                &mut pts,
-                &mut decoded_frame,
-                selected_frames.clone(),
-                cancelled,
+                &mut VideoDrain {
+                    stream: video_stream,
+                    encoder_tb: video_time_base,
+                    output_tb: video_output_tb,
+                    pts: &mut pts,
+                    decoded_frame: &mut decoded_frame,
+                    selected_frames: selected_frames.clone(),
+                    cancelled,
+                },
             )?;
         }
         decoder.send_eof()?;
@@ -131,16 +137,20 @@ pub(super) fn transcode(
             &mut scaler,
             &mut video,
             &mut output,
-            video_stream,
-            video_time_base,
-            video_output_tb,
-            &mut pts,
-            &mut decoded_frame,
-            selected_frames,
-            cancelled,
+            &mut VideoDrain {
+                stream: video_stream,
+                encoder_tb: video_time_base,
+                output_tb: video_output_tb,
+                pts: &mut pts,
+                decoded_frame: &mut decoded_frame,
+                selected_frames,
+                cancelled,
+            },
         )?;
         anyhow::ensure!(
-            (pts - initial_pts) as u64 == chunk.frame_count,
+            pts.checked_sub(initial_pts)
+                .and_then(|count| u64::try_from(count).ok())
+                == Some(chunk.frame_count),
             "cache chunk {} did not contain the requested frames",
             chunk.path.display()
         );
@@ -161,33 +171,53 @@ pub(super) fn transcode(
     Ok(())
 }
 
+struct VideoDrain<'a> {
+    stream: usize,
+    encoder_tb: Rational,
+    output_tb: Rational,
+    pts: &'a mut i64,
+    decoded_frame: &'a mut u64,
+    selected_frames: std::ops::Range<u64>,
+    cancelled: &'a AtomicBool,
+}
+
 fn drain_video_decoder(
     decoder: &mut codec::decoder::Video,
     scaler: &mut scaling::Context,
     encoder: &mut codec::encoder::video::Encoder,
     output: &mut format::context::Output,
-    stream: usize,
-    encoder_tb: Rational,
-    output_tb: Rational,
-    pts: &mut i64,
-    decoded_frame: &mut u64,
-    selected_frames: std::ops::Range<u64>,
-    cancelled: &Arc<AtomicBool>,
+    state: &mut VideoDrain<'_>,
 ) -> Result<()> {
-    let mut decoded = frame::Video::empty();
-    while decoder.receive_frame(&mut decoded).is_ok() {
-        anyhow::ensure!(!cancelled.load(Ordering::Acquire), "transcode cancelled");
-        let selected = selected_frames.contains(decoded_frame);
-        *decoded_frame += 1;
+    let mut input_frame = frame::Video::empty();
+    while decoder.receive_frame(&mut input_frame).is_ok() {
+        anyhow::ensure!(
+            !state.cancelled.load(Ordering::Acquire),
+            "transcode cancelled"
+        );
+        let selected = state.selected_frames.contains(state.decoded_frame);
+        *state.decoded_frame = state
+            .decoded_frame
+            .checked_add(1)
+            .context("decoded frame count overflow")?;
         if !selected {
             continue;
         }
-        let mut scaled = frame::Video::new(encoder.format(), encoder.width(), encoder.height());
-        scaler.run(&decoded, &mut scaled)?;
-        scaled.set_pts(Some(*pts));
-        *pts += 1;
-        encoder.send_frame(&scaled)?;
-        drain_video_packets(encoder, output, stream, encoder_tb, output_tb)?;
+        let mut output_frame =
+            frame::Video::new(encoder.format(), encoder.width(), encoder.height());
+        scaler.run(&input_frame, &mut output_frame)?;
+        output_frame.set_pts(Some(*state.pts));
+        *state.pts = state
+            .pts
+            .checked_add(1)
+            .context("video timestamp overflow")?;
+        encoder.send_frame(&output_frame)?;
+        drain_video_packets(
+            encoder,
+            output,
+            state.stream,
+            state.encoder_tb,
+            state.output_tb,
+        )?;
     }
     Ok(())
 }
@@ -226,7 +256,7 @@ struct AudioState {
 
 impl AudioState {
     fn new(
-        input: &mut format::context::Input,
+        input: &format::context::Input,
         output: &mut format::context::Output,
         settings: &RenderSpec,
         global: bool,
@@ -259,7 +289,8 @@ impl AudioState {
             .formats()
             .and_then(|mut formats| formats.next())
             .context("audio encoder exposes no sample format")?;
-        let rate = settings.preset.sample_rate.max(8_000) as i32;
+        let rate = i32::try_from(settings.preset.sample_rate.max(8_000))
+            .context("audio sample rate exceeds encoder limit")?;
         if global {
             audio.set_flags(codec::Flags::GLOBAL_HEADER);
         }
@@ -394,7 +425,7 @@ impl AudioState {
     }
 }
 
-fn video_encoder_names(kind: VideoCodec) -> &'static [&'static str] {
+const fn video_encoder_names(kind: VideoCodec) -> &'static [&'static str] {
     match kind {
         VideoCodec::H264 if cfg!(target_os = "macos") => &["h264_videotoolbox", "libx264", "h264"],
         VideoCodec::H264 => &["h264_nvenc", "libx264", "h264"],
@@ -431,7 +462,12 @@ fn open_video_encoder(
         video.set_format(pixel);
         video.set_frame_rate(Some(frame_rate));
         video.set_time_base(time_base);
-        video.set_gop(u32::try_from(frame_rate.0.max(1)).unwrap_or(60).min(240) * 2);
+        video.set_gop(
+            u32::try_from(frame_rate.0.max(1))
+                .unwrap_or(60)
+                .min(240)
+                .saturating_mul(2),
+        );
         if global {
             video.set_flags(codec::Flags::GLOBAL_HEADER);
         }
@@ -454,7 +490,7 @@ fn audio_codec(kind: AudioCodec) -> Result<ffmpeg::Codec> {
         .find_map(|name| encoder::find_by_name(name))
         .context("requested audio encoder unavailable")
 }
-fn video_pixel_format(kind: VideoCodec) -> format::Pixel {
+const fn video_pixel_format(kind: VideoCodec) -> format::Pixel {
     match kind {
         VideoCodec::H264 => format::Pixel::YUV420P,
         VideoCodec::H265 => format::Pixel::YUV420P10LE,
@@ -572,9 +608,9 @@ mod tests {
         for alpha in source_frame[16 * 16 * 6..].as_chunks_mut::<2>().0 {
             alpha.copy_from_slice(&1023u16.to_le_bytes());
         }
-        for index in 1..=7 {
+        for index in 1u16..=7 {
             for y in source_frame[..16 * 16 * 2].as_chunks_mut::<2>().0 {
-                y.copy_from_slice(&(index * 128u16).to_le_bytes());
+                y.copy_from_slice(&index.saturating_mul(128u16).to_le_bytes());
             }
             for chroma in source_frame[16 * 16 * 2..16 * 16 * 6]
                 .as_chunks_mut::<2>()
@@ -601,7 +637,11 @@ mod tests {
             output: output.clone(),
             overwrite: true,
             begin_frame: skip_frames,
-            end_frame: skip_frames + frame_count - 1,
+            end_frame: skip_frames
+                .checked_add(frame_count)
+                .unwrap()
+                .checked_sub(1)
+                .unwrap(),
             background: false,
             transcode: true,
         };
@@ -621,26 +661,26 @@ mod tests {
         .unwrap();
         let mut input = format::input(&output).unwrap();
         let stream = input.streams().best(media::Type::Video).unwrap();
-        assert_eq!(stream.frames(), frame_count as i64);
+        assert_eq!(stream.frames(), i64::try_from(frame_count).unwrap());
         let stream_index = stream.index();
         let mut decoder = codec::context::Context::from_parameters(stream.parameters())
             .unwrap()
             .decoder()
             .video()
             .unwrap();
-        let mut decoded = frame::Video::empty();
+        let mut video_frame = frame::Video::empty();
         let mut luma = Vec::new();
         for (stream, packet) in input.packets() {
             if stream.index() == stream_index {
                 decoder.send_packet(&packet).unwrap();
-                while decoder.receive_frame(&mut decoded).is_ok() {
-                    luma.push(decoded.data(0)[0]);
+                while decoder.receive_frame(&mut video_frame).is_ok() {
+                    luma.push(video_frame.data(0)[0]);
                 }
             }
         }
         decoder.send_eof().unwrap();
-        while decoder.receive_frame(&mut decoded).is_ok() {
-            luma.push(decoded.data(0)[0]);
+        while decoder.receive_frame(&mut video_frame).is_ok() {
+            luma.push(video_frame.data(0)[0]);
         }
         assert_eq!(luma.len(), expected_luma.len());
         for (actual, expected) in luma.iter().zip(expected_luma) {
@@ -661,16 +701,16 @@ mod tests {
                 .unwrap();
             assert_eq!(decoder.channels(), 2);
             assert_eq!(decoder.rate(), sample_rate);
-            let mut decoded = frame::Audio::empty();
-            let mut samples = 0;
+            let mut audio_frame = frame::Audio::empty();
+            let mut samples = 0usize;
             for (stream, packet) in input.packets() {
                 if stream.index() == stream_index {
                     decoder.send_packet(&packet).unwrap();
-                    while decoder.receive_frame(&mut decoded).is_ok() {
-                        samples += decoded.samples();
+                    while decoder.receive_frame(&mut audio_frame).is_ok() {
+                        samples = samples.checked_add(audio_frame.samples()).unwrap();
                         for channel in 0..2 {
                             assert!(
-                                decoded
+                                audio_frame
                                     .plane::<f32>(channel)
                                     .iter()
                                     .all(|sample| sample.abs() < 0.0001)
@@ -680,12 +720,16 @@ mod tests {
                 }
             }
             decoder.send_eof().unwrap();
-            while decoder.receive_frame(&mut decoded).is_ok() {
-                samples += decoded.samples();
+            while decoder.receive_frame(&mut audio_frame).is_ok() {
+                samples = samples.checked_add(audio_frame.samples()).unwrap();
             }
-            let expected_samples = frame_count as usize * sample_rate as usize / 24;
+            let expected_samples = usize::try_from(frame_count)
+                .unwrap()
+                .checked_mul(usize::try_from(sample_rate).unwrap())
+                .unwrap()
+                / 24;
             assert!(
-                (expected_samples..expected_samples + 1024).contains(&samples),
+                (expected_samples..expected_samples.checked_add(1024).unwrap()).contains(&samples),
                 "expected {expected_samples} samples plus AAC padding, got {samples}"
             );
         }

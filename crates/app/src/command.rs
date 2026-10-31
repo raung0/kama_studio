@@ -123,27 +123,27 @@ pub enum EditorCommand {
 }
 
 impl EditorCommand {
-    pub(crate) fn timeline(action: TimelineAction) -> Self {
+    pub(crate) const fn timeline(action: TimelineAction) -> Self {
         Self::Edit(EditCommand::Timeline(action))
     }
 
-    pub(crate) fn inspector(action: InspectorAction) -> Self {
+    pub(crate) const fn inspector(action: InspectorAction) -> Self {
         Self::Edit(EditCommand::Inspector(action))
     }
 
-    pub(crate) fn pipeline_graph(action: PipelineGraphAction) -> Self {
+    pub(crate) const fn pipeline_graph(action: PipelineGraphAction) -> Self {
         Self::Edit(EditCommand::PipelineGraph(action))
     }
 
-    pub(crate) fn undo() -> Self {
+    pub(crate) const fn undo() -> Self {
         Self::Edit(EditCommand::Undo)
     }
 
-    pub(crate) fn redo() -> Self {
+    pub(crate) const fn redo() -> Self {
         Self::Edit(EditCommand::Redo)
     }
 
-    pub(crate) fn restore_history(snapshot: HistorySnapshot) -> Self {
+    pub(crate) const fn restore_history(snapshot: HistorySnapshot) -> Self {
         Self::Edit(EditCommand::RestoreHistory(snapshot))
     }
 }
@@ -325,9 +325,8 @@ impl KeyBinding {
             BindingKey::Character(key) => key.to_ascii_uppercase().to_string(),
             BindingKey::Comma => ",".into(),
             BindingKey::Period => ".".into(),
-            BindingKey::Delete if macos => "⌫".into(),
+            BindingKey::Delete | BindingKey::Backspace if macos => "⌫".into(),
             BindingKey::Delete => "Delete".into(),
-            BindingKey::Backspace if macos => "⌫".into(),
             BindingKey::Backspace => "Backspace".into(),
             BindingKey::Space => "Space".into(),
             BindingKey::Enter => "Enter".into(),
@@ -892,6 +891,10 @@ impl CommandRegistry {
         });
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "indices are created from definitions.len(), and definitions are never removed"
+    )]
     fn insert(&mut self, mut definition: CommandDefinition) {
         let id = definition.id.clone();
         let shortcut = definition.shortcut.take();
@@ -910,6 +913,10 @@ impl CommandRegistry {
         self.set_shortcut_at(index, shortcut);
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "both command and binding indices come from the append-only definitions table"
+    )]
     fn set_shortcut_at(&mut self, index: usize, shortcut: Option<KeyBinding>) {
         if let Some(old) = self.definitions[index].shortcut.take() {
             self.bindings.remove(&(self.definitions[index].scope, old));
@@ -974,7 +981,7 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     let candidate = candidate.to_lowercase();
     let chars = candidate.chars().collect::<Vec<_>>();
     let mut cursor = 0;
-    let mut score = 0;
+    let mut score = 0_i32;
     let mut previous_match = None;
     for needle in query.chars().filter(|character| !character.is_whitespace()) {
         let index = chars
@@ -982,23 +989,38 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
             .enumerate()
             .skip(cursor)
             .find_map(|(index, &character)| (character == needle).then_some(index))?;
-        score += 10;
-        if index == 0 || !chars[index - 1].is_alphanumeric() {
-            score += 12;
+        score = score.saturating_add(10);
+        if index
+            .checked_sub(1)
+            .and_then(|previous| chars.get(previous))
+            .is_none_or(|character| !character.is_alphanumeric())
+        {
+            score = score.saturating_add(12);
         }
-        if previous_match.is_some_and(|previous| previous + 1 == index) {
-            score += 18;
+        if previous_match.is_some_and(|previous| Some(previous) == index.checked_sub(1)) {
+            score = score.saturating_add(18);
         }
-        score -= (index.saturating_sub(cursor) as i32).min(8);
+        score = score.saturating_sub(
+            i32::try_from(index.saturating_sub(cursor))
+                .unwrap_or(i32::MAX)
+                .min(8),
+        );
         previous_match = Some(index);
-        cursor = index + 1;
+        cursor = index.checked_add(1)?;
     }
-    Some(score - candidate.len() as i32 / 8)
+    Some(score.saturating_sub(i32::try_from(candidate.len() / 8).unwrap_or(i32::MAX)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuzzy_search_prefers_contiguous_matches_and_rejects_missing_letters() {
+        assert_eq!(fuzzy_score("op", "Open"), Some(50));
+        assert_eq!(fuzzy_score("op", "Other Panel"), Some(38));
+        assert_eq!(fuzzy_score("xz", "Open"), None);
+    }
 
     #[test]
     fn key_binding_display_is_platform_specific() {

@@ -38,6 +38,14 @@ const SECTION_CONTENT_PAD: f32 = 8.0;
 const SECTION_GAP: f32 = 5.0;
 const DEFAULT_CACHE_CHUNK_SECONDS: f64 = 8.0;
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "max clamps negative and NaN frame values to zero before Rust's saturating float-to-integer conversion"
+)]
+const fn nonnegative_frame(value: f64) -> u64 {
+    value.max(0.0) as u64
+}
+
 labeled_enum! {
     #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
     pub enum VideoCodec {
@@ -83,7 +91,7 @@ labeled_enum! {
     pub enum AudioCodec { Aac => "AAC", Opus => "Opus", Flac => "FLAC", Pcm => "PCM 24-bit", }
 }
 
-fn compatible_containers(codec: VideoCodec) -> &'static [&'static str] {
+const fn compatible_containers(codec: VideoCodec) -> &'static [&'static str] {
     match codec {
         VideoCodec::H264 | VideoCodec::H265 => &["mp4", "mov", "mkv"],
         VideoCodec::ProRes4444 => &["mov", "mkv"],
@@ -95,10 +103,9 @@ fn compatible_containers(codec: VideoCodec) -> &'static [&'static str] {
 
 fn compatible_audio_codecs(container: &str) -> &'static [AudioCodec] {
     match container {
-        "mp4" => &[AudioCodec::Aac],
+        "mp4" | "gif" => &[AudioCodec::Aac],
         "mov" => &[AudioCodec::Aac, AudioCodec::Pcm],
         "webm" => &[AudioCodec::Opus],
-        "gif" => &[AudioCodec::Aac],
         _ => &AudioCodec::ALL,
     }
 }
@@ -266,12 +273,16 @@ pub struct RenderPanelState {
 }
 
 impl RenderPanelState {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "built_in_presets always includes its first preset and the combo initializer and destination both have seven entries"
+    )]
     pub(crate) fn new(project: &Project, timeline: &TimelineState) -> Self {
         let presets = built_in_presets();
         let preset = presets[0].clone();
         let end = timeline.render_end_seconds();
         let fps = project.active_settings().frame_rate.max(1.0);
-        let end_frame = (f64::from(end) * fps).ceil().max(1.0) as u64 - 1;
+        let end_frame = nonnegative_frame((f64::from(end) * fps).ceil().max(1.0)).saturating_sub(1);
         let output = PathBuf::from(format!("render.{}", preset.extension()));
         let quality = preset.quality;
         Self {
@@ -414,32 +425,42 @@ impl RenderPanelState {
         self.normalize_target();
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "every compatible container and audio codec list contains at least one entry"
+    )]
     fn normalize_target(&mut self) {
         let containers = compatible_containers(self.settings.preset.video_codec);
         if !containers.contains(&self.settings.preset.container.as_str()) {
-            self.settings.preset.container = containers[0].to_string();
+            self.settings.preset.container = containers
+                .first()
+                .expect("compatible containers are nonempty")
+                .to_string();
         }
         if self.settings.preset.container == "gif" {
             self.settings.preset.include_audio = false;
         }
         let audio = compatible_audio_codecs(&self.settings.preset.container);
         if !audio.contains(&self.settings.preset.audio_codec) {
-            self.settings.preset.audio_codec = audio[0];
+            self.settings.preset.audio_codec =
+                *audio.first().expect("compatible audio codecs are nonempty");
         }
         self.settings
             .output
             .set_extension(self.settings.preset.extension());
     }
 
-    fn preset_count(&self) -> usize {
-        self.builtins.len() + self.user_presets.len()
+    const fn preset_count(&self) -> usize {
+        self.builtins.len().saturating_add(self.user_presets.len())
     }
 
     fn preset_at(&self, index: usize) -> Option<RenderPreset> {
         if index < self.builtins.len() {
             self.builtins.get(index).cloned()
         } else {
-            self.user_presets.get(index - self.builtins.len()).cloned()
+            self.user_presets
+                .get(index.saturating_sub(self.builtins.len()))
+                .cloned()
         }
     }
 
@@ -454,19 +475,35 @@ impl RenderPanelState {
             .unwrap_or(0)
     }
 
-    fn combo(&self, kind: RenderCombo) -> &ComboBox {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderCombo discriminants span 0 through 6, matching the seven combo slots"
+    )]
+    const fn combo(&self, kind: RenderCombo) -> &ComboBox {
         &self.combos[kind as usize]
     }
 
-    fn combo_mut(&mut self, kind: RenderCombo) -> &mut ComboBox {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderCombo discriminants span 0 through 6, matching the seven combo slots"
+    )]
+    const fn combo_mut(&mut self, kind: RenderCombo) -> &mut ComboBox {
         &mut self.combos[kind as usize]
     }
 
-    fn number(&self, kind: RenderNumber) -> &NumberInput {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderNumber discriminants span 0 through 2, matching the three number slots"
+    )]
+    const fn number(&self, kind: RenderNumber) -> &NumberInput {
         &self.numbers[kind as usize]
     }
 
-    fn number_mut(&mut self, kind: RenderNumber) -> &mut NumberInput {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderNumber discriminants span 0 through 2, matching the three number slots"
+    )]
+    const fn number_mut(&mut self, kind: RenderNumber) -> &mut NumberInput {
         &mut self.numbers[kind as usize]
     }
 
@@ -474,7 +511,7 @@ impl RenderPanelState {
         self.combos.iter_mut().for_each(ComboBox::close);
     }
 
-    fn combo_section(kind: RenderCombo) -> usize {
+    const fn combo_section(kind: RenderCombo) -> usize {
         match kind {
             RenderCombo::Preset => 0,
             RenderCombo::Resolution | RenderCombo::VideoCodec | RenderCombo::Container => 1,
@@ -497,6 +534,9 @@ impl RenderPanelState {
     }
 
     fn apply_combo(&mut self, kind: RenderCombo, index: usize) {
+        if index >= self.combo_len(kind) {
+            return;
+        }
         self.combo_mut(kind).select(index, true);
         match kind {
             RenderCombo::Preset => {
@@ -505,30 +545,48 @@ impl RenderPanelState {
                 }
             }
             RenderCombo::Resolution => {
-                self.settings.preset.resolution = RenderResolution::ALL[index];
+                if let Some(&resolution) = RenderResolution::ALL.get(index) {
+                    self.settings.preset.resolution = resolution;
+                }
             }
             RenderCombo::VideoCodec => {
-                self.settings.preset.video_codec = VideoCodec::ALL[index];
+                if let Some(&codec) = VideoCodec::ALL.get(index) {
+                    self.settings.preset.video_codec = codec;
+                }
                 self.normalize_target();
             }
             RenderCombo::Container => {
-                self.settings.preset.container =
-                    compatible_containers(self.settings.preset.video_codec)[index].to_string();
+                if let Some(container) =
+                    compatible_containers(self.settings.preset.video_codec).get(index)
+                {
+                    self.settings.preset.container = (*container).to_string();
+                }
                 self.normalize_target();
             }
             RenderCombo::AudioCodec => {
-                self.settings.preset.audio_codec =
-                    compatible_audio_codecs(&self.settings.preset.container)[index];
+                if let Some(&codec) =
+                    compatible_audio_codecs(&self.settings.preset.container).get(index)
+                {
+                    self.settings.preset.audio_codec = codec;
+                }
             }
             RenderCombo::SampleRate => {
-                self.settings.preset.sample_rate = [44_100, 48_000, 96_000][index];
+                if let Some(&rate) = [44_100, 48_000, 96_000].get(index) {
+                    self.settings.preset.sample_rate = rate;
+                }
             }
             RenderCombo::Bitrate => {
-                self.settings.preset.audio_bitrate_kbps = [128, 192, 256, 320][index];
+                if let Some(&bitrate) = [128, 192, 256, 320].get(index) {
+                    self.settings.preset.audio_bitrate_kbps = bitrate;
+                }
             }
         }
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "quality is clamped to the nonnegative range 0 through 51 before conversion"
+    )]
     fn apply_number(&mut self, kind: RenderNumber, value: f64) {
         match kind {
             RenderNumber::Quality => {
@@ -536,11 +594,11 @@ impl RenderPanelState {
             }
             RenderNumber::Begin => {
                 self.custom_begin = true;
-                self.settings.begin_frame = value.round().max(0.0) as u64;
+                self.settings.begin_frame = nonnegative_frame(value.round());
             }
             RenderNumber::End => {
                 self.custom_end = true;
-                self.settings.end_frame = value.round().max(0.0) as u64;
+                self.settings.end_frame = nonnegative_frame(value.round());
             }
         }
     }
@@ -593,9 +651,13 @@ impl RenderPanelState {
     }
 
     fn section_amounts(&self) -> [f32; 5] {
-        std::array::from_fn(|index| self.sections[index].open_amount())
+        self.sections.each_ref().map(Accordion::open_amount)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers use section indices 0 through 4 or combo_section, which returns 0 through 2"
+    )]
     fn section_open(&self, index: usize) -> bool {
         self.sections[index].open_amount() > 0.98
     }
@@ -606,20 +668,30 @@ impl RenderPanelState {
         }
         if !self.custom_end {
             let fps = project.active_settings().frame_rate.max(1.0);
-            self.settings.end_frame = (f64::from(timeline.render_end_seconds()) * fps)
-                .ceil()
-                .max(1.0) as u64
-                - 1;
+            self.settings.end_frame = nonnegative_frame(
+                (f64::from(timeline.render_end_seconds()) * fps)
+                    .ceil()
+                    .max(1.0),
+            )
+            .saturating_sub(1);
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the five measured section rectangles, section controls, and title entries have matching lengths"
+    )]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "preset and video fields are always created by measure_render_rects before their sections are drawn"
+    )]
     pub(crate) fn build(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
         project: &Project,
         timeline: &TimelineState,
-        icons: Icons,
+        icons: &Icons,
         popup_bounds: Rect,
     ) {
         let chevron = icons.get(AppIcon::Chevron);
@@ -1061,10 +1133,12 @@ impl RenderPanelState {
             }
         }
 
-        for index in 0..5 {
-            if layout.sections[index].contains(p) {
+        for (index, section) in layout.sections.iter().enumerate() {
+            if section.contains(p) {
                 self.close_popups();
-                self.sections[index].toggle();
+                if let Some(section) = self.sections.get_mut(index) {
+                    section.toggle();
+                }
                 return true;
             }
         }
@@ -1157,9 +1231,11 @@ impl RenderPanelState {
             }
             if layout.begin_buttons[0].contains(p) {
                 self.custom_begin = true;
-                self.settings.begin_frame = (f64::from(timeline.playhead().max(0.0))
-                    * project.active_settings().frame_rate)
-                    .round() as u64;
+                self.settings.begin_frame = nonnegative_frame(
+                    (f64::from(timeline.playhead().max(0.0))
+                        * project.active_settings().frame_rate)
+                        .round(),
+                );
                 return true;
             }
             if layout.begin_buttons[1].contains(p) {
@@ -1180,18 +1256,22 @@ impl RenderPanelState {
             }
             if layout.end_buttons[0].contains(p) {
                 self.custom_end = true;
-                self.settings.end_frame = (f64::from(timeline.playhead().max(0.0))
-                    * project.active_settings().frame_rate)
-                    .round() as u64;
+                self.settings.end_frame = nonnegative_frame(
+                    (f64::from(timeline.playhead().max(0.0))
+                        * project.active_settings().frame_rate)
+                        .round(),
+                );
                 return true;
             }
             if layout.end_buttons[1].contains(p) {
                 self.custom_end = false;
-                self.settings.end_frame = (f64::from(timeline.render_end_seconds())
-                    * project.active_settings().frame_rate)
-                    .ceil()
-                    .max(1.0) as u64
-                    - 1;
+                self.settings.end_frame = nonnegative_frame(
+                    (f64::from(timeline.render_end_seconds())
+                        * project.active_settings().frame_rate)
+                        .ceil()
+                        .max(1.0),
+                )
+                .saturating_sub(1);
                 return true;
             }
             if layout.background.control.contains(p) {
@@ -1311,19 +1391,35 @@ struct RenderRects {
 }
 
 impl RenderRects {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderCombo discriminants span the seven layout combo slots"
+    )]
     fn combo(self, kind: RenderCombo) -> Option<Rect> {
         self.combos[kind as usize].map(|field| field.control)
     }
 
-    fn combo_field(self, kind: RenderCombo) -> Option<RenderFieldRects> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderCombo discriminants span the seven layout combo slots"
+    )]
+    const fn combo_field(self, kind: RenderCombo) -> Option<RenderFieldRects> {
         self.combos[kind as usize]
     }
 
-    fn number(self, kind: RenderNumber) -> Rect {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderNumber discriminants span the three layout number slots"
+    )]
+    const fn number(self, kind: RenderNumber) -> Rect {
         self.numbers[kind as usize].control
     }
 
-    fn number_field(self, kind: RenderNumber) -> RenderFieldRects {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RenderNumber discriminants span the three layout number slots"
+    )]
+    const fn number_field(self, kind: RenderNumber) -> RenderFieldRects {
         self.numbers[kind as usize]
     }
 }
@@ -1483,6 +1579,10 @@ fn build_section(
     (header, section_body)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "enum discriminants and from_fn indices address fixed layout arrays of the corresponding lengths"
+)]
 fn measure_render_rects(
     width: f32,
     scroll: f32,

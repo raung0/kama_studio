@@ -4,6 +4,7 @@ use naga::{
     front::wgsl::parse_str,
     valid::{Capabilities, ValidationFlags, Validator},
 };
+use std::fmt::Write as _;
 
 use crate::plugin::{
     EffectDefinition, EffectKind, GeneratorDefinition, PluginRegistry, RuntimeProperty,
@@ -35,34 +36,42 @@ pub fn build_fused_pointwise_shader(
         modules.push('\n');
 
         let enabled_slot = parameter_slot;
-        parameter_slot += 1;
+        parameter_slot = parameter_slot
+            .checked_add(1)
+            .context("too many effect parameters")?;
         let mut args = vec!["color".to_owned(), "uv".to_owned()];
         append_runtime_arguments(effect, &mut args);
         for input in &effect.inputs {
             let read = input.ty.wgsl_read(parameter_slot).with_context(|| {
                 format!("GPU effect {node_type} has host-only input {}", input.id)
             })?;
-            parameter_slot += 1;
+            parameter_slot = parameter_slot
+                .checked_add(1)
+                .context("too many effect parameters")?;
             args.push(read);
         }
-        calls.push_str(&format!(
-            "    if effect_params.data[{enabled_slot}u].x >= 0.5 {{\n        color = {namespace}_{}({});\n    }}\n",
+        writeln!(calls,
+            "    if effect_params.data[{enabled_slot}u].x >= 0.5 {{\n        color = {namespace}_{}({});\n    }}",
             effect.entry,
             args.join(", ")
-        ));
+        ).context("write fused shader calls")?;
     }
 
     let body = format!(
         "    var color = textureLoad(source_tex, vec2<i32>(gid.xy), 0);\n{calls}    textureStore(output_tex, vec2<i32>(gid.xy), color);"
     );
-    let wrapper = build_effect_wrapper(parameter_slot.max(1), 1, &body);
+    let wrapper = build_effect_wrapper(parameter_slot.max(1), 1, &body)?;
     validate_assembled(
         &format!("{modules}\n{wrapper}"),
         "assembled fused Effect Pipeline WGSL",
     )
 }
 
-fn build_effect_wrapper(parameter_count: usize, image_input_count: usize, body: &str) -> String {
+fn build_effect_wrapper(
+    parameter_count: usize,
+    image_input_count: usize,
+    body: &str,
+) -> Result<String> {
     let (images, output_binding, params_binding, runtime_binding, source_dimensions) =
         match image_input_count {
             0 => (String::new(), 0, 1, 2, "effect_runtime.output_source_size.xy"),
@@ -80,9 +89,9 @@ fn build_effect_wrapper(parameter_count: usize, image_input_count: usize, body: 
                 4,
                 "textureDimensions(effect_input_0)",
             ),
-            _ => unreachable!("validated plugin image input count"),
+            _ => bail!("unsupported plugin image input count: {image_input_count}"),
         };
-    format!(
+    Ok(format!(
         r"
 struct EffectParams {{
     data: array<vec4<f32>, {parameter_count}>,
@@ -115,7 +124,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 {body}
 }}
 "
-    )
+    ))
 }
 
 pub fn build_generator_shader(generator: &GeneratorDefinition) -> Result<String> {
@@ -203,13 +212,13 @@ pub fn build_standalone_shader(node_type: &str, plugins: &PluginRegistry) -> Res
             "gid.xy".to_owned(),
             "uv".to_owned(),
         ],
-        _ => unreachable!("validated plugin image input count"),
+        _ => bail!("unsupported plugin image input count: {image_count}"),
     };
     append_runtime_arguments(effect, &mut args);
     for (slot, input) in effect.inputs.iter().enumerate() {
         let read = input
             .ty
-            .wgsl_read(slot + 1)
+            .wgsl_read(slot.checked_add(1).context("too many effect parameters")?)
             .with_context(|| format!("GPU effect {node_type} has host-only input {}", input.id))?;
         args.push(read);
     }
@@ -217,14 +226,19 @@ pub fn build_standalone_shader(node_type: &str, plugins: &PluginRegistry) -> Res
         0 => "vec4<f32>(0.0)",
         1 => "textureLoad(source_tex, vec2<i32>(gid.xy), 0)",
         2 => "textureLoad(effect_input_0, vec2<i32>(gid.xy), 0)",
-        _ => unreachable!("validated plugin image input count"),
+        _ => bail!("unsupported plugin image input count: {image_count}"),
     };
     let body = format!(
         "    var color = {initial_color};\n    if effect_params.data[0u].x >= 0.5 {{\n        color = {namespace}_{}({});\n    }}\n    textureStore(output_tex, vec2<i32>(gid.xy), color);",
         effect.entry,
         args.join(", ")
     );
-    let wrapper = build_effect_wrapper(effect.inputs.len() + 1, image_count, &body);
+    let parameter_count = effect
+        .inputs
+        .len()
+        .checked_add(1)
+        .context("too many effect parameters")?;
+    let wrapper = build_effect_wrapper(parameter_count, image_count, &body)?;
     validate_assembled(
         &format!("{namespaced}\n{wrapper}"),
         "assembled standalone Effect Pipeline WGSL",

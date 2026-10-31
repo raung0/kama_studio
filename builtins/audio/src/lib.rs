@@ -12,6 +12,9 @@ pub extern "C" fn kama_alloc(len: i32) -> i32 {
     Box::into_raw(samples) as *mut f32 as i32
 }
 
+/// # Safety
+/// A positive pointer with a positive length must identify a live allocation
+/// returned by `kama_alloc` with the same length. No references may remain in use.
 #[no_mangle]
 pub unsafe extern "C" fn kama_dealloc(pointer: i32, len: i32) {
     if pointer > 0 && len > 0 {

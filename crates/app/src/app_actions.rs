@@ -1,10 +1,10 @@
 use super::{
     CompositionId, EditorApp, EditorCommand, GraphNodeTarget, HashSet, InspectorAction, Instant,
-    MEDIA_PRESENCE_CHECK_INTERVAL, MediaAction, MediaAsset, MediaDragItem, MediaInsertionCursor,
-    MediaKind, MediaStream, MissingMediaDialog, Modal, NewCompositionDialog, NewCompositionMode,
-    PaletteAction, PaletteKind, PanelKind, Path, PipelineGraphAction, PipelineKind, Project, Rect,
+    MediaAction, MediaAsset, MediaDragItem, MediaInsertionCursor, MediaKind, MediaStream,
+    MissingMediaDialog, Modal, NewCompositionDialog, NewCompositionMode, PaletteAction,
+    PaletteKind, PanelKind, Path, PipelineGraphAction, PipelineKind, Project, Rect,
     SpeedDurationDialog, TimelineAction, TimelineState, effects, messages, missing_project_media,
-    panels, project, sync_missing_media_entries,
+    next_media_check, panels, project, sync_missing_media_entries,
 };
 
 impl EditorApp {
@@ -12,8 +12,8 @@ impl EditorApp {
         self.command_queue.push(EditorCommand::inspector(action));
     }
 
-    pub(super) fn execute_inspector_action(&mut self, action: InspectorAction) {
-        match action {
+    pub(super) fn execute_inspector_action(&mut self, action: &InspectorAction) {
+        match *action {
             InspectorAction::ChoosePipeline(anchor) => {
                 self.palette.pending_open = Some((
                     PaletteKind::PipelineAssignment(self.editor.timeline.selected_pipeline_kind()),
@@ -28,10 +28,14 @@ impl EditorApp {
                 if !self.editor.timeline.can_assign_pipeline() {
                     return;
                 }
-                let id = self
+                let Some(id) = self
                     .editor
                     .project
-                    .create_pipeline_kind(self.editor.timeline.selected_pipeline_kind());
+                    .create_pipeline_kind(self.editor.timeline.selected_pipeline_kind())
+                else {
+                    messages::warning("Create pipeline", "Pipeline ID space is exhausted");
+                    return;
+                };
                 self.editor.timeline.set_selected_pipeline(Some(id));
                 self.sync_effect_runtime();
             }
@@ -298,10 +302,13 @@ impl EditorApp {
                         };
                         if matches!(asset.kind, MediaKind::WasmPlugin) {
                             let (videos, _) = cursor.tracks(&mut self.editor.timeline, 1, 0);
+                            let Some(&video) = videos.first() else {
+                                continue;
+                            };
                             inserted_any |= self.insert_media_asset_at(
                                 asset.clone(),
                                 MediaStream::All,
-                                videos[0],
+                                video,
                                 cursor.time,
                             );
                         } else {
@@ -324,8 +331,12 @@ impl EditorApp {
                                 );
                             }
                         }
-                        let media_clip_ids = self.editor.timeline.clips()[media_first_clip..]
+                        let media_clip_ids = self
+                            .editor
+                            .timeline
+                            .clips()
                             .iter()
+                            .skip(media_first_clip)
                             .map(|clip| clip.id)
                             .collect::<Vec<_>>();
                         self.editor.timeline.group_clip_ids(&media_clip_ids);
@@ -334,12 +345,22 @@ impl EditorApp {
                         let (videos, audios) = match stream {
                             MediaStream::Video(_) => cursor.tracks(&mut self.editor.timeline, 1, 0),
                             MediaStream::Audio(_) => cursor.tracks(&mut self.editor.timeline, 0, 1),
-                            MediaStream::All => unreachable!(),
+                            MediaStream::All => continue,
                         };
                         let target = match stream {
-                            MediaStream::Video(_) => videos[0],
-                            MediaStream::Audio(_) => audios[0],
-                            MediaStream::All => unreachable!(),
+                            MediaStream::Video(_) => {
+                                let Some(&track) = videos.first() else {
+                                    continue;
+                                };
+                                track
+                            }
+                            MediaStream::Audio(_) => {
+                                let Some(&track) = audios.first() else {
+                                    continue;
+                                };
+                                track
+                            }
+                            MediaStream::All => continue,
                         };
                         if self.insert_media_asset_at(asset, stream, target, cursor.time) {
                             inserted_any = true;
@@ -384,9 +405,16 @@ impl EditorApp {
                         } else {
                             effects::PipelineInstance::effect_default()
                         };
+                    let track = match stream {
+                        MediaStream::All | MediaStream::Video(_) => videos.first(),
+                        MediaStream::Audio(_) => audios.first(),
+                    };
+                    let Some(&track) = track else {
+                        continue;
+                    };
                     let inserted = match stream {
                         MediaStream::All => self.editor.timeline.insert_av_composition_clip_at(
-                            (videos[0], cursor.time),
+                            (track, cursor.time),
                             composition,
                             source.name,
                             has_audio,
@@ -394,7 +422,7 @@ impl EditorApp {
                             visual_pipeline,
                         ),
                         MediaStream::Video(_) => self.editor.timeline.insert_composition_clip_at(
-                            (videos[0], cursor.time),
+                            (track, cursor.time),
                             composition,
                             source.name,
                             false,
@@ -402,7 +430,7 @@ impl EditorApp {
                             visual_pipeline,
                         ),
                         MediaStream::Audio(_) => self.editor.timeline.insert_composition_clip_at(
-                            (audios[0], cursor.time),
+                            (track, cursor.time),
                             composition,
                             source.name,
                             true,
@@ -529,7 +557,7 @@ impl EditorApp {
                     return;
                 };
                 self.set_history_gesture_label("Replace media");
-                match self.editor.project.replace_media(media, path.clone()) {
+                match self.editor.project.replace_media(media, &path) {
                     Ok(()) => {
                         self.prompted_missing_media.remove(&media);
                         if let Some(project_path) = self.editor.project_path.as_deref() {
@@ -590,7 +618,7 @@ impl EditorApp {
         if now < self.next_media_presence_check {
             return;
         }
-        self.next_media_presence_check = now + MEDIA_PRESENCE_CHECK_INTERVAL;
+        self.next_media_presence_check = next_media_check(now);
         if self.editor.history_gesture.is_some() {
             return;
         }
@@ -688,10 +716,10 @@ impl EditorApp {
 
     pub(super) fn confirm_new_composition_dialog(&mut self, dialog: &NewCompositionDialog) {
         let raw_name = dialog.editor.text().trim().to_string();
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
 
         if let NewCompositionMode::Rename(composition) = dialog.mode {
             if raw_name.is_empty() {
@@ -712,9 +740,9 @@ impl EditorApp {
                 .load_history_document(self.editor.project.active_composition().timeline.clone());
             self.editor.history.record_after(
                 "Rename composition",
-                before,
+                &before,
                 &self.editor.project,
-                &self.editor.timeline,
+                &self.editor.timeline.document(),
                 false,
             );
             return;
@@ -736,11 +764,8 @@ impl EditorApp {
                 self.switch_composition(composition);
             }
             NewCompositionMode::FromSelection => {
-                let visual_pipeline = match self.plugins.visual_pipeline_instance() {
-                    Ok(pipeline) => pipeline,
-                    Err(_) => {
-                        return;
-                    }
+                let Ok(visual_pipeline) = self.plugins.visual_pipeline_instance() else {
+                    return;
                 };
                 let Some(extraction) = self.editor.timeline.extract_selection_for_composition()
                 else {
@@ -761,14 +786,14 @@ impl EditorApp {
                 self.playback.invalidate();
                 self.audio.clear();
             }
-            NewCompositionMode::Rename(_) => unreachable!(),
+            NewCompositionMode::Rename(_) => return,
         }
 
         self.editor.history.record_after(
             "Create composition",
-            before,
+            &before,
             &self.editor.project,
-            &self.editor.timeline,
+            &self.editor.timeline.document(),
             false,
         );
     }
@@ -777,19 +802,19 @@ impl EditorApp {
         let Some(value) = dialog.value() else {
             return;
         };
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
         self.editor
             .timeline
             .apply_speed_duration(&self.editor.project, dialog.mode, value);
         self.playback.invalidate();
         self.editor.history.record_after(
             "Speed / Duration",
-            before,
+            &before,
             &self.editor.project,
-            &self.editor.timeline,
+            &self.editor.timeline.document(),
             false,
         );
     }
@@ -817,7 +842,10 @@ impl EditorApp {
         {
             return Some(id);
         }
-        let id = self.editor.project.create_pipeline_kind(kind);
+        let Some(id) = self.editor.project.create_pipeline_kind(kind) else {
+            messages::warning("Create pipeline", "Pipeline ID space is exhausted");
+            return None;
+        };
         self.editor.timeline.set_selected_pipeline(Some(id));
         Some(id)
     }
@@ -963,7 +991,10 @@ impl EditorApp {
                     let kind = self
                         .pipeline_graph
                         .graph_kind(&self.editor.project, &self.editor.timeline);
-                    let id = self.editor.project.create_pipeline_kind(kind);
+                    let Some(id) = self.editor.project.create_pipeline_kind(kind) else {
+                        messages::warning("Create pipeline", "Pipeline ID space is exhausted");
+                        return;
+                    };
                     if self.editor.timeline.can_assign_pipeline() {
                         self.editor.timeline.set_selected_pipeline(Some(id));
                         self.pipeline_graph.follow_selection();

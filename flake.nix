@@ -88,7 +88,15 @@
                 openssl
                 pkg-config
                 ffmpeg-full
-                cargo-unused-features
+                (cargo-unused-features.overrideAttrs (old: {
+                  src = pkgs.fetchFromGitHub {
+                    owner = "MTaliancich";
+                    repo = "cargo-unused-features";
+                    rev = "main";
+                    hash = "sha256-WSdH3kXR4GA+J30jFA9muGZ9/GdnFzy+LCGFcyqNpr4=";
+                  };
+                  cargoHash = "sha256-bk0rb6R7dlnugQMTtwjs9Yffn1+jaFEeGIY28f4rq0w=";
+                }))
                 cargo-bloat
                 cargo-bundle
                 cargo-deny

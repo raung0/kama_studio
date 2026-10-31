@@ -18,13 +18,17 @@ impl Icons {
         );
         let fallback = renderer.builtin_icon();
         let mut ids = [fallback; AppIcon::COUNT];
-        for (id, pixels) in ids.iter_mut().zip(ICON_DATA.chunks_exact(ICON_BYTES)) {
+        for (id, pixels) in ids.iter_mut().zip(ICON_DATA.as_chunks::<ICON_BYTES>().0) {
             *id = renderer.register_icon_rgba8(ICON_SIZE, ICON_SIZE, pixels)?;
         }
         Ok(Self(ids))
     }
 
-    pub fn get(self, icon: AppIcon) -> IconId {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "AppIcon discriminants and COUNT are generated together from the same icon list"
+    )]
+    pub const fn get(&self, icon: AppIcon) -> IconId {
         self.0[icon as usize]
     }
 }
@@ -53,6 +57,11 @@ fn load_texture(renderer: &mut Renderer, bytes: &[u8]) -> Result<TextureId> {
     renderer.register_texture_rgba8(image.width(), image.height(), image.as_raw())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "the build script concatenates one ICON_BYTES-sized tile per AppIcon discriminant"
+)]
 pub fn icon_rgba(icon: AppIcon) -> &'static [u8] {
     let start = icon as usize * ICON_BYTES;
     &ICON_DATA[start..start + ICON_BYTES]

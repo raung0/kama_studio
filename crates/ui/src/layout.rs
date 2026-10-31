@@ -34,6 +34,12 @@ impl Item {
 }
 
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "the centered block is created in this measured layout"
+)]
+/// # Panics
+/// Panics if the layout engine fails to return the block it measured.
 pub fn centered(viewport: Rect, width: f32, height: f32) -> Rect {
     let (id, measured) = crate::measure_layout(viewport, |ctx| {
         ctx.new()
@@ -48,12 +54,24 @@ pub fn centered(viewport: Rect, width: f32, height: f32) -> Rect {
 
 #[must_use]
 pub fn inset(rect: Rect, padding: f32) -> Rect {
-    column(rect, &[Item::fill()], 0.0, padding, Align::Start, None)[0]
+    let [result] = column_array(rect, &[Item::fill()], 0.0, padding, Align::Start, None);
+    result
 }
 
 #[must_use]
 pub fn row(rect: Rect, items: &[Item], gap: f32, padding: f32, align: Align) -> Vec<Rect> {
     flow(rect, items, true, gap, padding, align, None).1
+}
+
+#[must_use]
+pub fn row_array<const N: usize>(
+    rect: Rect,
+    items: &[Item; N],
+    gap: f32,
+    padding: f32,
+    align: Align,
+) -> [Rect; N] {
+    layout_array(row(rect, items, gap, padding, align))
 }
 
 #[must_use]
@@ -81,8 +99,20 @@ pub fn column(
 }
 
 #[must_use]
+pub fn column_array<const N: usize>(
+    rect: Rect,
+    items: &[Item; N],
+    gap: f32,
+    padding: f32,
+    align: Align,
+    scroll: Option<ScrollState>,
+) -> [Rect; N] {
+    layout_array(column(rect, items, gap, padding, align, scroll))
+}
+
+#[must_use]
 pub fn scrolled_content(rect: Rect, offset: f32) -> Rect {
-    column(
+    let [result] = column_array(
         rect,
         &[Item::height(rect.height + offset.max(0.0))],
         0.0,
@@ -91,7 +121,8 @@ pub fn scrolled_content(rect: Rect, offset: f32) -> Rect {
         Some(ScrollState {
             offset: offset.max(0.0),
         }),
-    )[0]
+    );
+    result
 }
 
 pub fn stack(rect: Rect, start_y: f32, heights: &[f32]) -> Vec<Rect> {
@@ -111,6 +142,12 @@ pub fn stack(rect: Rect, start_y: f32, heights: &[f32]) -> Vec<Rect> {
 }
 
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    reason = "the root and each child ID are created in this measured layout"
+)]
+/// # Panics
+/// Panics if the layout engine fails to return a block it measured.
 pub fn fit_column_at(
     viewport: Rect,
     position: [f32; 2],
@@ -145,6 +182,31 @@ pub fn fit_column_at(
     )
 }
 
+#[must_use]
+pub fn fit_column_array_at<const N: usize>(
+    viewport: Rect,
+    position: [f32; 2],
+    width: f32,
+    items: &[Item; N],
+    gap: f32,
+    padding: f32,
+) -> (Rect, [Rect; N]) {
+    let (root, children) = fit_column_at(viewport, position, width, items, gap, padding);
+    (root, layout_array(children))
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "layout creates exactly one measured child for each input item"
+)]
+fn layout_array<const N: usize>(rects: Vec<Rect>) -> [Rect; N] {
+    rects.try_into().expect("layout child count changed")
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the root and each child ID are created in this measured layout"
+)]
 fn flow(
     rect: Rect,
     items: &[Item],
@@ -190,4 +252,25 @@ fn flow(
             .map(|id| measured.rect(id).expect("flow child layout"))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Align, Item, Rect, row_array};
+
+    #[test]
+    fn row_array_preserves_item_order_and_layout_spacing() {
+        let [first, second] = row_array(
+            Rect::new(0.0, 0.0, 100.0, 20.0),
+            &[Item::width(30.0), Item::fill()],
+            10.0,
+            5.0,
+            Align::Start,
+        );
+
+        assert!((first.x - 5.0).abs() < f32::EPSILON);
+        assert!((first.width - 30.0).abs() < f32::EPSILON);
+        assert!((second.x - 45.0).abs() < f32::EPSILON);
+        assert!((second.width - 50.0).abs() < f32::EPSILON);
+    }
 }

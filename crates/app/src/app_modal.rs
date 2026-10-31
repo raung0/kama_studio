@@ -47,7 +47,7 @@ impl PopupAnimation {
         })
     }
 
-    pub(super) fn is_closing(&self) -> bool {
+    pub(super) const fn is_closing(&self) -> bool {
         self.closing.is_some()
     }
     pub(super) fn is_animating(&self) -> bool {
@@ -67,7 +67,7 @@ macro_rules! popup_dialog_methods {
             pub fn finished(&self, now: Instant) -> bool {
                 self.animation.finished(now)
             }
-            pub fn is_closing(&self) -> bool {
+            pub const fn is_closing(&self) -> bool {
                 self.animation.is_closing()
             }
             pub fn is_animating(&self) -> bool {
@@ -90,7 +90,7 @@ macro_rules! popup_editor_dialog_methods {
             pub fn finished(&self, now: Instant) -> bool {
                 self.animation.finished(now)
             }
-            pub fn is_closing(&self) -> bool {
+            pub const fn is_closing(&self) -> bool {
                 self.animation.is_closing()
             }
             pub fn is_animating(&self) -> bool {

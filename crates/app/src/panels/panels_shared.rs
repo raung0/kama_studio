@@ -6,6 +6,10 @@ use crate::{
     timeline::{TimelineState, TrackKind},
 };
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the property row has seven fixed items"
+)]
 pub(super) fn property_row_parts(row: Rect) -> (Rect, Rect, Rect) {
     let parts = kama_ui::layout::row(
         row,
@@ -28,6 +32,10 @@ pub(super) fn property_row_parts(row: Rect) -> (Rect, Rect, Rect) {
     (parts[1], parts[3], parts[5])
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the label column has two fixed items"
+)]
 pub(super) fn property_label_rect(row: Rect) -> Rect {
     let label = property_row_parts(row).0;
     kama_ui::layout::column(
@@ -43,6 +51,10 @@ pub(super) fn property_label_rect(row: Rect) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the property row has five fixed items"
+)]
 pub(super) fn plain_property_parts(row: Rect) -> (Rect, Rect) {
     let parts = kama_ui::layout::row(
         row,

@@ -98,7 +98,7 @@ fn timeline_icon_toggle(
 fn sync_gradient_stop_parameters(
     generator: &mut GeneratorSource,
     time: f64,
-    previous_points: Option<Vec<[f32; 2]>>,
+    previous_points: Option<&[[f32; 2]]>,
 ) {
     let GeneratorSource::Plugin {
         generator_type,
@@ -110,12 +110,11 @@ fn sync_gradient_stop_parameters(
     if generator_type != BUILTIN_GRADIENT_GENERATOR {
         return;
     }
-    let points = match parameters
+    let Some(HostValue::Vec2Array(points)) = parameters
         .get("points")
         .and_then(|binding| binding.evaluate(time))
-    {
-        Some(HostValue::Vec2Array(points)) => points,
-        _ => return,
+    else {
+        return;
     };
     let raw_colors = match parameters
         .get("colors")
@@ -127,14 +126,14 @@ fn sync_gradient_stop_parameters(
 
     let mut colors = colors_from_values(
         &raw_colors,
-        previous_points.as_ref().map_or(points.len(), Vec::len),
+        previous_points.map_or(points.len(), <[_]>::len),
     );
-    if let Some(previous) = previous_points.as_ref() {
-        if points.len() == previous.len() + 1 {
+    if let Some(previous) = previous_points {
+        if previous.len().checked_add(1) == Some(points.len()) {
             let index = changed_point_index(previous, &points).min(colors.len());
             let color = inserted_color(&colors, index);
             colors.insert(index, color);
-        } else if points.len() + 1 == previous.len() && !colors.is_empty() {
+        } else if points.len().checked_add(1) == Some(previous.len()) && !colors.is_empty() {
             let index = changed_point_index(previous, &points).min(colors.len().saturating_sub(1));
             colors.remove(index);
         }
@@ -154,16 +153,16 @@ fn sync_gradient_stop_parameters(
         Some(HostValue::F32List(values)) => values,
         _ => Vec::new(),
     };
-    let old_point_count = previous_points.as_ref().map_or(points.len(), Vec::len);
+    let old_point_count = previous_points.map_or(points.len(), <[_]>::len);
     let mut midpoints = normalized_midpoints(&raw_midpoints, old_point_count);
-    if let Some(previous) = previous_points.as_ref() {
-        if points.len() == previous.len() + 1 {
+    if let Some(previous) = previous_points {
+        if previous.len().checked_add(1) == Some(points.len()) {
             insert_midpoint(
                 &mut midpoints,
                 changed_point_index(previous, &points),
                 previous.len(),
             );
-        } else if points.len() + 1 == previous.len() && !midpoints.is_empty() {
+        } else if points.len().checked_add(1) == Some(previous.len()) && !midpoints.is_empty() {
             remove_midpoint(
                 &mut midpoints,
                 changed_point_index(previous, &points),
@@ -244,7 +243,7 @@ pub enum ClipColor {
 }
 
 impl ClipColor {
-    fn color(self) -> Color {
+    const fn color(self) -> Color {
         match self {
             Self::VideoA => VIDEO_A,
             Self::VideoB => VIDEO_B,
@@ -271,10 +270,10 @@ pub struct Track {
     pub(crate) property_rows: Vec<LayerPropertyRow>,
 }
 
-fn default_track_volume() -> Binding {
+const fn default_track_volume() -> Binding {
     Binding::Constant(GpuValue::F32(1.0))
 }
-fn default_track_pan() -> Binding {
+const fn default_track_pan() -> Binding {
     Binding::Constant(GpuValue::F32(0.0))
 }
 
@@ -367,9 +366,11 @@ impl Model3dClipTransform {
     ) {
         fn transform_binding(binding: &mut Binding, add: [f32; 3], multiply: [f32; 3]) {
             let transform = |value: GpuValue| match value {
-                GpuValue::Vec3(value) => GpuValue::Vec3(std::array::from_fn(|axis| {
-                    f32::mul_add(value[axis], multiply[axis], add[axis])
-                })),
+                GpuValue::Vec3([x, y, z]) => {
+                    let [mx, my, mz] = multiply;
+                    let [ax, ay, az] = add;
+                    GpuValue::Vec3([x.mul_add(mx, ax), y.mul_add(my, ay), z.mul_add(mz, az)])
+                }
                 other => other,
             };
             match binding {
@@ -381,9 +382,11 @@ impl Model3dClipTransform {
                 }
                 Binding::Components(channels) => {
                     channels.base = transform(channels.base);
-                    for (axis, track) in channels.tracks.iter_mut().take(3).enumerate() {
+                    for ((track, factor), offset) in
+                        channels.tracks.iter_mut().zip(multiply).zip(add)
+                    {
                         for key in &mut track.keys {
-                            key.value = f32::mul_add(key.value, multiply[axis], add[axis]);
+                            key.value = f32::mul_add(key.value, factor, offset);
                         }
                     }
                 }
@@ -399,11 +402,11 @@ impl Model3dClipTransform {
     }
 }
 
-fn default_clip_opacity() -> f32 {
+const fn default_clip_opacity() -> f32 {
     1.0
 }
 
-fn default_clip_volume() -> f32 {
+const fn default_clip_volume() -> f32 {
     1.0
 }
 
@@ -453,7 +456,7 @@ struct LegacyMediaPropertyRow {
     model3d: Model3dClipTransform,
 }
 
-pub fn source_requires_instance(source: &VisualSource) -> bool {
+pub const fn source_requires_instance(source: &VisualSource) -> bool {
     matches!(
         source,
         VisualSource::Generator(_) | VisualSource::EffectInput | VisualSource::AudioPlaceholder
@@ -470,8 +473,8 @@ fn sources_share_property_row(
         (
             VisualSource::Media(left) | VisualSource::Audio(left),
             VisualSource::Media(right) | VisualSource::Audio(right),
-        ) => left == right,
-        (VisualSource::Composition(left), VisualSource::Composition(right)) => left == right,
+        )
+        | (VisualSource::Composition(left), VisualSource::Composition(right)) => left == right,
         (VisualSource::Generator(_), VisualSource::Generator(_))
         | (VisualSource::EffectInput, VisualSource::EffectInput)
         | (VisualSource::AudioPlaceholder, VisualSource::AudioPlaceholder) => {
@@ -507,6 +510,10 @@ impl LayerPropertyRow {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "keyframes merge only at exactly equal stored timestamps"
+)]
 fn merge_keys<T: Clone>(
     target: &mut Vec<crate::effects::AnimatedKey<T>>,
     source: &[crate::effects::AnimatedKey<T>],
@@ -542,6 +549,10 @@ fn merge_binding_animation(target: &mut Binding, source: &Binding) {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "keyframes merge only at exactly equal stored timestamps"
+)]
 fn merge_host_animation(target: &mut HostBinding, source: &HostBinding) {
     if !source.has_keyframes() {
         return;
@@ -819,6 +830,10 @@ fn clip_waveforms(
         return Vec::new();
     }
     let source_start = clip.source_offset.rem_euclid(duration);
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max(1.0) makes the float nonnegative, including for NaN"
+    )]
     let cycle_count = ((source_start + source_span) / duration).ceil().max(1.0) as usize;
     let mut waveforms = Vec::new();
     for cycle in 0..cycle_count {
@@ -896,9 +911,9 @@ impl TrackIntervals {
                 .or_default()
                 .push((clip.start, clip.end()));
         }
-        tracks
-            .values_mut()
-            .for_each(|intervals| intervals.sort_by(|a, b| a.0.total_cmp(&b.0)));
+        for intervals in tracks.values_mut() {
+            intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
         Self(tracks)
     }
 
@@ -910,8 +925,9 @@ impl TrackIntervals {
 
     fn has_space(&self, track: u32, start: f32, end: f32) -> bool {
         !self.0.get(&track).is_some_and(|intervals| {
-            intervals[..intervals.partition_point(|interval| interval.0 < end)]
+            intervals
                 .iter()
+                .take_while(|interval| interval.0 < end)
                 .any(|&(other_start, other_end)| {
                     intervals_overlap(start, end, other_start, other_end)
                 })
@@ -1086,7 +1102,7 @@ pub enum TimelineAction {
 }
 
 impl TimelineAction {
-    pub(crate) fn history_label(self) -> &'static str {
+    pub(crate) const fn history_label(self) -> &'static str {
         match self {
             Self::InsertVideoClip { .. } => "Insert video clip",
             Self::InsertEffectClip { .. } => "Insert effect clip",
@@ -1157,7 +1173,7 @@ pub enum MixerParameter {
 }
 
 impl MixerParameter {
-    fn limits(self) -> (f32, f32, f32) {
+    const fn limits(self) -> (f32, f32, f32) {
         match self {
             Self::Volume => (0.0, 1.0, 1.0),
             Self::Pan => (-1.0, 1.0, 0.0),
@@ -1329,11 +1345,11 @@ struct KeyframeBindingTarget {
 }
 
 impl KeyframeBindingTarget {
-    fn new(owner: KeyframeOwner, property: KeyframeProperty) -> Self {
+    const fn new(owner: KeyframeOwner, property: KeyframeProperty) -> Self {
         Self { owner, property }
     }
 
-    fn is_host(&self) -> bool {
+    const fn is_host(&self) -> bool {
         matches!(
             self.property,
             KeyframeProperty::LocalHost { .. } | KeyframeProperty::GeneratorHost(_)
@@ -1518,6 +1534,10 @@ struct TimelineLayout {
 }
 
 impl TimelineLayout {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each fixed layout returns one rectangle per supplied item"
+    )]
     fn new(rect: Rect) -> Self {
         let overview_h = OVERVIEW_H.min((rect.height - RULER_H).max(0.0));
         let vertical = crate::ui_layout::column(
@@ -1847,10 +1867,10 @@ impl TimelineDocument {
 
     fn migrate_clip_properties_to_rows(&mut self) {
         for legacy in std::mem::take(&mut self.legacy_media_property_rows) {
-            let Some(track_index) = self
+            let Some(track) = self
                 .tracks
-                .iter()
-                .position(|track| track.id == legacy.track)
+                .iter_mut()
+                .find(|track| track.id == legacy.track)
             else {
                 continue;
             };
@@ -1861,13 +1881,12 @@ impl TimelineDocument {
                     clip.track == legacy.track
                         && matches!(clip.source, VisualSource::Media(id) | VisualSource::Audio(id) if id == legacy.media)
                 }).map_or_else(|| {
-                    if self.tracks[track_index].kind == TrackKind::Audio {
+                    if track.kind == TrackKind::Audio {
                         VisualSource::Audio(legacy.media)
                     } else {
                         VisualSource::Media(legacy.media)
                     }
                 }, |clip| clip.source.clone());
-            let track = &mut self.tracks[track_index];
             let incoming = LayerPropertyRow {
                 source,
                 source_instance: 0,
@@ -1920,9 +1939,9 @@ impl TimelineDocument {
                     model3d: clip.model3d.clone(),
                 });
             }
-            let row = track
-                .property_row_mut(&clip.source, clip.source_instance)
-                .expect("property row was created above");
+            let Some(row) = track.property_row_mut(&clip.source, clip.source_instance) else {
+                continue;
+            };
             merge_binding_animation(&mut row.composite.opacity, &clip.composite.opacity);
             merge_binding_animation(&mut row.composite.blend_mode, &clip.composite.blend_mode);
             merge_binding_animation(
@@ -2002,6 +2021,7 @@ fn clear_pipeline_references(tracks: &mut [Track], clips: &mut [Clip], pipeline:
     }
 }
 
+#[derive(Clone, Copy)]
 struct ClipPlacement {
     track: u32,
     time: f32,
@@ -2016,7 +2036,7 @@ enum ClipSource {
 }
 
 impl ClipSource {
-    fn visual(self, audio: bool) -> VisualSource {
+    const fn visual(self, audio: bool) -> VisualSource {
         match (self, audio) {
             (Self::Media(id), true) => VisualSource::Audio(id),
             (Self::Media(id), false) => VisualSource::Media(id),
@@ -2024,7 +2044,7 @@ impl ClipSource {
         }
     }
 
-    fn audio_suffix(self) -> bool {
+    const fn audio_suffix(self) -> bool {
         matches!(self, Self::Composition(_))
     }
 }
@@ -2044,6 +2064,10 @@ struct NewClip {
     pipeline: PipelineInstance,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "video/audio presence and solo state are four independent extraction properties"
+)]
 pub struct CompositionExtraction {
     pub(crate) timeline: TimelineDocument,
     pub(crate) start: f32,
@@ -2109,24 +2133,23 @@ impl TimelineState {
             clip.model3d.clone(),
         );
         let track = self.track_index(track_id)?;
-        if let Some(row) = self.tracks[track]
+        let track_data = self.tracks.get_mut(track)?;
+        if let Some(row) = track_data
             .property_rows
             .iter()
             .position(|row| row.matches_source(&source, source_instance))
         {
             return Some(PropertyRowLocation { track, row });
         }
-        self.tracks[track].property_rows.push(LayerPropertyRow {
+        let row = track_data.property_rows.len();
+        track_data.property_rows.push(LayerPropertyRow {
             source,
             source_instance,
             pipeline,
             composite,
             model3d,
         });
-        Some(PropertyRowLocation {
-            track,
-            row: self.tracks[track].property_rows.len() - 1,
-        })
+        Some(PropertyRowLocation { track, row })
     }
 
     pub(crate) fn from_document(mut document: TimelineDocument) -> Self {
@@ -2226,11 +2249,18 @@ impl TimelineState {
             let Some(index) = self.ensure_property_row_for_clip(id) else {
                 continue;
             };
-            let pipeline = &mut self.tracks[index.track].property_rows[index.row].pipeline;
+            let Some(pipeline) = self
+                .tracks
+                .get_mut(index.track)
+                .and_then(|track| track.property_rows.get_mut(index.row))
+                .map(|row| &mut row.pipeline)
+            else {
+                continue;
+            };
             if pipeline.transform().is_some() {
                 continue;
             }
-            pipeline.local_nodes = template.local_nodes.clone();
+            pipeline.local_nodes.clone_from(&template.local_nodes);
             pipeline.local_output = template.local_output.clone();
             changed = true;
         }
@@ -2298,11 +2328,11 @@ impl TimelineState {
         self.playhead
     }
 
-    pub fn is_scrubbing(&self) -> bool {
+    pub const fn is_scrubbing(&self) -> bool {
         matches!(self.drag, Some(Drag::Playhead))
     }
 
-    pub fn is_playing(&self) -> bool {
+    pub const fn is_playing(&self) -> bool {
         self.playing
     }
 
@@ -2481,6 +2511,10 @@ impl TimelineState {
                 TrackKind::Video | TrackKind::Effect => 0,
             });
         let inserted = self.add_track_at(kind, index);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "add_track_at returns the index where it just inserted the track"
+        )]
         let track = &mut self.tracks[inserted];
         track.name = format!("{composition_name} Reference");
         track.solo = solo;
@@ -2815,7 +2849,7 @@ impl TimelineState {
             .map(|track| (track.id, self.playhead, track.kind))
     }
 
-    pub fn take_action(&mut self) -> Option<TimelineAction> {
+    pub const fn take_action(&mut self) -> Option<TimelineAction> {
         self.pending_action.take()
     }
 
@@ -2889,7 +2923,12 @@ impl TimelineState {
             pipeline,
         } = clip;
         let id = self.next_clip;
-        self.next_clip += 1;
+        #[expect(
+            clippy::expect_used,
+            reason = "exhausted clip IDs must fail instead of reusing an existing ID"
+        )]
+        let next_clip = self.next_clip.checked_add(1).expect("clip IDs exhausted");
+        self.next_clip = next_clip;
         let source_instance = self.source_instance_for_new_source(&source);
         self.clips.push(Clip {
             id,
@@ -2951,6 +2990,10 @@ impl TimelineState {
         self.selected_track = None;
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "add_track_at returns the index where it just inserted the track"
+    )]
     fn nearest_or_create_audio_track(&mut self, video_index: usize) -> u32 {
         if let Some(track) = self
             .tracks
@@ -3001,7 +3044,7 @@ impl TimelineState {
         &mut self,
         at: (u32, f32),
         duration: f32,
-        name: String,
+        name: &str,
         video_source: VisualSource,
         audio_source: VisualSource,
         visual_pipeline: PipelineInstance,
@@ -3024,7 +3067,7 @@ impl TimelineState {
             time,
             duration,
             group: Some(group),
-            name: name.clone(),
+            name: name.to_owned(),
             color: ClipColor::VideoA,
             source: video_source,
             pipeline: visual_pipeline,
@@ -3101,7 +3144,7 @@ impl TimelineState {
         self.insert_av_pair_at(
             at,
             duration,
-            name,
+            &name,
             source.visual(false),
             source.visual(true),
             visual_pipeline,
@@ -3230,7 +3273,12 @@ impl TimelineState {
         while result.len() < count {
             let insert_at = if audio { self.tracks.len() } else { 0 };
             let index = self.add_track_at(kind, insert_at);
-            result.push(self.tracks[index].id);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "add_track_at returns the index where it just inserted the track"
+            )]
+            let id = self.tracks[index].id;
+            result.push(id);
         }
         result
     }
@@ -3287,7 +3335,7 @@ impl TimelineState {
                     || {
                         f32::mul_add(
                             lane_h,
-                            -((stream + 1) as f32),
+                            -(stream.saturating_add(1) as f32),
                             self.track_y(layout, video_anchor),
                         )
                     },
@@ -3317,7 +3365,7 @@ impl TimelineState {
                     || {
                         f32::mul_add(
                             lane_h,
-                            (stream + 1) as f32,
+                            stream.saturating_add(1) as f32,
                             self.track_y(layout, audio_anchor),
                         )
                     },
@@ -3451,7 +3499,9 @@ impl TimelineState {
             clip.model3d.clone(),
         );
         let target_track = self.track_index(track_id)?;
-        if let Some(row) = self.tracks[target_track]
+        if let Some(row) = self
+            .tracks
+            .get(target_track)?
             .property_rows
             .iter()
             .position(|row| row.matches_source(&source, source_instance))
@@ -3463,7 +3513,8 @@ impl TimelineState {
         }
         let seed = self
             .track_index(previous_track)
-            .and_then(|index| self.tracks[index].property_row(&source, source_instance))
+            .and_then(|index| self.tracks.get(index))
+            .and_then(|track| track.property_row(&source, source_instance))
             .cloned()
             .unwrap_or(LayerPropertyRow {
                 source,
@@ -3472,10 +3523,12 @@ impl TimelineState {
                 composite,
                 model3d,
             });
-        self.tracks[target_track].property_rows.push(seed);
+        let track = self.tracks.get_mut(target_track)?;
+        let row = track.property_rows.len();
+        track.property_rows.push(seed);
         Some(PropertyRowLocation {
             track: target_track,
-            row: self.tracks[target_track].property_rows.len() - 1,
+            row,
         })
     }
 
@@ -3538,8 +3591,13 @@ impl TimelineState {
             }
         };
         if let Some(id) = self.selected_clip_id() {
-            if let Some(index) = self.ensure_property_row_for_clip(id) {
-                assign(&mut self.tracks[index.track].property_rows[index.row].pipeline);
+            if let Some(index) = self.ensure_property_row_for_clip(id)
+                && let Some(row) = self
+                    .tracks
+                    .get_mut(index.track)
+                    .and_then(|track| track.property_rows.get_mut(index.row))
+            {
+                assign(&mut row.pipeline);
             }
             return;
         }
@@ -3697,7 +3755,14 @@ impl TimelineState {
         let Some(index) = self.ensure_property_row_for_clip(id) else {
             return false;
         };
-        let pipeline = &mut self.tracks[index.track].property_rows[index.row].pipeline;
+        let Some(pipeline) = self
+            .tracks
+            .get_mut(index.track)
+            .and_then(|track| track.property_rows.get_mut(index.row))
+            .map(|row| &mut row.pipeline)
+        else {
+            return false;
+        };
         let Some(binding) = pipeline
             .transform_mut()
             .and_then(|transform| transform.inputs.get_mut(input))
@@ -3715,10 +3780,10 @@ impl TimelineState {
             if let Some(group) = clip.group {
                 groups.insert(group);
             } else {
-                ungrouped += 1;
+                ungrouped = ungrouped.saturating_add(1);
             }
         }
-        groups.len() + ungrouped
+        groups.len().saturating_add(ungrouped)
     }
 
     pub fn selected_duration(&self) -> Option<f32> {
@@ -3989,7 +4054,7 @@ impl TimelineState {
     }
 
     pub fn set_pipeline_host_input_value(
-        &mut self,
+        &self,
         project: &mut Project,
         node: u64,
         input: &str,
@@ -4008,7 +4073,7 @@ impl TimelineState {
     }
 
     pub fn toggle_pipeline_host_keyframe(
-        &mut self,
+        &self,
         project: &mut Project,
         node: u64,
         input: &str,
@@ -4027,7 +4092,14 @@ impl TimelineState {
     fn selected_pipeline_mut(&mut self) -> Option<&mut PipelineInstance> {
         if let Some(id) = self.selected_clip_id() {
             let index = self.ensure_property_row_for_clip(id)?;
-            return Some(&mut self.tracks[index.track].property_rows[index.row].pipeline);
+            return Some(
+                &mut self
+                    .tracks
+                    .get_mut(index.track)?
+                    .property_rows
+                    .get_mut(index.row)?
+                    .pipeline,
+            );
         }
         let id = self.selected_track?;
         self.edit.track_mut(id)?.pipeline.as_mut()
@@ -4148,9 +4220,11 @@ impl TimelineState {
         else {
             return false;
         };
-        let upstream = instance.local_nodes[index]
-            .stack_image_input()
-            .map_or(ImageBinding::Disconnected, |(_, binding)| binding.clone());
+        let upstream = instance
+            .local_nodes
+            .get(index)
+            .and_then(|node| node.stack_image_input().map(|(_, binding)| binding.clone()))
+            .unwrap_or(ImageBinding::Disconnected);
         instance.local_nodes.remove(index);
         for target in &mut instance.local_nodes {
             target.replace_image_source(node, &upstream);
@@ -4362,7 +4436,10 @@ impl TimelineState {
         let clip_id = self.selected_model3d_clip_id(project)?;
         let index = self.ensure_property_row_for_clip(clip_id)?;
         Some((
-            self.tracks[index.track].property_rows[index.row]
+            self.tracks
+                .get_mut(index.track)?
+                .property_rows
+                .get_mut(index.row)?
                 .model3d
                 .binding_mut(input)?,
             time,
@@ -4392,10 +4469,13 @@ impl TimelineState {
         let Some(clip_id) = self.selected_model3d_clip_id(project) else {
             return;
         };
-        if let Some(index) = self.ensure_property_row_for_clip(clip_id) {
-            self.tracks[index.track].property_rows[index.row]
-                .model3d
-                .shading = shading;
+        if let Some(index) = self.ensure_property_row_for_clip(clip_id)
+            && let Some(row) = self
+                .tracks
+                .get_mut(index.track)
+                .and_then(|track| track.property_rows.get_mut(index.row))
+        {
+            row.model3d.shading = shading;
         }
     }
 
@@ -4452,7 +4532,12 @@ impl TimelineState {
         if let Some(id) = self.selected_clip_id() {
             let index = self.ensure_property_row_for_clip(id)?;
             return Some((
-                &mut self.tracks[index.track].property_rows[index.row].composite,
+                &mut self
+                    .tracks
+                    .get_mut(index.track)?
+                    .property_rows
+                    .get_mut(index.row)?
+                    .composite,
                 time,
             ));
         }
@@ -4462,7 +4547,7 @@ impl TimelineState {
         ))
     }
 
-    fn composite_binding(composite: &LayerComposite, kind: CompositeBindingKind) -> &Binding {
+    const fn composite_binding(composite: &LayerComposite, kind: CompositeBindingKind) -> &Binding {
         match kind {
             CompositeBindingKind::Opacity => &composite.opacity,
             CompositeBindingKind::BlendMode => &composite.blend_mode,
@@ -4470,7 +4555,7 @@ impl TimelineState {
         }
     }
 
-    fn composite_binding_mut(
+    const fn composite_binding_mut(
         composite: &mut LayerComposite,
         kind: CompositeBindingKind,
     ) -> &mut Binding {
@@ -4520,16 +4605,25 @@ impl TimelineState {
     #[cfg(test)]
     fn cycle_selected_blend_mode(&mut self, direction: i32) {
         if let Some((composite, time)) = self.selected_composite_mut() {
-            let current = composite
-                .blend_mode
-                .evaluate(time)
-                .and_then(GpuValue::enum_index)
-                .unwrap_or(0) as i32;
-            let count = crate::project::BlendMode::ALL.len() as i32;
-            Self::composite_binding_mut(composite, CompositeBindingKind::BlendMode).set_value(
-                time,
-                GpuValue::Enum((current + direction).rem_euclid(count) as u32),
+            let current = i64::from(
+                composite
+                    .blend_mode
+                    .evaluate(time)
+                    .and_then(GpuValue::enum_index)
+                    .unwrap_or(0),
             );
+            let Ok(count) = i64::try_from(crate::project::BlendMode::ALL.len()) else {
+                return;
+            };
+            let Some(next) = current
+                .checked_add(i64::from(direction))
+                .and_then(|value| value.checked_rem_euclid(count))
+                .and_then(|value| u32::try_from(value).ok())
+            else {
+                return;
+            };
+            Self::composite_binding_mut(composite, CompositeBindingKind::BlendMode)
+                .set_value(time, GpuValue::Enum(next));
         }
     }
 
@@ -4590,7 +4684,14 @@ impl TimelineState {
     fn selected_property_source_mut(&mut self) -> Option<&mut VisualSource> {
         let id = self.selected_clip_id()?;
         let index = self.ensure_property_row_for_clip(id)?;
-        Some(&mut self.tracks[index.track].property_rows[index.row].source)
+        Some(
+            &mut self
+                .tracks
+                .get_mut(index.track)?
+                .property_rows
+                .get_mut(index.row)?
+                .source,
+        )
     }
 
     pub fn selected_generator(&self) -> Option<&GeneratorSource> {
@@ -4675,7 +4776,7 @@ impl TimelineState {
             .entry(input.to_string())
             .or_insert_with(|| HostBinding::Constant(value.clone()))
             .set_value(time, value);
-        sync_gradient_stop_parameters(generator, time, previous_gradient_points);
+        sync_gradient_stop_parameters(generator, time, previous_gradient_points.as_deref());
     }
 
     pub fn toggle_generator_keyframe(&mut self, input: &str) {
@@ -4851,16 +4952,15 @@ impl TimelineState {
         let mut keyframe_row_heights = std::mem::take(&mut self.keyframe_row_heights);
         keyframe_row_heights.clear();
         keyframe_row_heights.reserve(self.tracks.len());
-        for index in 0..self.tracks.len() {
-            let track_id = self.tracks[index].id;
+        for (index, track) in self.tracks.iter().enumerate() {
+            let track_id = track.id;
             let track_open = self.keyframe_track_open_amount(track_id);
             let height = if track_open <= 0.001 {
                 0.0
             } else {
                 self.keyframe_property_groups(index)
-                    .map(|(start, _)| {
-                        self.keyframe_property_height(&self.keyframe_lanes_for_track(index)[start])
-                    })
+                    .filter_map(|(start, _)| self.keyframe_lanes_for_track(index).get(start))
+                    .map(|lane| self.keyframe_property_height(lane))
                     .sum::<f32>()
                     * track_open
             };
@@ -4870,11 +4970,11 @@ impl TimelineState {
 
         let mut track_prefix_heights = std::mem::take(&mut self.track_prefix_heights);
         track_prefix_heights.clear();
-        track_prefix_heights.reserve(self.tracks.len() + 1);
+        track_prefix_heights.reserve(self.tracks.len().saturating_add(1));
         track_prefix_heights.push(0.0);
         let mut total = 0.0;
-        for index in 0..self.tracks.len() {
-            let track_height = self.tracks[index].height;
+        for (index, track) in self.tracks.iter().enumerate() {
+            let track_height = track.height;
             total += track_height + self.keyframe_rows_height(index);
             track_prefix_heights.push(total);
         }
@@ -5047,6 +5147,10 @@ impl TimelineState {
         layout.body.y - self.scroll_y + self.track_prefix_height(track)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers supply a track index from the current track list"
+    )]
     fn track_y(&self, layout: TimelineLayout, track: usize) -> f32 {
         let id = self.tracks[track].id;
         if let Some(Drag::Track {
@@ -5076,6 +5180,10 @@ impl TimelineState {
         self.track_base_y(layout, track) + self.track_offsets.get(&id).copied().unwrap_or(0.0)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "timeline clips require an existing track; the fallback uses its first track"
+    )]
     fn clip_rect(&self, layout: TimelineLayout, clip: &Clip) -> Rect {
         let track = clip.track_index(&self.tracks).unwrap_or(0);
         let y = self.track_y(layout, track) + CLIP_PAD;
@@ -5104,6 +5212,10 @@ impl TimelineState {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the layout contains exactly one supplied item"
+    )]
     fn track_row_rect(&self, layout: TimelineLayout, index: usize) -> Rect {
         crate::ui_layout::fit_column_at(
             layout.body,
@@ -5118,6 +5230,10 @@ impl TimelineState {
         .1[0]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers supply a current track index and the layout contains exactly one item"
+    )]
     fn track_header_rect(&self, layout: TimelineLayout, index: usize) -> Rect {
         crate::ui_layout::fit_column_at(
             layout.header_body,
@@ -5130,6 +5246,10 @@ impl TimelineState {
         .1[0]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each fixed layout returns one rectangle per supplied item"
+    )]
     fn mixer_control_rects(
         &self,
         layout: TimelineLayout,
@@ -5179,6 +5299,10 @@ impl TimelineState {
         self.mixer_control_rects(layout, index, parameter).1
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each fixed layout returns one rectangle per supplied item"
+    )]
     fn header_top_parts(&self, layout: TimelineLayout, index: usize) -> Vec<Rect> {
         let track = self.track_header_rect(layout, index);
         let columns = crate::ui_layout::row(
@@ -5217,14 +5341,26 @@ impl TimelineState {
         )
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "header_top_parts returns five rectangles for its five items"
+    )]
     fn header_button_rect(&self, layout: TimelineLayout, index: usize, solo: bool) -> Rect {
         self.header_top_parts(layout, index)[if solo { 4 } else { 3 }]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "header_top_parts returns five rectangles for its five items"
+    )]
     fn header_name_rect(&self, layout: TimelineLayout, index: usize) -> Rect {
         self.header_top_parts(layout, index)[1]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers enumerate the current track list"
+    )]
     fn track_is_muted(&self, index: usize) -> bool {
         let track = &self.tracks[index];
         track.muted
@@ -5296,6 +5432,10 @@ impl TimelineState {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the fixed column layout returns three rectangles"
+    )]
     fn transport_parts(layout: TimelineLayout) -> (Rect, Vec<Rect>) {
         let controls = crate::ui_layout::column(
             layout.corner,
@@ -5327,6 +5467,11 @@ impl TimelineState {
         (controls, parts)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "all callers use button indices 0 through 3 and the row has seven items"
+    )]
     fn transport_button_rect(layout: TimelineLayout, index: usize) -> Rect {
         Self::transport_parts(layout).1[3 + index]
     }
@@ -5592,7 +5737,7 @@ impl TimelineState {
             .filter(|clip| self.selected.contains(&clip.id))
             .filter_map(|clip| {
                 let track_index = self.track_index(clip.track)?;
-                let track_kind = self.tracks[track_index].kind;
+                let track_kind = self.tracks.get(track_index)?.kind;
                 let track_rank = self.track_rank_of_kind(clip.track, track_kind)?;
                 let properties = self
                     .document
@@ -5656,16 +5801,17 @@ impl TimelineState {
                 track_kind: kind,
             } = entry;
             clip.id = self.next_clip;
-            self.next_clip += 1;
+            #[expect(
+                clippy::expect_used,
+                reason = "exhausted clip IDs must fail instead of reusing an existing ID"
+            )]
+            let next_clip = self.next_clip.checked_add(1).expect("clip IDs exhausted");
+            self.next_clip = next_clip;
             if source_requires_instance(&clip.source) {
                 let old = clip.source_instance;
-                let source_instance = if let Some(existing) = source_instances.get(&old) {
-                    *existing
-                } else {
-                    let next = self.allocate_source_instance();
-                    source_instances.insert(old, next);
-                    next
-                };
+                let source_instance = *source_instances
+                    .entry(old)
+                    .or_insert_with(|| self.allocate_source_instance());
                 clip.source_instance = source_instance;
                 properties.source_instance = source_instance;
             }
@@ -5724,7 +5870,7 @@ impl TimelineState {
         self.ungroup_selected();
     }
 
-    pub(crate) fn toggle_razor_tool(&mut self) {
+    pub(crate) const fn toggle_razor_tool(&mut self) {
         self.tool = match self.tool {
             TimelineTool::Select => TimelineTool::Razor,
             TimelineTool::Razor => TimelineTool::Select,
@@ -5833,14 +5979,14 @@ impl TimelineState {
     }
 
     fn close_selected_gaps(&mut self) {
-        if self.selected.len() < 2 {
-            return;
-        }
-
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         enum Unit {
             Group(u32),
             Clip(u32),
+        }
+
+        if self.selected.len() < 2 {
+            return;
         }
 
         let unit_for = |clip: &Clip| clip.group.map_or(Unit::Clip(clip.id), Unit::Group);
@@ -5984,7 +6130,7 @@ impl TimelineState {
                 .tracks
                 .iter()
                 .rposition(|track| track.kind == kind)
-                .map_or(self.tracks.len(), |index| index + 1);
+                .map_or(self.tracks.len(), |index| index.saturating_add(1));
             self.add_track_at(kind, insert);
         }
     }
@@ -6009,7 +6155,9 @@ impl TimelineState {
             return;
         }
 
-        let state = self.power_duplicate.take().unwrap();
+        let Some(state) = self.power_duplicate.take() else {
+            return;
+        };
         let current = state
             .duplicates
             .iter()
@@ -6045,10 +6193,13 @@ impl TimelineState {
                 .iter()
                 .find(|track| track.id == current.track)
                 .map_or(TrackKind::Video, |track| track.kind);
-            let source_rank = self.track_rank_of_kind(source.track, kind).unwrap_or(0) as isize;
-            let current_rank = self.track_rank_of_kind(current.track, kind).unwrap_or(0) as isize;
-            let rank_delta = current_rank - source_rank;
-            let next_rank = (current_rank + rank_delta).max(0) as usize;
+            let source_rank = self.track_rank_of_kind(source.track, kind).unwrap_or(0);
+            let current_rank = self.track_rank_of_kind(current.track, kind).unwrap_or(0);
+            let next_rank = if current_rank >= source_rank {
+                current_rank.saturating_add(current_rank.saturating_sub(source_rank))
+            } else {
+                current_rank.saturating_sub(source_rank.saturating_sub(current_rank))
+            };
             desired.push((
                 current_clip,
                 (current.start + (current.start - source.start)).max(0.0),
@@ -6179,13 +6330,18 @@ impl TimelineState {
     fn add_track_at(&mut self, kind: TrackKind, index: usize) -> usize {
         let index = index.min(self.tracks.len());
         let id = self.next_track;
-        self.next_track += 1;
+        #[expect(
+            clippy::expect_used,
+            reason = "exhausted track IDs must fail instead of reusing an existing ID"
+        )]
+        let next_track = self.next_track.checked_add(1).expect("track IDs exhausted");
+        self.next_track = next_track;
         let ordinal = self
             .tracks
             .iter()
             .filter(|track| track.kind == kind)
             .count()
-            + 1;
+            .saturating_add(1);
         let prefix = match kind {
             TrackKind::Video => "Video",
             TrackKind::Audio => "Audio",
@@ -6207,8 +6363,9 @@ impl TimelineState {
                 property_rows: Vec::new(),
             },
         );
-        if kind == TrackKind::Audio {
-            let track = &self.tracks[index];
+        if kind == TrackKind::Audio
+            && let Some(track) = self.tracks.get(index)
+        {
             self.mixer_knobs
                 .extend(mixer_knobs(std::slice::from_ref(track)));
         }
@@ -6271,11 +6428,18 @@ impl TimelineState {
                     .map(|(index, _)| index)
             });
         let track = existing.unwrap_or_else(|| self.add_track(TrackKind::Audio, near));
-        let preferred = self.tracks[track].id;
+        let Some(preferred) = self.tracks.get(track).map(|track| track.id) else {
+            return;
+        };
         let track = self.resolve_clip_placement(preferred, TrackKind::Audio, time, 3.4);
         let first_new_clip = self.clips.len();
         let id = self.next_clip;
-        self.next_clip += 1;
+        #[expect(
+            clippy::expect_used,
+            reason = "exhausted clip IDs must fail instead of reusing an existing ID"
+        )]
+        let next_clip = self.next_clip.checked_add(1).expect("clip IDs exhausted");
+        self.next_clip = next_clip;
         let source = VisualSource::AudioPlaceholder;
         let source_instance = self.source_instance_for_new_source(&source);
         self.clips.push(Clip {
@@ -6331,7 +6495,7 @@ impl TimelineState {
             }
             row_y += height;
         }
-        self.tracks.len() - 1
+        self.tracks.len().saturating_sub(1)
     }
 
     fn reorder_track_cached(&mut self, id: u32, target: usize, heights: &HashMap<u32, f32>) {
@@ -6435,6 +6599,9 @@ impl TimelineState {
         let edge = self.snap_time(layout, raw, &[id]);
         let end = origin.start + origin.duration;
         let source_span = origin.duration.max(MIN_CLIP) * origin.speed.max(0.01);
+        let Some(clip) = self.clips.get_mut(index) else {
+            return;
+        };
         if left {
             let earliest = if rate_stretch {
                 0.0
@@ -6442,9 +6609,9 @@ impl TimelineState {
                 (origin.start - origin.source_offset / origin.speed.max(0.01)).max(0.0)
             };
             let start = edge.clamp(earliest, end - MIN_CLIP);
-            self.clips[index].start = start;
-            self.clips[index].duration = end - start;
-            self.clips[index].source_offset = if rate_stretch {
+            clip.start = start;
+            clip.duration = end - start;
+            clip.source_offset = if rate_stretch {
                 origin.source_offset
             } else {
                 (start - origin.start)
@@ -6452,13 +6619,13 @@ impl TimelineState {
                     .max(0.0)
             };
         } else {
-            self.clips[index].start = origin.start;
-            self.clips[index].duration = (edge - origin.start).max(MIN_CLIP);
-            self.clips[index].source_offset = origin.source_offset;
+            clip.start = origin.start;
+            clip.duration = (edge - origin.start).max(MIN_CLIP);
+            clip.source_offset = origin.source_offset;
         }
-        let start = self.clips[index].start;
-        let duration = self.clips[index].duration;
-        let group = self.clips[index].group;
+        let start = clip.start;
+        let duration = clip.duration;
+        let group = clip.group;
         let resized: HashSet<_> = self
             .clips
             .iter()
@@ -6476,30 +6643,26 @@ impl TimelineState {
                         && intervals_overlap(start, start + duration, other.start, other.end())
                 })
             });
+        let Some(clip) = self.clips.get_mut(index) else {
+            return;
+        };
         if blocked {
-            self.clips[index].start = origin.start;
-            self.clips[index].duration = origin.duration;
-            self.clips[index].source_offset = origin.source_offset;
+            clip.start = origin.start;
+            clip.duration = origin.duration;
+            clip.source_offset = origin.source_offset;
         }
         if rate_stretch {
-            self.clips[index].speed = (source_span / self.clips[index].duration).clamp(0.01, 100.0);
+            clip.speed = (source_span / clip.duration).clamp(0.01, 100.0);
         } else {
-            self.clips[index].speed = origin.speed;
+            clip.speed = origin.speed;
         }
-        let duration = self.clips[index].duration;
-        self.clips[index].fade_in = self.clips[index].fade_in.min(duration);
-        self.clips[index].fade_out = self.clips[index].fade_out.min(duration);
+        let duration = clip.duration;
+        clip.fade_in = clip.fade_in.min(duration);
+        clip.fade_out = clip.fade_out.min(duration);
 
-        if let Some(group) = self.clips[index].group {
-            let (start, duration, source_offset, speed) = {
-                let anchor = &self.clips[index];
-                (
-                    anchor.start,
-                    anchor.duration,
-                    anchor.source_offset,
-                    anchor.speed,
-                )
-            };
+        if let Some(group) = clip.group {
+            let (start, duration, source_offset, speed) =
+                (clip.start, clip.duration, clip.source_offset, clip.speed);
             for (peer_index, peer) in self.clips.iter_mut().enumerate() {
                 if peer_index == index || peer.group != Some(group) {
                     continue;
@@ -6524,7 +6687,9 @@ impl TimelineState {
         point: [f32; 2],
     ) -> f64 {
         for origin in origins {
-            self.clips[origin.index].track = origin.track;
+            if let Some(clip) = self.clips.get_mut(origin.index) {
+                clip.track = origin.track;
+            }
         }
         for track in preview_tracks.drain(..) {
             self.remove_empty_preview_track(track);
@@ -6537,13 +6702,15 @@ impl TimelineState {
         } = anchor;
 
         let pointer_dx = point[0] - start[0];
-        let pointer_dy = point[1] - start[1];
-        if pointer_dy.mul_add(pointer_dy, pointer_dx * pointer_dx)
+        let vertical_delta = point[1] - start[1];
+        if vertical_delta.mul_add(vertical_delta, pointer_dx * pointer_dx)
             < CLIP_DRAG_THRESHOLD_PX * CLIP_DRAG_THRESHOLD_PX
         {
             for origin in origins {
-                self.clips[origin.index].start = origin.start;
-                self.clips[origin.index].track = origin.track;
+                if let Some(clip) = self.clips.get_mut(origin.index) {
+                    clip.start = origin.start;
+                    clip.track = origin.track;
+                }
             }
             for track in preview_tracks.drain(..) {
                 self.remove_empty_preview_track(track);
@@ -6607,7 +6774,8 @@ impl TimelineState {
         for origin in origins {
             let kind = self
                 .track_index(origin.track)
-                .map_or(TrackKind::Video, |index| self.tracks[index].kind);
+                .and_then(|index| self.tracks.get(index))
+                .map_or(TrackKind::Video, |track| track.kind);
             let start = origin.start + dt;
             let end = start + origin.duration;
             let target = self.find_available_track(kind, wanted, start, end, &intervals);
@@ -6621,13 +6789,20 @@ impl TimelineState {
                 .filter(|track| !real_tracks.contains(track)),
         );
         for origin in origins {
-            let clip = &mut self.clips[origin.index];
-            clip.start = origin.start + dt;
-            clip.track = targets[&origin.id];
+            if let (Some(clip), Some(&track)) =
+                (self.clips.get_mut(origin.index), targets.get(&origin.id))
+            {
+                clip.start = origin.start + dt;
+                clip.track = track;
+            }
         }
         f64::from(dt)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "add_track_at returns the index where it just inserted the track"
+    )]
     fn find_available_track(
         &mut self,
         kind: TrackKind,
@@ -6636,11 +6811,14 @@ impl TimelineState {
         end: f32,
         intervals: &TrackIntervals,
     ) -> u32 {
-        if let Some(track) = (0..self.tracks.len())
-            .filter(|&index| self.tracks[index].kind == kind)
-            .filter(|&index| intervals.has_space(self.tracks[index].id, start, end))
-            .min_by_key(|&index| index.abs_diff(wanted))
-            .map(|index| self.tracks[index].id)
+        if let Some(track) = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| track.kind == kind)
+            .filter(|(_, track)| intervals.has_space(track.id, start, end))
+            .min_by_key(|(index, _)| index.abs_diff(wanted))
+            .map(|(_, track)| track.id)
         {
             return track;
         }
@@ -6784,6 +6962,10 @@ impl TimelineState {
         }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "view module calls this as a timeline rendering method"
+    )]
     fn build_after_end(&self, ctx: &mut ui::BuildCtx, id: impl Hash, rect: Rect, x: f32) {
         let x = x.max(rect.x);
         if x < rect.right() {
@@ -7199,12 +7381,6 @@ fn push_keyframe_curve_vertices(
     end: [f32; 2],
     width: f32,
 ) {
-    let (out, incoming) = keyframe_easing(a, b);
-    if out == EasingHandle::LINEAR && incoming == EasingHandle::LINEAR {
-        push_line_vertices(vertices, start, end, width);
-        return;
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn subdivide(
         vertices: &mut Vec<[f32; 2]>,
@@ -7239,7 +7415,7 @@ fn push_keyframe_curve_vertices(
                 p0,
                 mid_t,
                 mid,
-                depth + 1,
+                depth.saturating_add(1),
                 width,
             );
             subdivide(
@@ -7252,7 +7428,7 @@ fn push_keyframe_curve_vertices(
                 mid,
                 t1,
                 p1,
-                depth + 1,
+                depth.saturating_add(1),
                 width,
             );
         } else {
@@ -7260,6 +7436,11 @@ fn push_keyframe_curve_vertices(
         }
     }
 
+    let (out, incoming) = keyframe_easing(a, b);
+    if out == EasingHandle::LINEAR && incoming == EasingHandle::LINEAR {
+        push_line_vertices(vertices, start, end, width);
+        return;
+    }
     subdivide(vertices, a, b, start, end, 0.0, start, 1.0, end, 0, width);
 }
 
@@ -7351,10 +7532,14 @@ fn keyframe_component_label(component: usize, count: usize) -> String {
         1 => "Y".to_owned(),
         2 => "Z".to_owned(),
         3 => "W".to_owned(),
-        _ => format!("Component {}", component + 1),
+        _ => format!("Component {}", component.saturating_add(1)),
     }
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "HSV components are nonnegative for the hash-derived hue and fixed saturation/value"
+)]
 fn keyframe_property_color(id: &KeyframeLaneId) -> Color {
     let mut hasher = DefaultHasher::new();
     id.group.hash(&mut hasher);
@@ -7363,20 +7548,24 @@ fn keyframe_property_color(id: &KeyframeLaneId) -> Color {
     let saturation = 0.68;
     let value = 0.94;
     let sector = hue * 6.0;
-    let i = sector.floor() as i32;
-    let f = sector - sector.floor();
-    let p = value * (1.0 - saturation);
-    let q = value * f32::mul_add(saturation, -f, 1.0);
-    let t = value * f32::mul_add(saturation, -(1.0 - f), 1.0);
-    let (r, g, b) = match i.rem_euclid(6) {
-        0 => (value, t, p),
-        1 => (q, value, p),
-        2 => (p, value, t),
-        3 => (p, q, value),
-        4 => (t, p, value),
-        _ => (value, p, q),
+    let sector_index = sector.floor() as i32;
+    let fraction = sector - sector.floor();
+    let low = value * (1.0 - saturation);
+    let falling = value * f32::mul_add(saturation, -fraction, 1.0);
+    let rising = value * f32::mul_add(saturation, -(1.0 - fraction), 1.0);
+    let (red, green, blue) = match sector_index.rem_euclid(6) {
+        0 => (value, rising, low),
+        1 => (falling, value, low),
+        2 => (low, value, rising),
+        3 => (low, falling, value),
+        4 => (rising, low, value),
+        _ => (value, low, falling),
     };
-    Color::rgb8((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+    Color::rgb8(
+        (red * 255.0) as u8,
+        (green * 255.0) as u8,
+        (blue * 255.0) as u8,
+    )
 }
 
 fn intersects(a: Rect, b: Rect) -> bool {
@@ -7434,22 +7623,42 @@ fn timeline_ticks(scroll: f64, pps: f32, width: f32) -> impl Iterator<Item = (i6
     let first_index = (scroll / step).floor() as i64;
     let first_time = first_index as f64 * step;
     let first_x = (first_time - scroll) * pps;
-    let count = (f64::from(width) / spacing).ceil().max(0.0) as usize + 2;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max(0.0) makes the tick count nonnegative, including for NaN"
+    )]
+    let count = ((f64::from(width) / spacing).ceil().max(0.0) as usize).saturating_add(2);
     (0..count)
-        .map(move |index| {
-            (
-                first_index + index as i64,
+        .filter_map(move |index| {
+            Some((
+                first_index.checked_add(i64::try_from(index).ok()?)?,
                 (index as f64).mul_add(spacing, first_x).round() as f32,
                 (index as f64).mul_add(step, first_time),
-            )
+            ))
         })
         .filter(|(_, _, time)| *time >= 0.0)
 }
 
 pub fn format_timecode(seconds: f32, frame_rate: f32) -> String {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max(1.0) ensures a positive frame rate, including for NaN"
+    )]
     let frame_rate = frame_rate.max(1.0).round() as u64;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "clamped seconds and positive frame rate produce nonnegative frames"
+    )]
     let total_frames = (seconds.max(0.0) * frame_rate as f32).round() as u64;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "frame_rate is clamped to at least one before conversion"
+    )]
     let frames = total_frames % frame_rate;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "frame_rate is clamped to at least one before conversion"
+    )]
     let total_seconds = total_frames / frame_rate;
     let hours = total_seconds / 3600;
     let minutes = total_seconds / 60 % 60;
@@ -7458,6 +7667,10 @@ pub fn format_timecode(seconds: f32, frame_rate: f32) -> String {
 }
 
 pub fn parse_timecode(value: &str, frame_rate: f32) -> Option<f32> {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max(1.0) ensures a positive frame rate, including for NaN"
+    )]
     let fps = frame_rate.max(1.0).round() as u64;
     let mut parts = value.trim().split(':');
     let hours = parts.next()?.parse::<u64>().ok()?;
@@ -7476,6 +7689,10 @@ pub fn parse_timecode(value: &str, frame_rate: f32) -> Option<f32> {
 }
 
 fn format_time(seconds: f64, step: f64) -> String {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max(0.0) makes seconds nonnegative, including for NaN"
+    )]
     let tenths = (seconds.max(0.0) * 10.0).round() as u64;
     let total = tenths / 10;
     let hours = total / 3600;
@@ -7627,10 +7844,16 @@ mod effect_model_tests {
 
     fn assert_no_overlaps(timeline: &TimelineState) {
         for (index, clip) in timeline.clips.iter().enumerate() {
-            assert!(timeline.clips.iter().skip(index + 1).all(|other| {
-                clip.track != other.track
-                    || !intervals_overlap(clip.start, clip.end(), other.start, other.end())
-            }));
+            assert!(
+                timeline
+                    .clips
+                    .iter()
+                    .skip(index.saturating_add(1))
+                    .all(|other| {
+                        clip.track != other.track
+                            || !intervals_overlap(clip.start, clip.end(), other.start, other.end())
+                    })
+            );
         }
     }
 
@@ -8315,6 +8538,10 @@ mod effect_model_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the cut must place linked clips exactly at the requested playhead time"
+    )]
     fn cut_at_playhead_keeps_linked_halves_in_separate_groups() {
         let mut timeline = TimelineState::default();
         let video_track = track_id(&timeline, TrackKind::Video);
@@ -9138,7 +9365,7 @@ mod effect_model_tests {
     #[test]
     fn pipeline_values_are_shared_until_explicitly_made_unique() {
         let mut project = Project::new();
-        let pipeline = project.create_pipeline();
+        let pipeline = project.create_pipeline().unwrap();
         project
             .pipeline_mut(pipeline)
             .unwrap()

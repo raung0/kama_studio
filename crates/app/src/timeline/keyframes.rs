@@ -116,9 +116,9 @@ impl TimelineState {
 
     pub(super) fn append_keyframe_lanes<S: ScalarKeyframeBinding + ?Sized>(
         lanes: &mut Vec<KeyframeLane>,
-        target: KeyframeBindingTarget,
-        group_owner: KeyframeGroupOwner,
-        label: String,
+        target: &KeyframeBindingTarget,
+        group_owner: &KeyframeGroupOwner,
+        label: &str,
         binding: &S,
     ) {
         for component in 0..binding.scalar_count() {
@@ -147,7 +147,7 @@ impl TimelineState {
                     },
                     component,
                 },
-                label: label.clone(),
+                label: label.to_owned(),
                 value_range: keyframe_points_range(&points),
                 points,
             });
@@ -159,22 +159,14 @@ impl TimelineState {
         instance: &PipelineInstance,
         owner: &str,
         target_owner: KeyframeOwner,
-        group_owner: KeyframeGroupOwner,
+        group_owner: &KeyframeGroupOwner,
     ) {
         let mut local = HashSet::new();
         for node in &instance.local_nodes {
             for (input, base) in &node.inputs {
                 local.insert((node.id, input.clone()));
-                let (property, binding) =
-                    if let Some(binding) = instance.overrides.get(node.id, input) {
-                        (
-                            KeyframeProperty::Override {
-                                node: node.id,
-                                input: input.clone(),
-                            },
-                            binding,
-                        )
-                    } else {
+                let (property, binding) = instance.overrides.get(node.id, input).map_or_else(
+                    || {
                         (
                             KeyframeProperty::Local {
                                 node: node.id,
@@ -182,16 +174,26 @@ impl TimelineState {
                             },
                             base,
                         )
-                    };
+                    },
+                    |binding| {
+                        (
+                            KeyframeProperty::Override {
+                                node: node.id,
+                                input: input.clone(),
+                            },
+                            binding,
+                        )
+                    },
+                );
                 let node_label = node
                     .node_type
                     .strip_prefix("builtin.")
                     .unwrap_or(&node.node_type);
                 Self::append_keyframe_lanes(
                     lanes,
-                    KeyframeBindingTarget::new(target_owner, property),
-                    group_owner.clone(),
-                    format!("{owner} -> {node_label} -> {input}"),
+                    &KeyframeBindingTarget::new(target_owner, property),
+                    group_owner,
+                    &format!("{owner} -> {node_label} -> {input}"),
                     binding,
                 );
             }
@@ -209,9 +211,9 @@ impl TimelineState {
                     .unwrap_or(&node.node_type);
                 Self::append_keyframe_lanes(
                     lanes,
-                    target,
-                    group_owner.clone(),
-                    format!("{owner} -> {node_label} -> {input}"),
+                    &target,
+                    group_owner,
+                    &format!("{owner} -> {node_label} -> {input}"),
                     binding,
                 );
             }
@@ -229,9 +231,9 @@ impl TimelineState {
             );
             Self::append_keyframe_lanes(
                 lanes,
-                target,
-                group_owner.clone(),
-                format!("{owner} -> {node} -> {input}"),
+                &target,
+                group_owner,
+                &format!("{owner} -> {node} -> {input}"),
                 binding,
             );
         }
@@ -244,7 +246,7 @@ impl TimelineState {
         model3d: &Model3dClipTransform,
         label: &str,
         owner: KeyframeOwner,
-        group: KeyframeGroupOwner,
+        group: &KeyframeGroupOwner,
     ) {
         for (property, suffix, binding) in [
             (KeyframeProperty::Opacity, "Opacity", &composite.opacity),
@@ -261,13 +263,13 @@ impl TimelineState {
         ] {
             Self::append_keyframe_lanes(
                 lanes,
-                KeyframeBindingTarget::new(owner, property),
-                group.clone(),
-                format!("{label} -> {suffix}"),
+                &KeyframeBindingTarget::new(owner, property),
+                group,
+                &format!("{label} -> {suffix}"),
                 binding,
             );
         }
-        Self::append_pipeline_keyframe_lanes(lanes, pipeline, label, owner, group.clone());
+        Self::append_pipeline_keyframe_lanes(lanes, pipeline, label, owner, group);
         for (input, suffix, binding) in [
             ("size", "3D Size", &model3d.size),
             ("position", "3D Position", &model3d.position),
@@ -276,9 +278,9 @@ impl TimelineState {
         ] {
             Self::append_keyframe_lanes(
                 lanes,
-                KeyframeBindingTarget::new(owner, KeyframeProperty::Model3d(input.into())),
-                group.clone(),
-                format!("{label} -> {suffix}"),
+                &KeyframeBindingTarget::new(owner, KeyframeProperty::Model3d(input.into())),
+                group,
+                &format!("{label} -> {suffix}"),
                 binding,
             );
         }
@@ -292,44 +294,47 @@ impl TimelineState {
         let track_group = KeyframeGroupOwner::Target(KeyframeOwner::Track(track.id));
         Self::append_keyframe_lanes(
             &mut lanes,
-            KeyframeBindingTarget::new(KeyframeOwner::Track(track.id), KeyframeProperty::Opacity),
-            track_group.clone(),
-            "Track -> Opacity".into(),
+            &KeyframeBindingTarget::new(KeyframeOwner::Track(track.id), KeyframeProperty::Opacity),
+            &track_group,
+            "Track -> Opacity",
             &track.composite.opacity,
         );
         Self::append_keyframe_lanes(
             &mut lanes,
-            KeyframeBindingTarget::new(KeyframeOwner::Track(track.id), KeyframeProperty::BlendMode),
-            track_group.clone(),
-            "Track -> Blend Mode".into(),
+            &KeyframeBindingTarget::new(
+                KeyframeOwner::Track(track.id),
+                KeyframeProperty::BlendMode,
+            ),
+            &track_group,
+            "Track -> Blend Mode",
             &track.composite.blend_mode,
         );
         Self::append_keyframe_lanes(
             &mut lanes,
-            KeyframeBindingTarget::new(
+            &KeyframeBindingTarget::new(
                 KeyframeOwner::Track(track.id),
                 KeyframeProperty::AlphaBlendMode,
             ),
-            track_group.clone(),
-            "Track -> Alpha Blend".into(),
+            &track_group,
+            "Track -> Alpha Blend",
             &track.composite.alpha_blend_mode,
         );
         if track.kind == TrackKind::Audio {
             Self::append_keyframe_lanes(
                 &mut lanes,
-                KeyframeBindingTarget::new(
+                &KeyframeBindingTarget::new(
                     KeyframeOwner::Track(track.id),
                     KeyframeProperty::Volume,
                 ),
-                track_group.clone(),
-                "Track -> Volume".into(),
+                &track_group,
+                "Track -> Volume",
                 &track.volume,
             );
             Self::append_keyframe_lanes(
                 &mut lanes,
-                KeyframeBindingTarget::new(KeyframeOwner::Track(track.id), KeyframeProperty::Pan),
-                track_group.clone(),
-                "Track -> Pan".into(),
+                &KeyframeBindingTarget::new(KeyframeOwner::Track(track.id), KeyframeProperty::Pan),
+                &track_group,
+                "Track -> Pan",
                 &track.pan,
             );
         }
@@ -339,7 +344,7 @@ impl TimelineState {
                 instance,
                 "Track",
                 KeyframeOwner::Track(track.id),
-                track_group,
+                &track_group,
             );
         }
         for (row_index, row) in track.property_rows.iter().enumerate().filter(|(_, row)| {
@@ -364,30 +369,30 @@ impl TimelineState {
                 &row.model3d,
                 label,
                 owner,
-                group.clone(),
+                &group,
             );
             if let VisualSource::Generator(generator) = &row.source {
                 for (input, binding) in generator.parameters() {
                     if let Some(gpu) = binding.gpu() {
                         Self::append_keyframe_lanes(
                             &mut lanes,
-                            KeyframeBindingTarget::new(
+                            &KeyframeBindingTarget::new(
                                 owner,
                                 KeyframeProperty::Generator(input.clone()),
                             ),
-                            group.clone(),
-                            format!("{label} -> {input}"),
+                            &group,
+                            &format!("{label} -> {input}"),
                             gpu,
                         );
                     } else {
                         Self::append_keyframe_lanes(
                             &mut lanes,
-                            KeyframeBindingTarget::new(
+                            &KeyframeBindingTarget::new(
                                 owner,
                                 KeyframeProperty::GeneratorHost(input.clone()),
                             ),
-                            group.clone(),
-                            format!("{label} -> {input}"),
+                            &group,
+                            &format!("{label} -> {input}"),
                             binding,
                         );
                     }
@@ -400,7 +405,15 @@ impl TimelineState {
             let next = group_order.len();
             group_order.entry(lane.id.group.clone()).or_insert(next);
         }
-        lanes.sort_by_key(|lane| *group_order.get(&lane.id.group).unwrap());
+        #[expect(
+            clippy::expect_used,
+            reason = "the preceding loop inserts every lane group"
+        )]
+        lanes.sort_by_key(|lane| {
+            *group_order
+                .get(&lane.id.group)
+                .expect("lane group was inserted")
+        });
         let mut seen_lanes = HashSet::with_capacity(lanes.len());
         lanes.retain(|lane| seen_lanes.insert(lane.id.clone()));
 
@@ -410,8 +423,7 @@ impl TimelineState {
     pub(super) fn keyframe_lanes_for_track(&self, index: usize) -> &[KeyframeLane] {
         self.keyframe_lane_snapshot
             .get(index)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     pub(super) fn keyframe_property_groups(
@@ -421,14 +433,14 @@ impl TimelineState {
         let lanes = self.keyframe_lanes_for_track(index);
         let mut start = 0;
         std::iter::from_fn(move || {
-            if start >= lanes.len() {
-                return None;
-            }
             let group_start = start;
-            let target = &lanes[group_start].id.group;
-            start += 1;
-            while start < lanes.len() && lanes[start].id.group == *target {
-                start += 1;
+            let target = &lanes.get(group_start)?.id.group;
+            start = start.saturating_add(1);
+            while lanes
+                .get(start)
+                .is_some_and(|lane| lane.id.group == *target)
+            {
+                start = start.saturating_add(1);
             }
             Some((group_start, start))
         })
@@ -471,13 +483,16 @@ impl TimelineState {
             return 0.0;
         }
         self.keyframe_property_groups(index)
-            .map(|(start, _)| {
-                self.keyframe_property_height(&self.keyframe_lanes_for_track(index)[start])
-            })
+            .filter_map(|(start, _)| self.keyframe_lanes_for_track(index).get(start))
+            .map(|lane| self.keyframe_property_height(lane))
             .sum::<f32>()
             * open
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "callers supply an index from the current track list"
+    )]
     pub(super) fn display_track_height(&self, index: usize) -> f32 {
         self.tracks[index].height + self.keyframe_rows_height(index)
     }
@@ -489,7 +504,10 @@ impl TimelineState {
         header: bool,
     ) -> Vec<(usize, usize, Rect)> {
         let lanes = self.keyframe_lanes_for_track(index);
-        let track_open = self.keyframe_track_open_amount(self.tracks[index].id);
+        let Some(track) = self.tracks.get(index) else {
+            return Vec::new();
+        };
+        let track_open = self.keyframe_track_open_amount(track.id);
         if lanes.is_empty() || track_open <= 0.001 {
             return Vec::new();
         }
@@ -503,13 +521,13 @@ impl TimelineState {
         } else {
             layout.body.width
         };
-        let mut y = self.track_y(layout, index) + self.tracks[index].height;
+        let mut y = self.track_y(layout, index) + track.height;
         self.keyframe_property_groups(index)
-            .map(|(start, end)| {
-                let height = self.keyframe_property_height(&lanes[start]) * track_open;
+            .filter_map(|(start, end)| {
+                let height = self.keyframe_property_height(lanes.get(start)?) * track_open;
                 let rect = Rect::new(x, y, width, height);
                 y += height;
-                (start, end, rect)
+                Some((start, end, rect))
             })
             .collect()
     }
@@ -540,10 +558,16 @@ impl TimelineState {
                 if !rect.contains(point) {
                     continue;
                 }
-                let expanded = self.keyframe_property_graph_is_settled(&lanes[start].id);
+                let Some(property) = lanes.get(start..end) else {
+                    continue;
+                };
+                let Some(first) = property.first() else {
+                    continue;
+                };
+                let expanded = self.keyframe_property_graph_is_settled(&first.id);
                 let axis_range =
-                    expanded.then(|| keyframe_property_axis_range(&lanes[start..end], rect.height));
-                for lane in &lanes[start..end] {
+                    expanded.then(|| keyframe_property_axis_range(property, rect.height));
+                for lane in property {
                     if let Some(hit) = lane.points.iter().min_by(|a, b| {
                         let a_x = self.time_x(layout, a.time as f32);
                         let b_x = self.time_x(layout, b.time as f32);
@@ -581,16 +605,19 @@ impl TimelineState {
         for index in 0..self.tracks.len() {
             let lanes = self.keyframe_lanes_for_track(index);
             for (start, end, rect) in self.keyframe_property_rects(layout, index, false) {
-                if !rect.contains(point)
-                    || !self.keyframe_property_graph_is_settled(&lanes[start].id)
-                {
+                let Some(property) = lanes.get(start..end) else {
+                    continue;
+                };
+                let Some(first) = property.first() else {
+                    continue;
+                };
+                if !rect.contains(point) || !self.keyframe_property_graph_is_settled(&first.id) {
                     continue;
                 }
-                let axis_range = keyframe_property_axis_range(&lanes[start..end], rect.height);
-                for lane in &lanes[start..end] {
+                let axis_range = keyframe_property_axis_range(property, rect.height);
+                for lane in property {
                     for pair in lane.points.windows(2) {
-                        let a = pair[0];
-                        let b = pair[1];
+                        let [a, b] = *pair else { continue };
                         if a.interpolation == Interpolation::Step || b.time <= a.time {
                             continue;
                         }
@@ -795,7 +822,10 @@ impl TimelineState {
         for index in 0..self.tracks.len() {
             let lanes = self.keyframe_lanes_for_track(index);
             for (start, end, rect) in self.keyframe_property_rects(layout, index, false) {
-                if let Some(lane) = lanes[start..end].iter().find(|lane| lane.id == *id) {
+                if let Some(lane) = lanes
+                    .get(start..end)
+                    .and_then(|property| property.iter().find(|lane| lane.id == *id))
+                {
                     return Some((lane.clone(), rect));
                 }
             }
@@ -811,11 +841,11 @@ impl TimelineState {
         for index in 0..self.tracks.len() {
             let lanes = self.keyframe_lanes_for_track(index);
             for (start, end, rect) in self.keyframe_property_rects(layout, index, false) {
-                if lanes[start..end].iter().any(|lane| lane.id == *id) {
-                    return Some((
-                        keyframe_property_axis_range(&lanes[start..end], rect.height),
-                        rect,
-                    ));
+                let Some(property) = lanes.get(start..end) else {
+                    continue;
+                };
+                if property.iter().any(|lane| lane.id == *id) {
+                    return Some((keyframe_property_axis_range(property, rect.height), rect));
                 }
             }
         }
@@ -838,7 +868,7 @@ impl TimelineState {
                 let expanded = self.keyframe_property_graph_is_settled(&lane.id);
                 let ((minimum, maximum), _) = self
                     .keyframe_property_axis_for_lane(layout, &lane.id)
-                    .unwrap_or((keyframe_axis_range(&lane, rect.height), rect));
+                    .unwrap_or_else(|| (keyframe_axis_range(&lane, rect.height), rect));
                 let value_per_pixel =
                     ((maximum - minimum) / f64::from(rect.height.max(1.0))) as f32;
                 Some(KeyframeDragPoint {

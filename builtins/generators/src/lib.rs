@@ -196,7 +196,7 @@ pub extern "C" fn generate_solid(
     let (mut pixels, pointer) = frame(width, height);
     let [r, g, b, a] = color();
     let premul = [r * a, g * a, b * a, a];
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&premul);
     }
     export_frame(pixels, pointer)
@@ -492,7 +492,7 @@ pub extern "C" fn generate_gradient(
 
     if points.len() == 1 {
         let color = premultiply_linear(colors[0]);
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&color);
         }
         return export_frame(pixels, pointer);
@@ -521,7 +521,7 @@ pub extern "C" fn generate_gradient(
         let lut = build_gradient_lut(&positions, &midpoints, &colors);
         if length_sq <= 1e-6 {
             let color = lut[0];
-            for pixel in pixels.chunks_exact_mut(4) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
                 pixel.copy_from_slice(&color);
             }
         } else {
@@ -552,7 +552,7 @@ fn fill_rect(
 ) {
     for y in y0..y1 {
         let row = &mut pixels[(y * stride + x0) * 4..(y * stride + x1) * 4];
-        for pixel in row.chunks_exact_mut(4) {
+        for pixel in row.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&color);
         }
     }
@@ -597,7 +597,7 @@ fn fill_ellipse(
         let x0 = (center_x - span).floor().max(0.0) as usize;
         let x1 = (center_x + span).ceil().min(stride as f32) as usize;
         let row = &mut pixels[(y * stride + x0) * 4..(y * stride + x1) * 4];
-        for pixel in row.chunks_exact_mut(4) {
+        for pixel in row.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&color);
         }
     }
@@ -776,7 +776,7 @@ fn rasterize_polygon(
             intersections.push(edge.start[0] + edge.delta[0] * t);
         }
         intersections.sort_unstable_by(f32::total_cmp);
-        for pair in intersections.chunks_exact(2) {
+        for pair in intersections.as_chunks::<2>().0 {
             let start = (pair[0] - 0.5).ceil().max(x0 as f32) as usize;
             let end = (pair[1] - 0.5).ceil().min(x1 as f32).max(start as f32) as usize;
             for x in start..end {

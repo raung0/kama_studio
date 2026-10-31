@@ -104,7 +104,7 @@ struct KeyframeControl {
     keyed: bool,
 }
 
-fn keyframe_control(icons: Icons, keyed: bool, animated: bool) -> KeyframeControl {
+const fn keyframe_control(icons: &Icons, keyed: bool, animated: bool) -> KeyframeControl {
     let icon = if keyed {
         AppIcon::KeyframeSet
     } else if animated {
@@ -252,8 +252,8 @@ struct AngleControls<K> {
 impl<K> Default for AngleControls<K> {
     fn default() -> Self {
         Self {
-            knob: Default::default(),
-            numbers: [Default::default(), Default::default()],
+            knob: ControlRegistry::default(),
+            numbers: [ControlRegistry::default(), ControlRegistry::default()],
             round_turns: false,
         }
     }
@@ -279,7 +279,7 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
         let (angle, turn_limit, round_turns) = angle;
         let (turns, degrees) = split_angle(angle);
         self.round_turns = round_turns;
-        for (index, (rect, value, settings, suffix)) in [
+        for (controls, (rect, value, settings, suffix)) in self.numbers.iter_mut().zip([
             (
                 parts.0,
                 f64::from(turns),
@@ -292,11 +292,8 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
                 ((-359.9, 359.9), 0.5, 1usize, "°"),
                 "degrees",
             ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            self.numbers[index].build(
+        ]) {
+            controls.build(
                 ctx,
                 format!("{id}-{suffix}"),
                 target.clone(),
@@ -435,7 +432,7 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
             .iter()
             .enumerate()
             .find_map(|(part, controls)| controls.editing_target().map(|target| (part, target)))?;
-        let value = self.numbers[part].edit(&target, &mut edit);
+        let value = self.numbers.get_mut(part)?.edit(&target, &mut edit);
         Some((
             target.clone(),
             value.map(|value| self.update_part(&target, part, value)),
@@ -463,10 +460,10 @@ struct PropertyControls<N, E, A, S, C> {
 impl<N, E, A, S, C> Default for PropertyControls<N, E, A, S, C> {
     fn default() -> Self {
         Self {
-            numbers: Default::default(),
-            enums: Default::default(),
-            angles: Default::default(),
-            sliders: Default::default(),
+            numbers: ControlRegistry::default(),
+            enums: ControlRegistry::default(),
+            angles: AngleControls::default(),
+            sliders: ControlRegistry::default(),
             color_picker: ColorPicker::new(Color::BLACK),
             color_target: None,
             color_rect: None,
@@ -820,6 +817,7 @@ enum InspectorTextField {
     PipelineName,
 }
 
+#[derive(Clone, Copy)]
 pub struct InspectorBuildContext<'a> {
     pub project: &'a Project,
     pub timeline: &'a TimelineState,
@@ -965,7 +963,7 @@ impl InspectorState {
         self.context_menu = None;
     }
 
-    pub fn take_action(&mut self) -> Option<InspectorAction> {
+    pub const fn take_action(&mut self) -> Option<InspectorAction> {
         self.pending_action.take()
     }
 
@@ -977,18 +975,8 @@ impl InspectorState {
     ) -> bool {
         match (target, self.value_clipboard.as_ref()) {
             (InspectorContextTarget::Number(_), Some(InspectorClipboard::Number(_)))
-            | (InspectorContextTarget::Angle(_), Some(InspectorClipboard::Angle(_))) => true,
-            (InspectorContextTarget::Enum(target), Some(InspectorClipboard::Enum(index))) => self
-                .controls
-                .enums
-                .get(target)
-                .is_some_and(|control| *index < control.option_count),
-            (InspectorContextTarget::Plugin(target), Some(InspectorClipboard::Plugin(value))) => {
-                target
-                    .host_value(project, timeline)
-                    .is_some_and(|current| current.compatible(value))
-            }
-            (
+            | (InspectorContextTarget::Angle(_), Some(InspectorClipboard::Angle(_)))
+            | (
                 InspectorContextTarget::Section(InspectorSectionTarget::Source),
                 Some(InspectorClipboard::Source(_)),
             )
@@ -1004,6 +992,16 @@ impl InspectorState {
                 InspectorContextTarget::Section(InspectorSectionTarget::Compositing),
                 Some(InspectorClipboard::Compositing { .. }),
             ) => true,
+            (InspectorContextTarget::Enum(target), Some(InspectorClipboard::Enum(index))) => self
+                .controls
+                .enums
+                .get(target)
+                .is_some_and(|control| *index < control.option_count),
+            (InspectorContextTarget::Plugin(target), Some(InspectorClipboard::Plugin(value))) => {
+                target
+                    .host_value(project, timeline)
+                    .is_some_and(|current| current.compatible(value))
+            }
             _ => false,
         }
     }
@@ -1040,7 +1038,7 @@ impl InspectorState {
         rect: Rect,
         project: &Project,
         timeline: &TimelineState,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let Some(menu) = self.context_menu.as_ref() else {
             return;
@@ -1081,13 +1079,12 @@ impl InspectorState {
                 .host_value(project, timeline)
                 .map(InspectorClipboard::Plugin),
             InspectorContextTarget::Section(section) => {
-                self.copy_section_values(*section, project, timeline)
+                Self::copy_section_values(*section, project, timeline)
             }
         }
     }
 
     fn copy_section_values(
-        &self,
         section: InspectorSectionTarget,
         project: &Project,
         timeline: &TimelineState,
@@ -1143,7 +1140,7 @@ impl InspectorState {
                 for node in pipeline.main_path() {
                     let occurrence = occurrences.entry(node.node_type.clone()).or_default();
                     let node_occurrence = *occurrence;
-                    *occurrence += 1;
+                    *occurrence = occurrence.saturating_add(1);
                     let mut parameters = BTreeMap::new();
                     for input in node.inputs.keys() {
                         if let Some(value) = timeline.pipeline_input_value(project, node.id, input)
@@ -1170,7 +1167,7 @@ impl InspectorState {
     }
 
     fn paste_context_value(
-        &mut self,
+        &self,
         target: &InspectorContextTarget,
         project: &mut Project,
         timeline: &mut TimelineState,
@@ -1196,21 +1193,20 @@ impl InspectorState {
                 {
                     return false;
                 }
-                self.apply_enum_value(target, index, project, timeline)
+                Self::apply_enum_value(target, index, project, timeline)
             }
             (InspectorContextTarget::Plugin(target), InspectorClipboard::Plugin(value)) => target
                 .host_value(project, timeline)
                 .filter(|current| current.compatible(&value))
                 .is_some_and(|_| target.set_host_value(project, timeline, value)),
             (InspectorContextTarget::Section(section), clipboard) => {
-                self.paste_section_values(*section, clipboard, project, timeline)
+                Self::paste_section_values(*section, clipboard, project, timeline)
             }
             _ => false,
         }
     }
 
     fn apply_enum_value(
-        &mut self,
         target: &InspectorEnumTarget,
         index: usize,
         project: &mut Project,
@@ -1251,7 +1247,6 @@ impl InspectorState {
     }
 
     fn paste_section_values(
-        &mut self,
         section: InspectorSectionTarget,
         clipboard: InspectorClipboard,
         project: &mut Project,
@@ -1259,13 +1254,14 @@ impl InspectorState {
     ) -> bool {
         match (section, clipboard) {
             (InspectorSectionTarget::Source, InspectorClipboard::Source(values)) => {
-                let mut changed = false;
-                if let Some(speed) = values.speed
+                let mut changed = if let Some(speed) = values.speed
                     && timeline.selected_speed(project).is_some()
                 {
                     timeline.set_selected_speed(project, speed);
-                    changed = true;
-                }
+                    true
+                } else {
+                    false
+                };
                 let destination = timeline.selected_generator().map(generator_clipboard_key);
                 if destination == values.generator && destination.is_some() {
                     for (input, value) in values.parameters {
@@ -1301,28 +1297,33 @@ impl InspectorState {
                     alpha_blend_mode,
                 },
             ) => {
-                let mut changed = false;
-                if let Some(opacity) = opacity
+                let changed = if let Some(opacity) = opacity
                     && timeline.selected_opacity().is_some()
                 {
                     timeline.set_selected_opacity(opacity);
-                    changed = true;
-                }
-                if let Some(index) = blend_mode
+                    true
+                } else {
+                    false
+                };
+                let blend_changed = if let Some(index) = blend_mode
                     && timeline.selected_blend_mode().is_some()
                     && index < BlendMode::ALL.len()
                 {
                     timeline.set_selected_blend_mode(index);
-                    changed = true;
-                }
-                if let Some(index) = alpha_blend_mode
+                    true
+                } else {
+                    false
+                };
+                let alpha_changed = if let Some(index) = alpha_blend_mode
                     && timeline.selected_alpha_blend_mode().is_some()
                     && index < AlphaBlendMode::ALL.len()
                 {
                     timeline.set_selected_alpha_blend_mode(index);
-                    changed = true;
-                }
-                changed
+                    true
+                } else {
+                    false
+                };
+                changed | blend_changed | alpha_changed
             }
             (InspectorSectionTarget::Effects, InspectorClipboard::Effects(values)) => {
                 let Some(pipeline_id) = timeline
@@ -1341,7 +1342,7 @@ impl InspectorState {
                     .map(|node| {
                         let occurrence = occurrences.entry(node.node_type.clone()).or_default();
                         let result = (node.id, node.node_type.clone(), *occurrence);
-                        *occurrence += 1;
+                        *occurrence = occurrence.saturating_add(1);
                         result
                     })
                     .collect::<Vec<_>>();
@@ -1389,6 +1390,10 @@ impl InspectorState {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "build_vector_row calls the component closure exactly three times for this Vec3"
+    )]
     fn build_model3d_clip_row(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
@@ -1397,7 +1402,7 @@ impl InspectorState {
         timeline: &TimelineState,
         input: &str,
         settings: NumberSettings<'_>,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let Some(GpuValue::Vec3(value)) = timeline.selected_model3d_value(project, input) else {
             return;
@@ -1407,7 +1412,7 @@ impl InspectorState {
             row.0,
             row.1,
             row.2,
-            InspectorVectorTarget::Model3dClip(input.into()),
+            &InspectorVectorTarget::Model3dClip(input.into()),
             3,
             settings,
             keyframe_control(
@@ -1476,13 +1481,17 @@ impl InspectorState {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the row layout has nine fixed items and returns one rectangle per item"
+    )]
     fn build_vector_row(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
         y: f32,
         label: &str,
-        link_target: InspectorVectorTarget,
+        link_target: &InspectorVectorTarget,
         count: usize,
         settings: NumberSettings<'_>,
         keyframe: KeyframeControl,
@@ -1527,7 +1536,7 @@ impl InspectorState {
             FormatKey::new(format_args!("vector-link-{link_target:?}")),
             link,
             "↔",
-            self.vector_links.contains(&link_target),
+            self.vector_links.contains(link_target),
             crate::widgets::component_style(),
         );
 
@@ -1543,13 +1552,13 @@ impl InspectorState {
         }
         let component_rects =
             kama_ui::layout::row(controls, &component_items, 0.0, 0.0, kama_ui::Align::Center);
-        for index in 0..count {
+        for (index, component_rect) in component_rects.iter().step_by(2).enumerate().take(count) {
             let (target, value) = component(index);
             self.controls.numbers.build(
                 ctx,
                 FormatKey::new(format_args!("vector-value-{link_target:?}-{index}")),
                 target,
-                (component_rects[index * 2], value, settings),
+                (*component_rect, value, settings),
                 crate::widgets::component_style(),
             );
         }
@@ -1572,7 +1581,7 @@ impl InspectorState {
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         row: (Rect, f32, &str),
-        target: PluginPropertyTarget,
+        target: &PluginPropertyTarget,
         value: GpuValue,
         settings: (NumberSettings<'_>, KeyframeControl),
     ) {
@@ -1584,7 +1593,7 @@ impl InspectorState {
             rect,
             y,
             label,
-            InspectorVectorTarget::Plugin(target.clone()),
+            &InspectorVectorTarget::Plugin(target.clone()),
             count,
             settings,
             keyframe,
@@ -1601,13 +1610,17 @@ impl InspectorState {
         );
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "build_vector_row calls the component closure exactly twice for these Vec2 values"
+    )]
     fn build_transform_number_row(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         row: (Rect, f32, &str),
         timeline: &TimelineState,
         source: (&str, TransformNumberDisplay, [f32; 2]),
-        icons: Icons,
+        icons: &Icons,
     ) {
         let (rect, y, label) = row;
         let (input, display, extent) = source;
@@ -1624,7 +1637,7 @@ impl InspectorState {
             rect,
             y,
             label,
-            InspectorVectorTarget::Transform(input.into()),
+            &InspectorVectorTarget::Transform(input.into()),
             2,
             ((f64::NEG_INFINITY, f64::INFINITY), 1.0, 1, suffix),
             keyframe_control(
@@ -1777,10 +1790,10 @@ impl InspectorState {
                 let linked = self
                     .vector_links
                     .contains(&InspectorVectorTarget::Plugin(target.clone()));
-                let next = match *component {
-                    Some(component) => current.with_component(component, raw, linked),
-                    None => current.with_numeric(None, raw),
-                };
+                let next = component.map_or_else(
+                    || current.with_numeric(None, raw),
+                    |component| current.with_component(component, raw, linked),
+                );
                 if let Some(next) = next {
                     target.set_value(project, timeline, next);
                 }
@@ -2024,7 +2037,6 @@ impl InspectorState {
     }
 
     fn reset_number_component(
-        &mut self,
         target: &InspectorNumberTarget,
         row_default: Option<&InspectorResetTarget>,
         project: &mut Project,
@@ -2104,7 +2116,7 @@ impl InspectorState {
         &mut self,
         rect: Rect,
         point: [f32; 2],
-        input: InspectorPointerContext<'_>,
+        input: &mut InspectorPointerContext<'_>,
     ) -> bool {
         if !rect.contains(point) {
             return false;
@@ -2116,7 +2128,7 @@ impl InspectorState {
             .rev()
             .find_map(|(rect, target)| rect.contains(local_point).then_some(target.clone()));
         if let Some(number_target) = self.controls.numbers.target_at(rect, point)
-            && self.reset_number_component(
+            && Self::reset_number_component(
                 &number_target,
                 row_default.as_ref(),
                 input.project,
@@ -2131,6 +2143,10 @@ impl InspectorState {
         self.apply_reset_target(target, input.project, input.timeline)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "measurement returns one slot for each of the six section specifications"
+    )]
     fn rects(
         &self,
         rect: Rect,
@@ -2211,7 +2227,7 @@ impl InspectorState {
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
-        view: InspectorBuildContext<'_>,
+        view: &InspectorBuildContext<'_>,
     ) {
         let InspectorBuildContext {
             project,
@@ -2220,7 +2236,7 @@ impl InspectorState {
             plugins,
             popup_bounds,
             icons,
-        } = view;
+        } = *view;
         let chevron = icons.get(AppIcon::Chevron);
         self.sync_selection(project, timeline);
         self.sync_effect_sections(project, timeline);
@@ -2265,7 +2281,7 @@ impl InspectorState {
                 content,
                 asset,
                 media_stream,
-                MediaInspectorSections {
+                &MediaInspectorSections {
                     general: &self.media_general_section,
                     video: &self.media_video_section,
                     audio: &self.media_audio_section,
@@ -2281,6 +2297,7 @@ impl InspectorState {
         let Some(title) = inspector_title(timeline) else {
             self.scroll_y = 0.0;
             self.content_height = 0.0;
+            #[expect(clippy::indexing_slicing, reason = "the column has two fixed items")]
             let empty_slot = kama_ui::layout::column(
                 rect,
                 &[
@@ -2292,6 +2309,7 @@ impl InspectorState {
                 kama_ui::Align::Start,
                 None,
             )[0];
+            #[expect(clippy::indexing_slicing, reason = "the row has three fixed items")]
             let empty = kama_ui::layout::row(
                 empty_slot,
                 &[
@@ -2337,7 +2355,7 @@ impl InspectorState {
                     body,
                     project,
                     timeline,
-                    (plugins, chevron, icons, body.y),
+                    (plugins, chevron, &icons, body.y),
                 );
             });
         }
@@ -2374,7 +2392,11 @@ impl InspectorState {
                 body_cursor += ROW_H;
                 if timeline.can_assign_pipeline() {
                     let buttons = inspector_pipeline_buttons(body, body_cursor);
-                    for (index, label) in ["+ Effect", "Unique", "Graph"].into_iter().enumerate() {
+                    for (index, (label, button)) in ["+ Effect", "Unique", "Graph"]
+                        .into_iter()
+                        .zip(buttons)
+                        .enumerate()
+                    {
                         let fill = if index == 2 {
                             theme::focused()
                         } else {
@@ -2383,7 +2405,7 @@ impl InspectorState {
                         Button::build_filled(
                             ctx,
                             format!("inspector-pipeline-action-{index}"),
-                            buttons[index],
+                            button,
                             label,
                             fill,
                             crate::widgets::component_style(),
@@ -2433,14 +2455,14 @@ impl InspectorState {
                                         node,
                                         node_section,
                                         node_body,
-                                        (icons, plugins),
+                                        (&icons, plugins),
                                         (
                                             timeline
                                                 .pipeline_input_value(project, node.id, "enabled")
                                                 .and_then(GpuValue::bool)
                                                 .unwrap_or(true),
                                             keyframe_control(
-                                                icons,
+                                                &icons,
                                                 timeline.pipeline_input_has_keyframe(
                                                     project, node.id, "enabled",
                                                 ),
@@ -2477,12 +2499,12 @@ impl InspectorState {
                                     );
                                 }
                                 self.build_graphic_eq(
-                                    ctx, properties, y, node, project, timeline, icons,
+                                    ctx, properties, y, node, project, timeline, &icons,
                                 );
                             }
                             EffectControlRow::Input { node, input } => {
                                 let keyframe = keyframe_control(
-                                    icons,
+                                    &icons,
                                     timeline.pipeline_input_has_keyframe(project, node.id, input),
                                     timeline.pipeline_input_has_keyframes(project, node.id, input),
                                 );
@@ -2552,6 +2574,10 @@ impl InspectorState {
                 chevron,
             )
         }) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the model section stack is created with five rows"
+            )]
             ctx.with_clip(body, |ctx| {
                 let rows =
                     kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
@@ -2591,7 +2617,7 @@ impl InspectorState {
                         timeline,
                         input,
                         settings,
-                        icons,
+                        &icons,
                     );
                     self.register_model3d_clip_reset(row_hit(body, row.y), input, default);
                 }
@@ -2629,6 +2655,10 @@ impl InspectorState {
                 chevron,
             )
         }) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the transform section stack is created with four rows"
+            )]
             ctx.with_clip(body, |ctx| {
                 let rows =
                     kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
@@ -2649,7 +2679,7 @@ impl InspectorState {
                         (body, row.y, label),
                         timeline,
                         (input, display, extent),
-                        icons,
+                        &icons,
                     );
                     self.register_transform_reset(row_hit(body, row.y), input, plugins);
                 }
@@ -2663,7 +2693,7 @@ impl InspectorState {
                     rows[3].y,
                     rotation,
                     keyframe_control(
-                        icons,
+                        &icons,
                         timeline.transform_has_keyframe("rotation"),
                         timeline.transform_has_keyframes("rotation"),
                     ),
@@ -2686,6 +2716,10 @@ impl InspectorState {
                 chevron,
             )
         }) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the compositing section stack is created with three rows"
+            )]
             ctx.with_clip(body, |ctx| {
                 let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
                 self.build_number_property(
@@ -2695,7 +2729,7 @@ impl InspectorState {
                     f64::from(timeline.selected_opacity().unwrap_or(1.0)) * 100.0,
                     ((0.0, 100.0), 0.5, 1, "%"),
                     Some(keyframe_control(
-                        icons,
+                        &icons,
                         timeline.selected_opacity_has_keyframe(),
                         timeline.selected_opacity_has_keyframes(),
                     )),
@@ -2716,7 +2750,7 @@ impl InspectorState {
                     &blend_options,
                     (
                         keyframe_control(
-                            icons,
+                            &icons,
                             timeline.selected_blend_mode_has_keyframe(),
                             timeline.selected_blend_mode_has_keyframes(),
                         ),
@@ -2742,7 +2776,7 @@ impl InspectorState {
                     &alpha_blend_options,
                     (
                         keyframe_control(
-                            icons,
+                            &icons,
                             timeline.selected_alpha_blend_mode_has_keyframe(),
                             timeline.selected_alpha_blend_mode_has_keyframes(),
                         ),
@@ -2761,14 +2795,14 @@ impl InspectorState {
         self.scroll_y = self
             .scroll_y
             .clamp(0.0, (self.content_height - viewport).max(0.0));
-        self.build_value_context_menu(ctx, rect, project, timeline, icons);
+        self.build_value_context_menu(ctx, rect, project, timeline, &icons);
     }
 
     fn build_color_property(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         row: (Rect, f32, &str),
-        target: InspectorColorTarget,
+        target: &InspectorColorTarget,
         color: [f32; 4],
         keyframe: KeyframeControl,
     ) {
@@ -2790,7 +2824,7 @@ impl InspectorState {
             ctx,
             rect,
             y,
-            InspectorColorTarget::GradientStop(index),
+            &InspectorColorTarget::GradientStop(index),
             color,
             "inspector-gradient-color-picker",
         );
@@ -2801,11 +2835,11 @@ impl InspectorState {
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
         y: f32,
-        target: InspectorColorTarget,
+        target: &InspectorColorTarget,
         color: [f32; 4],
         id: &str,
     ) {
-        if self.controls.color_target.as_ref() != Some(&target) {
+        if self.controls.color_target.as_ref() != Some(target) {
             return;
         }
         if self.last_rect.is_none() {
@@ -2839,7 +2873,7 @@ impl InspectorState {
             InputType::Color => self.build_color_property(
                 ctx,
                 (rect, y, &definition.name),
-                InspectorColorTarget::Plugin(target),
+                &InspectorColorTarget::Plugin(target),
                 value
                     .and_then(GpuValue::color)
                     .unwrap_or([0.0, 0.0, 0.0, 1.0]),
@@ -2847,9 +2881,8 @@ impl InspectorState {
             ),
             InputType::Bool => {
                 let options = ["Off", "On"];
-                let selected = (value.and_then(|value| value.numeric(None)).unwrap_or(0.0)
-                    as usize)
-                    .min(options.len() - 1);
+                let selected =
+                    usize::from(value.and_then(|value| value.numeric(None)).unwrap_or(0.0) >= 1.0);
                 self.build_enum_property(
                     ctx,
                     (rect, y, &definition.name),
@@ -2882,7 +2915,7 @@ impl InspectorState {
                     self.build_plugin_vector_property(
                         ctx,
                         (rect, y, &definition.name),
-                        target,
+                        &target,
                         value,
                         (
                             (
@@ -2941,6 +2974,14 @@ impl InspectorState {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the equalizer uses fixed-size band and layout arrays; mode is clamped to the band array"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the fixed band count array has five entries"
+    )]
     fn build_graphic_eq(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
@@ -2949,7 +2990,7 @@ impl InspectorState {
         node: &crate::effects::EffectNode,
         project: &Project,
         timeline: &TimelineState,
-        icons: Icons,
+        icons: &Icons,
     ) {
         const BAND_COUNTS: [usize; 5] = [3, 5, 10, 15, 31];
         const MIN_SLOT_W: f32 = 28.0;
@@ -2995,7 +3036,7 @@ impl InspectorState {
             ctx,
             &mut self.controls.sliders,
             (("graphic-eq-bg", node.id), ("graphic-eq-zero", node.id)),
-            GraphicEqBuild {
+            &GraphicEqBuild {
                 viewport: graph,
                 count,
                 scroll: *self.eq_scroll.get(&node.id).unwrap_or(&0.0),
@@ -3035,13 +3076,21 @@ impl InspectorState {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each source row is allocated from the same speed, volume, generator and input conditions used to consume it"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "row indices and gradient stop counts are bounded by allocated vectors"
+    )]
     fn build_source_content(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
         project: &Project,
         timeline: &TimelineState,
-        view: (&PluginRegistry, IconId, Icons, f32),
+        view: (&PluginRegistry, IconId, &Icons, f32),
     ) -> f32 {
         let (plugins, chevron, icons, start_y) = view;
         let speed = timeline.selected_speed(project);
@@ -3424,7 +3473,7 @@ impl InspectorState {
                 content,
                 &asset,
                 media_stream,
-                MediaInspectorSections {
+                &MediaInspectorSections {
                     general: &self.media_general_section,
                     video: &self.media_video_section,
                     audio: &self.media_audio_section,
@@ -3563,7 +3612,7 @@ impl InspectorState {
             if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
                 let has_speed = timeline.selected_speed(project).is_some();
                 let input_offset = usize::from(has_speed);
-                let mut heights = Vec::with_capacity(inputs.len() + input_offset);
+                let mut heights = Vec::with_capacity(inputs.len().saturating_add(input_offset));
                 if has_speed {
                     heights.push(ROW_H);
                 }
@@ -3602,8 +3651,15 @@ impl InspectorState {
                         && input.ty == InputType::F32List
                     {
                         let colors = selected_gradient_stop_colors(timeline);
-                        let stop_rows =
-                            kama_ui::layout::stack(slot, slot.y, &vec![ROW_H; colors.len() + 1]);
+                        let stop_rows = kama_ui::layout::stack(
+                            slot,
+                            slot.y,
+                            &vec![ROW_H; colors.len().saturating_add(1)],
+                        );
+                        #[expect(
+                            clippy::indexing_slicing,
+                            reason = "the gradient stack always includes its header row"
+                        )]
                         let header_y = stop_rows[0].y;
                         let header = row_hit(body, header_y);
                         if header.contains(point) {
@@ -3753,24 +3809,25 @@ impl InspectorState {
                                     node: node.id,
                                     input: input.into(),
                                 };
-                                if let Some(definition) =
-                                    plugin_node_input(plugins, &node.node_type, input)
-                                {
-                                    let row = if definition.ty == InputType::Angle {
-                                        rotation_row_hit(properties, row_y)
-                                    } else {
+                                plugin_node_input(plugins, &node.node_type, input).map_or_else(
+                                    || {
                                         row_hit(properties, row_y)
-                                    };
-                                    row.contains(point).then_some(EffectHit::Property(
-                                        row_y,
-                                        definition.ty,
-                                        target,
-                                    ))
-                                } else {
-                                    row_hit(properties, row_y)
-                                        .contains(point)
-                                        .then_some(EffectHit::Consumed)
-                                }
+                                            .contains(point)
+                                            .then_some(EffectHit::Consumed)
+                                    },
+                                    |definition| {
+                                        let row = if definition.ty == InputType::Angle {
+                                            rotation_row_hit(properties, row_y)
+                                        } else {
+                                            row_hit(properties, row_y)
+                                        };
+                                        row.contains(point).then_some(EffectHit::Property(
+                                            row_y,
+                                            definition.ty,
+                                            target,
+                                        ))
+                                    },
+                                )
                             }
                             _ => None,
                         }
@@ -3852,6 +3909,10 @@ impl InspectorState {
                     return true;
                 }
             }
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the transform stack contains four fixed rows"
+            )]
             let rotation_y = rows[3].y;
             if keyframe_rect(body, rotation_y).contains(point) {
                 timeline.toggle_transform_keyframe("rotation");
@@ -3862,6 +3923,10 @@ impl InspectorState {
             }
         }
 
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the compositing stack contains three fixed rows"
+        )]
         if let Some(section) = layout.compositing
             && self.compositing_section.open_amount() > 0.98
         {
@@ -3910,6 +3975,10 @@ impl InspectorState {
             modifiers,
         );
         if handled {
+            #[expect(
+                clippy::float_cmp,
+                reason = "change detection must compare the exact stored color values"
+            )]
             if self.controls.color_picker.linear() != before
                 && let Some(target) = self.controls.color_target.as_ref()
             {
@@ -4033,6 +4102,10 @@ impl InspectorState {
                 self.controls.popup_bounds,
                 local_point,
             ) {
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "change detection must compare the exact stored color values"
+                )]
                 if self.controls.color_picker.linear() != before {
                     return apply_color_target(
                         target,
@@ -4207,7 +4280,7 @@ impl InspectorState {
             if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
                 let has_speed = timeline.selected_speed(project).is_some();
                 let input_offset = usize::from(has_speed);
-                let mut heights = Vec::with_capacity(inputs.len() + input_offset);
+                let mut heights = Vec::with_capacity(inputs.len().saturating_add(input_offset));
                 if has_speed {
                     heights.push(ROW_H);
                 }
@@ -4256,6 +4329,10 @@ struct InspectorRects {
     compositing: Option<InspectorSectionRects>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "all queried block IDs were built in this same measurement"
+)]
 fn measure_inspector_sections(
     rect: Rect,
     start: f32,
@@ -4412,7 +4489,7 @@ fn inspector_accordion_body(
     );
 }
 
-fn inspector_section_content(layout: InspectorSectionRects) -> Rect {
+const fn inspector_section_content(layout: InspectorSectionRects) -> Rect {
     layout.content
 }
 
@@ -4613,6 +4690,10 @@ fn effect_body_rows<'a>(
     (rows, body.height)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "all queried block IDs were built in this same measurement"
+)]
 fn effect_control_rows<'a>(
     width: f32,
     shared: &'a crate::effects::EffectPipeline,
@@ -4621,6 +4702,11 @@ fn effect_control_rows<'a>(
     timeline: &TimelineState,
     sections: &HashMap<u64, Accordion>,
 ) -> (Vec<(f32, EffectControlRow<'a>)>, f32) {
+    struct NodeRects {
+        header: BlockId,
+        body: BlockId,
+    }
+
     let nodes = shared.main_path();
     if nodes.is_empty() {
         let (root, rows) = kama_ui::layout::fit_column_at(
@@ -4631,15 +4717,14 @@ fn effect_control_rows<'a>(
             0.0,
             0.0,
         );
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the layout contains one fixed empty-pipeline row"
+        )]
         return (
             vec![(rows[0].y, EffectControlRow::EmptyPipeline)],
             root.height,
         );
-    }
-
-    struct NodeRects {
-        header: BlockId,
-        body: BlockId,
     }
 
     let nodes = nodes
@@ -4751,6 +4836,10 @@ fn accordion_header(
     );
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "both layouts contain exactly three fixed items"
+)]
 fn inspector_pipeline_buttons(rect: Rect, y: f32) -> [Rect; 3] {
     let row = row_hit(rect, y);
     let vertical = kama_ui::layout::column(
@@ -4779,6 +4868,10 @@ fn inspector_pipeline_buttons(rect: Rect, y: f32) -> [Rect; 3] {
     [buttons[0], buttons[1], buttons[2]]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the selector row contains nine fixed items"
+)]
 fn pipeline_selector_parts(rect: Rect, y: f32) -> (Rect, Rect, Rect, Rect) {
     let row = row_hit(rect, y);
     let parts = kama_ui::layout::row(
@@ -4857,20 +4950,20 @@ fn draw_pipeline_selector(
 fn reset_gpu_component(current: GpuValue, default: GpuValue, component: usize) -> Option<GpuValue> {
     Some(match (current, default) {
         (GpuValue::F32(_), GpuValue::F32(value)) if component == 0 => GpuValue::F32(value),
-        (GpuValue::Vec2(mut values), GpuValue::Vec2(defaults)) if component < 2 => {
-            values[component] = defaults[component];
+        (GpuValue::Vec2(mut values), GpuValue::Vec2(defaults)) => {
+            *values.get_mut(component)? = *defaults.get(component)?;
             GpuValue::Vec2(values)
         }
-        (GpuValue::Vec3(mut values), GpuValue::Vec3(defaults)) if component < 3 => {
-            values[component] = defaults[component];
+        (GpuValue::Vec3(mut values), GpuValue::Vec3(defaults)) => {
+            *values.get_mut(component)? = *defaults.get(component)?;
             GpuValue::Vec3(values)
         }
-        (GpuValue::Vec4(mut values), GpuValue::Vec4(defaults)) if component < 4 => {
-            values[component] = defaults[component];
+        (GpuValue::Vec4(mut values), GpuValue::Vec4(defaults)) => {
+            *values.get_mut(component)? = *defaults.get(component)?;
             GpuValue::Vec4(values)
         }
-        (GpuValue::Color(mut values), GpuValue::Color(defaults)) if component < 4 => {
-            values[component] = defaults[component];
+        (GpuValue::Color(mut values), GpuValue::Color(defaults)) => {
+            *values.get_mut(component)? = *defaults.get(component)?;
             GpuValue::Color(values)
         }
         _ => return None,
@@ -5020,24 +5113,25 @@ fn property_chrome(
         theme::text(),
         label
     );
-    if let Some(keyframe) = keyframe {
-        toggle_icon_button(
-            ctx,
-            &format!("inspector-{kind}-key-{label}-{}", y.to_bits()),
-            keyframe_rect(rect, y),
-            keyframe.icon,
-            keyframe.keyed,
-            if keyframe.keyed {
-                "Remove keyframe"
-            } else {
-                "Add keyframe"
-            },
-            crate::widgets::component_style(),
-        );
-        property_control_rect(rect, y)
-    } else {
-        plain_property_parts(row).1
-    }
+    keyframe.map_or_else(
+        || plain_property_parts(row).1,
+        |keyframe| {
+            toggle_icon_button(
+                ctx,
+                &format!("inspector-{kind}-key-{label}-{}", y.to_bits()),
+                keyframe_rect(rect, y),
+                keyframe.icon,
+                keyframe.keyed,
+                if keyframe.keyed {
+                    "Remove keyframe"
+                } else {
+                    "Add keyframe"
+                },
+                crate::widgets::component_style(),
+            );
+            property_control_rect(rect, y)
+        },
+    )
 }
 
 fn sync_text_edit(editor: &mut TextEdit, identity_changed: bool, value: &str) {
@@ -5049,6 +5143,10 @@ fn sync_text_edit(editor: &mut TextEdit, identity_changed: bool, value: &str) {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the title column has two items and its row has three items"
+)]
 fn panel_title<K: Hash>(
     ctx: &mut kama_ui::BuildCtx,
     key: K,
@@ -5118,6 +5216,7 @@ fn hit_local<K: Clone>(
     })
 }
 
+#[expect(clippy::indexing_slicing, reason = "the layout contains one fixed row")]
 fn row_hit(rect: Rect, y: f32) -> Rect {
     kama_ui::layout::fit_column_at(
         rect,
@@ -5130,6 +5229,10 @@ fn row_hit(rect: Rect, y: f32) -> Rect {
     .1[0]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the column has one item and the row has three items"
+)]
 fn project_row_hit(rect: Rect, y: f32) -> Rect {
     let (_, rows) = kama_ui::layout::fit_column_at(
         rect,

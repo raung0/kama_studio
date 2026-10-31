@@ -141,7 +141,7 @@ pub fn document_content_signature(project: &Project, timeline: &TimelineState) -
     let mut document = project.clone();
     document.sync_active_timeline(timeline.document());
     for composition in &mut document.compositions {
-        composition.timeline.view = Default::default();
+        composition.timeline.view = crate::timeline::TimelineViewState::default();
     }
     document.authored_signature()
 }
@@ -263,7 +263,7 @@ pub fn edge_drop(rect: Rect, point: [f32; 2]) -> Option<(DropZone, Rect)> {
             preview.y = preview.height.mul_add(0.72, preview.y);
             preview.height *= 0.28;
         }
-        DropZone::Center => unreachable!(),
+        DropZone::Center => return None,
     }
     Some((zone, preview.inset(4.0)))
 }

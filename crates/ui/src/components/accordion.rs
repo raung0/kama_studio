@@ -6,6 +6,7 @@ use super::{Style, ease};
 
 const SPEED: f32 = 30.0;
 
+#[derive(Clone, Copy)]
 pub struct AccordionContent<'a> {
     pub title: &'a str,
     pub body: &'a str,

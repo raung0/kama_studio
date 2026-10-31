@@ -9,6 +9,10 @@ pub(super) struct GraphToolbarLayout {
     pub(super) combo: Rect,
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "column and row return one rectangle per supplied layout item"
+)]
 pub(super) fn graph_toolbar_layout(rect: Rect) -> GraphToolbarLayout {
     let bar = crate::ui_layout::column(
         rect,
@@ -39,7 +43,7 @@ pub(super) fn graph_toolbar_layout(rect: Rect) -> GraphToolbarLayout {
     }
 }
 
-pub(super) fn graph_canvas_rect(rect: Rect) -> Rect {
+pub(super) const fn graph_canvas_rect(rect: Rect) -> Rect {
     rect
 }
 
@@ -70,7 +74,7 @@ pub(super) fn graph_card_scale(card: Rect) -> f32 {
     (card.width / GRAPH_CARD_W).max(0.000_1)
 }
 
-pub(super) fn plugin_input_uses_host_binding(input: &PluginInput) -> bool {
+pub(super) const fn plugin_input_uses_host_binding(input: &PluginInput) -> bool {
     matches!(
         input.ty,
         InputType::Text | InputType::Vec2Array | InputType::F32List

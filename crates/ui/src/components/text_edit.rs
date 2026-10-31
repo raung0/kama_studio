@@ -64,15 +64,17 @@ pub struct TextEdit {
 
 impl TextEdit {
     pub fn single_line(text: impl Into<String>) -> Self {
-        Self::new(text.into(), false)
+        let text = text.into();
+        Self::new(&text, false)
     }
 
     pub fn multiline(text: impl Into<String>) -> Self {
-        Self::new(text.into(), true)
+        let text = text.into();
+        Self::new(&text, true)
     }
 
-    fn new(text: String, multiline: bool) -> Self {
-        let text = normalize(&text, multiline);
+    fn new(text: &str, multiline: bool) -> Self {
+        let text = normalize(text, multiline);
         let mut buffer = Buffer::new_empty(Metrics::new(FONT, LINE_H));
         buffer.set_wrap(Wrap::None);
         buffer.set_size(None, None);
@@ -113,7 +115,7 @@ impl TextEdit {
         let focused = self.focused;
         let clipboard = self.clipboard.take();
         let scales = (self.text_scale, self.ui_scale);
-        *self = Self::new(normalize(text.as_ref(), self.multiline), self.multiline);
+        *self = Self::new(text.as_ref(), self.multiline);
         self.focused = focused;
         self.clipboard = clipboard;
         self.set_scales(scales.0, scales.1);
@@ -144,13 +146,8 @@ impl TextEdit {
     pub fn tick(&mut self, dt: f32) {
         self.refresh_caret_target();
         if self.focused {
-            for axis in 0..2 {
-                ease(
-                    &mut self.caret[axis],
-                    self.caret_target[axis],
-                    CARET_SPEED,
-                    dt,
-                );
+            for (caret, target) in self.caret.iter_mut().zip(self.caret_target) {
+                ease(caret, target, CARET_SPEED, dt);
             }
         } else {
             self.caret = self.caret_target;
@@ -180,7 +177,7 @@ impl TextEdit {
         self.set_focused(true);
         let cursor = self.cursor_from_point(rect, point);
         let anchor = if modifiers.shift_key() {
-            selection_anchor(self.editor.selection()).unwrap_or(self.editor.cursor())
+            selection_anchor(self.editor.selection()).unwrap_or_else(|| self.editor.cursor())
         } else {
             cursor
         };
@@ -235,8 +232,8 @@ impl TextEdit {
             ]
         };
         let old = self.scroll;
-        for axis in 0..2 {
-            self.scroll[axis] = (self.scroll[axis] - delta[axis]).clamp(0.0, max[axis]);
+        for ((scroll, delta), max) in self.scroll.iter_mut().zip(delta).zip(max) {
+            *scroll = (*scroll - delta).clamp(0.0, max);
         }
         old.iter()
             .zip(self.scroll)
@@ -302,7 +299,7 @@ impl TextEdit {
                 self.set_focused(false);
                 EditResponse::HANDLED
             }
-            Key::Named(key) if self.navigate(key, modifiers) => EditResponse::HANDLED,
+            Key::Named(key) if self.navigate(*key, modifiers) => EditResponse::HANDLED,
             Key::Named(NamedKey::Backspace) => EditResponse::changed(self.delete(false, modifiers)),
             Key::Named(NamedKey::Delete) => EditResponse::changed(self.delete(true, modifiers)),
             Key::Named(NamedKey::Copy) => {
@@ -353,7 +350,7 @@ impl TextEdit {
         response
     }
 
-    fn navigate(&mut self, key: &NamedKey, modifiers: ModifiersState) -> bool {
+    fn navigate(&mut self, key: NamedKey, modifiers: ModifiersState) -> bool {
         let command = modifiers.super_key() || modifiers.control_key();
         let motion = match key {
             NamedKey::ArrowLeft => {
@@ -412,7 +409,7 @@ impl TextEdit {
             if let Some((start, end)) = self.editor.selection_bounds()
                 && matches!(key, NamedKey::ArrowLeft | NamedKey::ArrowRight)
             {
-                self.editor.set_cursor(if *key == NamedKey::ArrowLeft {
+                self.editor.set_cursor(if key == NamedKey::ArrowLeft {
                     start
                 } else {
                     end
@@ -806,18 +803,21 @@ impl TextEdit {
             (content[0] - self.viewport[0]).max(0.0),
             (content[1] - self.viewport[1]).max(0.0),
         ];
-        for (axis, max) in max.into_iter().enumerate() {
-            let extent = if axis == 0 {
-                2.0 * self.ui_scale
-            } else {
-                self.line_height()
-            };
-            if self.caret_target[axis] < self.scroll[axis] {
-                self.scroll[axis] = self.caret_target[axis];
-            } else if self.caret_target[axis] + extent > self.scroll[axis] + self.viewport[axis] {
-                self.scroll[axis] = self.caret_target[axis] + extent - self.viewport[axis];
+        let extents = [2.0 * self.ui_scale, self.line_height()];
+        for ((((scroll, target), viewport), max), extent) in self
+            .scroll
+            .iter_mut()
+            .zip(self.caret_target)
+            .zip(self.viewport)
+            .zip(max)
+            .zip(extents)
+        {
+            if target < *scroll {
+                *scroll = target;
+            } else if target + extent > *scroll + viewport {
+                *scroll = target + extent - viewport;
             }
-            self.scroll[axis] = self.scroll[axis].clamp(0.0, max);
+            *scroll = scroll.clamp(0.0, max);
         }
         if old
             .iter()
@@ -828,18 +828,25 @@ impl TextEdit {
         }
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the composition start and bounded preedit cursor fit in the allocated display text"
+    )]
     fn layout_caret_target(&self) -> [f32; 2] {
-        if let Some(layout) = self.preedit_layout.as_ref() {
-            let cursor = self.composition_range().start
-                + self.preedit_cursor.min(self.preedit.chars().count());
-            layout
-                .cursor_position(&cosmic_cursor(&self.display_text(), cursor))
-                .map_or([0.0; 2], |(x, y)| [x, y])
-        } else {
-            self.editor
-                .cursor_position()
-                .map_or([0.0; 2], |(x, y)| [x as f32, y as f32])
-        }
+        self.preedit_layout.as_ref().map_or_else(
+            || {
+                self.editor
+                    .cursor_position()
+                    .map_or([0.0; 2], |(x, y)| [x as f32, y as f32])
+            },
+            |layout| {
+                let cursor = self.composition_range().start
+                    + self.preedit_cursor.min(self.preedit.chars().count());
+                layout
+                    .cursor_position(&cosmic_cursor(&self.display_text(), cursor))
+                    .map_or([0.0; 2], Into::into)
+            },
+        )
     }
 
     fn text_y(&self, height: f32) -> f32 {
@@ -857,7 +864,7 @@ impl TextEdit {
         let y = point[1] - rect.y - self.text_y(rect.height) + self.scroll[1];
         self.editor
             .with_buffer(|buffer| buffer.hit(x, y))
-            .unwrap_or(self.editor.cursor())
+            .unwrap_or_else(|| self.editor.cursor())
     }
 
     fn range_rects(&self, rect: Rect, layout: &Buffer, start: Cursor, end: Cursor) -> Vec<Rect> {
@@ -891,6 +898,10 @@ impl TextEdit {
             })
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the composition start and preedit length fit in the allocated display text"
+    )]
     fn preedit_rects(&self, rect: Rect) -> Vec<Rect> {
         let Some(layout) = self.preedit_layout.as_ref() else {
             return Vec::new();
@@ -915,9 +926,21 @@ fn normalize(text: &str, multiline: bool) -> String {
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the editor buffer always has a line after text is initialized"
+)]
 fn end_cursor(buffer: &Buffer) -> Cursor {
     let line = buffer.lines.len().saturating_sub(1);
-    Cursor::new(line, buffer.lines[line].text().len())
+    Cursor::new(
+        line,
+        buffer
+            .lines
+            .last()
+            .expect("editor buffer has no lines")
+            .text()
+            .len(),
+    )
 }
 
 const fn selection_anchor(selection: Selection) -> Option<Cursor> {
@@ -929,6 +952,10 @@ const fn selection_anchor(selection: Selection) -> Option<Cursor> {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "line offsets count characters in an allocated string, plus at most one sentinel"
+)]
 fn line_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     let mut start = 0;
     text.split('\n').map(move |line| {
@@ -939,16 +966,24 @@ fn line_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     })
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the selected line starts at or before the clamped character index"
+)]
 fn cosmic_cursor(text: &str, index: usize) -> Cursor {
     let len = text.chars().count();
     let (line, range) = line_ranges(text)
         .enumerate()
         .find(|(_, range)| range.contains(&index) || index == range.end)
-        .unwrap_or((text.matches('\n').count(), len..len));
+        .unwrap_or_else(|| (text.matches('\n').count(), len..len));
     let line_start = char_byte(text, range.start);
     Cursor::new(line, char_byte(text, index.min(range.end)) - line_start)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "line lengths and the final character offset are bounded by the allocated text length plus one"
+)]
 fn global_index(text: &str, cursor: Cursor) -> usize {
     line_ranges(text)
         .take(cursor.line)

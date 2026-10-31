@@ -135,12 +135,7 @@ struct HardwareScaleState {
 }
 
 impl HardwareScaleState {
-    fn scale_for_upload(
-        &mut self,
-        decoded: &Video,
-        width: u32,
-        height: u32,
-    ) -> Result<Option<Video>> {
+    fn scale_for_upload(&mut self, decoded: &Video, width: u32, height: u32) -> Option<Video> {
         #[cfg(target_os = "macos")]
         {
             if self.disabled
@@ -149,31 +144,28 @@ impl HardwareScaleState {
                 || (width >= decoded.width() && height >= decoded.height())
                 || !is_hardware_frame(decoded)
             {
-                return Ok(None);
+                return None;
             }
             if self.videotoolbox.is_none() {
                 if let Ok(session) = VideoToolboxScaleSession::new() {
-                    self.videotoolbox = Some(session)
+                    self.videotoolbox = Some(session);
                 } else {
                     self.disabled = true;
-                    return Ok(None);
+                    return None;
                 }
             }
-            let session = self
-                .videotoolbox
-                .as_mut()
-                .expect("VideoToolbox scale session initialized");
+            let session = self.videotoolbox.as_mut()?;
             if let Ok(frame) = session.scale(decoded, width, height) {
-                Ok(Some(frame))
+                Some(frame)
             } else {
                 self.disabled = true;
-                Ok(None)
+                None
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (decoded, width, height);
-            Ok(None)
+            None
         }
     }
 }
@@ -241,10 +233,18 @@ impl VideoToolboxScaleSession {
     }
 
     fn ensure_frames_context(&mut self, source: &Video, width: u32, height: u32) -> Result<()> {
+        let frame_width =
+            i32::try_from(width).context("VideoToolbox width exceeds FFmpeg range")?;
+        let frame_height =
+            i32::try_from(height).context("VideoToolbox height exceeds FFmpeg range")?;
         let source_ref = unsafe { (*source.as_ptr()).hw_frames_ctx };
         if source_ref.is_null() {
             bail!("VideoToolbox frame has no AVHWFramesContext");
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "FFmpeg hw_frames_ctx data points to an aligned AVHWFramesContext"
+        )]
         let source_ctx = unsafe { (*source_ref).data.cast::<ffmpeg::ffi::AVHWFramesContext>() };
         if source_ctx.is_null() {
             bail!("VideoToolbox AVHWFramesContext has no data");
@@ -267,6 +267,10 @@ impl VideoToolboxScaleSession {
         if frames_ref.is_null() {
             bail!("av_hwframe_ctx_alloc failed for VideoToolbox scaled surface");
         }
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "av_hwframe_ctx_alloc returns an aligned AVHWFramesContext"
+        )]
         let frames_ctx = unsafe { (*frames_ref).data.cast::<ffmpeg::ffi::AVHWFramesContext>() };
         if frames_ctx.is_null() {
             let mut frames_ref = frames_ref;
@@ -276,8 +280,8 @@ impl VideoToolboxScaleSession {
         unsafe {
             (*frames_ctx).format = (*source_ctx).format;
             (*frames_ctx).sw_format = (*source_ctx).sw_format;
-            (*frames_ctx).width = width as i32;
-            (*frames_ctx).height = height as i32;
+            (*frames_ctx).width = frame_width;
+            (*frames_ctx).height = frame_height;
         }
         let init = unsafe { ffmpeg::ffi::av_hwframe_ctx_init(frames_ref) };
         if init < 0 {
@@ -293,6 +297,10 @@ impl VideoToolboxScaleSession {
     }
 
     fn scale(&mut self, source: &Video, width: u32, height: u32) -> Result<Video> {
+        let frame_width =
+            i32::try_from(width).context("VideoToolbox width exceeds FFmpeg range")?;
+        let frame_height =
+            i32::try_from(height).context("VideoToolbox height exceeds FFmpeg range")?;
         self.ensure_frames_context(source, width, height)?;
         let mut output = Video::empty();
         let allocate =
@@ -317,8 +325,8 @@ impl VideoToolboxScaleSession {
             bail!("av_frame_copy_props failed for scaled VideoToolbox frame ({props})");
         }
         unsafe {
-            (*output.as_mut_ptr()).width = width as i32;
-            (*output.as_mut_ptr()).height = height as i32;
+            (*output.as_mut_ptr()).width = frame_width;
+            (*output.as_mut_ptr()).height = frame_height;
         }
         Ok(output)
     }
@@ -338,7 +346,7 @@ impl Drop for VideoToolboxScaleSession {
     }
 }
 
-fn codec_packets_are_independent(id: codec::Id) -> bool {
+const fn codec_packets_are_independent(id: codec::Id) -> bool {
     matches!(id, codec::Id::PRORES | codec::Id::UTVIDEO)
 }
 
@@ -431,7 +439,7 @@ enum DecodeFramePolicy {
     ReferenceOnly,
 }
 
-fn scrub_frame_allowed(kind: ffmpeg::picture::Type) -> bool {
+const fn scrub_frame_allowed(kind: ffmpeg::picture::Type) -> bool {
     !matches!(kind, ffmpeg::picture::Type::B | ffmpeg::picture::Type::BI)
 }
 
@@ -486,7 +494,7 @@ fn rational_rate(rate: Rational) -> Option<f64> {
 struct DecoderState {
     input: format::context::Input,
     decoder: ffmpeg::decoder::Video,
-    _hardware_decode: Option<Box<HardwareDecodeSelection>>,
+    hardware_decode: Option<Box<HardwareDecodeSelection>>,
     scaler: Option<ScalingContext>,
     scaler_format: Option<Pixel>,
     native_format: Option<Pixel>,
@@ -581,7 +589,7 @@ impl DecoderState {
         Ok(Self {
             input,
             decoder,
-            _hardware_decode: hardware_decode,
+            hardware_decode,
             scaler: None,
             scaler_format: None,
             native_format: None,
@@ -605,13 +613,13 @@ impl DecoderState {
     }
 
     fn hardware_device_name(&self) -> Option<&str> {
-        self._hardware_decode
+        self.hardware_decode
             .as_ref()
             .map(|selection| selection.device_name.as_str())
     }
 
-    fn can_fallback_from_hardware_failure(&self) -> bool {
-        self._hardware_decode.is_some() && !self.hardware_frame_seen
+    const fn can_fallback_from_hardware_failure(&self) -> bool {
+        self.hardware_decode.is_some() && !self.hardware_frame_seen
     }
 
     fn seek_to(&mut self, seconds: f64) -> Result<()> {
@@ -647,7 +655,7 @@ impl DecoderState {
         self.last_output_frame = None;
     }
 
-    fn last_frame_time(&self) -> Option<f64> {
+    const fn last_frame_time(&self) -> Option<f64> {
         self.last_frame_time
     }
 
@@ -718,11 +726,11 @@ impl DecoderState {
         let last_output_frame = &mut self.last_output_frame;
         let hardware_frame_seen = &mut self.hardware_frame_seen;
         let hardware_rejected = self
-            ._hardware_decode
+            .hardware_decode
             .as_ref()
             .map(|selection| &selection.rejected);
         let hardware_name = self
-            ._hardware_decode
+            .hardware_decode
             .as_ref()
             .map(|selection| selection.device_name.clone());
         let mut convert = |decoded: &Video| {
@@ -768,9 +776,9 @@ impl DecoderState {
                 }
                 bail!("send FFmpeg video packet: {error}");
             }
-            let mut decoded = Video::empty();
+            let mut received_frame = Video::empty();
             loop {
-                match decoder.receive_frame(&mut decoded) {
+                match decoder.receive_frame(&mut received_frame) {
                     Ok(()) => {}
                     Err(ffmpeg::Error::Other { errno })
                         if errno == ffmpeg::util::error::EAGAIN
@@ -782,14 +790,14 @@ impl DecoderState {
                     Err(error) => bail!("receive FFmpeg video frame: {error}"),
                 }
                 observe_hardware_frame(
-                    &decoded,
+                    &received_frame,
                     hardware_frame_seen,
                     hardware_rejected,
                     hardware_name.as_deref(),
                 )?;
-                let timestamp = decoded
+                let timestamp = received_frame
                     .timestamp()
-                    .or_else(|| decoded.pts())
+                    .or_else(|| received_frame.pts())
                     .map_or(*decoded_until, |pts| pts as f64 * f64::from(time_base));
                 *decoded_until = (*decoded_until).max(timestamp);
                 *last_frame_time = Some(timestamp);
@@ -797,7 +805,7 @@ impl DecoderState {
                     continue;
                 }
                 if frame_policy == DecodeFramePolicy::ReferenceOnly
-                    && !scrub_frame_allowed(decoded.kind())
+                    && !scrub_frame_allowed(received_frame.kind())
                 {
                     continue;
                 }
@@ -807,7 +815,7 @@ impl DecoderState {
                     if (collect_nearby && timestamp + timestamp_slop >= cache_from)
                         || retain_eof_candidate
                     {
-                        let converted = convert(&decoded)?;
+                        let converted = convert(&received_frame)?;
                         if retain_eof_candidate {
                             *last_output_frame = Some((timestamp, Arc::clone(&converted)));
                             eof_fallback = Some((timestamp, Arc::clone(&converted)));
@@ -821,7 +829,7 @@ impl DecoderState {
                     }
                     continue;
                 }
-                let converted = convert(&decoded)?;
+                let converted = convert(&received_frame)?;
                 *last_output_frame = Some((timestamp, Arc::clone(&converted)));
                 nearby.push((timestamp, Arc::clone(&converted)));
                 return Ok(Some((converted, nearby, timestamp)));
@@ -830,8 +838,8 @@ impl DecoderState {
 
         decoder.send_eof().ok();
         loop {
-            let mut decoded = Video::empty();
-            match decoder.receive_frame(&mut decoded) {
+            let mut received_frame = Video::empty();
+            match decoder.receive_frame(&mut received_frame) {
                 Ok(()) => {}
                 Err(ffmpeg::Error::Eof) => break,
                 Err(ffmpeg::Error::Other { errno })
@@ -843,30 +851,30 @@ impl DecoderState {
                 Err(error) => bail!("receive flushed FFmpeg video frame: {error}"),
             }
             observe_hardware_frame(
-                &decoded,
+                &received_frame,
                 hardware_frame_seen,
                 hardware_rejected,
                 hardware_name.as_deref(),
             )?;
-            let timestamp = decoded
+            let timestamp = received_frame
                 .timestamp()
-                .or_else(|| decoded.pts())
+                .or_else(|| received_frame.pts())
                 .map_or(*decoded_until, |pts| pts as f64 * f64::from(time_base));
             *decoded_until = (*decoded_until).max(timestamp);
             *last_frame_time = Some(timestamp);
             if frame_policy == DecodeFramePolicy::ReferenceOnly
-                && !scrub_frame_allowed(decoded.kind())
+                && !scrub_frame_allowed(received_frame.kind())
             {
                 continue;
             }
             if timestamp + timestamp_slop >= target_seconds {
-                let converted = convert(&decoded)?;
+                let converted = convert(&received_frame)?;
                 *last_output_frame = Some((timestamp, Arc::clone(&converted)));
                 nearby.push((timestamp, Arc::clone(&converted)));
                 return Ok(Some((converted, nearby, timestamp)));
             }
             if allow_eof_fallback || target_seconds - timestamp <= eof_tolerance {
-                let converted = convert(&decoded)?;
+                let converted = convert(&received_frame)?;
                 *last_output_frame = Some((timestamp, Arc::clone(&converted)));
                 eof_fallback = Some((timestamp, converted));
             }
@@ -897,7 +905,7 @@ impl DecoderState {
         let mut transferred = Video::empty();
         let hardware = is_hardware_frame(decoded);
         let scaled_hardware = if hardware && prefer_native {
-            hardware_scaler.scale_for_upload(decoded, fit_width, fit_height)?
+            hardware_scaler.scale_for_upload(decoded, fit_width, fit_height)
         } else {
             None
         };
@@ -1017,7 +1025,10 @@ fn native_yuv_frame(
         validate_video_plane(
             source,
             0,
-            source_width as usize * bytes_per_sample * 4,
+            (source_width as usize)
+                .checked_mul(bytes_per_sample)
+                .and_then(|n| n.checked_mul(4))
+                .context("native video row size overflow")?,
             source_height as usize,
         )?;
         return Ok(Some(VideoFrame::from_native_yuv(
@@ -1086,45 +1097,38 @@ fn native_yuv_frame(
     let bytes_per_sample = if bit_depth > 8 { 2usize } else { 1usize };
     let chroma_width = layout.chroma_width(source_width);
     let chroma_height = layout.chroma_height(source_height);
-    validate_video_plane(
-        source,
-        0,
-        source_width as usize * bytes_per_sample,
-        source_height as usize,
-    )?;
+    let luma_row_bytes = (source_width as usize)
+        .checked_mul(bytes_per_sample)
+        .context("native video row size overflow")?;
+    let chroma_row_bytes = (chroma_width as usize)
+        .checked_mul(bytes_per_sample)
+        .context("native video row size overflow")?;
+    validate_video_plane(source, 0, luma_row_bytes, source_height as usize)?;
     validate_video_plane(
         source,
         1,
-        chroma_width as usize
-            * bytes_per_sample
-            * if matches!(
-                layout,
-                NativeVideoLayout::Nv12 | NativeVideoLayout::P010 | NativeVideoLayout::P210
-            ) {
-                2
-            } else {
-                1
-            },
+        chroma_row_bytes
+            .checked_mul(
+                if matches!(
+                    layout,
+                    NativeVideoLayout::Nv12 | NativeVideoLayout::P010 | NativeVideoLayout::P210
+                ) {
+                    2
+                } else {
+                    1
+                },
+            )
+            .context("native video row size overflow")?,
         chroma_height as usize,
     )?;
     if !matches!(
         layout,
         NativeVideoLayout::Nv12 | NativeVideoLayout::P010 | NativeVideoLayout::P210
     ) {
-        validate_video_plane(
-            source,
-            2,
-            chroma_width as usize * bytes_per_sample,
-            chroma_height as usize,
-        )?;
+        validate_video_plane(source, 2, chroma_row_bytes, chroma_height as usize)?;
     }
     if has_alpha {
-        validate_video_plane(
-            source,
-            3,
-            source_width as usize * bytes_per_sample,
-            source_height as usize,
-        )?;
+        validate_video_plane(source, 3, luma_row_bytes, source_height as usize)?;
     }
 
     Ok(Some(VideoFrame::from_native_yuv(
@@ -1178,7 +1182,10 @@ fn copy_video_plane(frame: &Video, plane: usize, row_bytes: usize, rows: usize) 
         bail!("FFmpeg returned an invalid native video plane stride");
     }
     if stride == row_bytes {
-        return Ok(data[..output_len].to_vec());
+        return Ok(data
+            .get(..output_len)
+            .context("invalid native video plane length")?
+            .to_vec());
     }
     let mut output = vec![0u8; output_len];
     for (target, source) in output
@@ -1186,7 +1193,11 @@ fn copy_video_plane(frame: &Video, plane: usize, row_bytes: usize, rows: usize) 
         .zip(data.chunks_exact(stride))
         .take(rows)
     {
-        target.copy_from_slice(&source[..row_bytes]);
+        target.copy_from_slice(
+            source
+                .get(..row_bytes)
+                .context("invalid native video plane row")?,
+        );
     }
     Ok(output)
 }
@@ -1241,7 +1252,7 @@ impl FrameCache {
     fn nearest(&self, key: FrameKey) -> Option<Arc<VideoFrame>> {
         self.iter()
             .filter(|(cached, _)| cached.width == key.width && cached.height == key.height)
-            .min_by_key(|(cached, _)| (cached.frame_index - key.frame_index).abs())
+            .min_by_key(|(cached, _)| cached.frame_index.abs_diff(key.frame_index))
             .map(|(_, frame)| Arc::clone(frame))
     }
 }
@@ -1837,10 +1848,13 @@ impl ExportVideoDecoder {
     pub(crate) fn new(path: PathBuf) -> Self {
         let requested_lanes = export_decode_lanes(&path);
         let mut workers = Vec::with_capacity(requested_lanes);
-        for lane in 0..requested_lanes {
+        for lane in 0..requested_lanes.saturating_sub(1) {
             if let Some(worker) = spawn_export_decode_worker(path.clone(), lane) {
                 workers.push(worker);
             }
+        }
+        if let Some(worker) = spawn_export_decode_worker(path, requested_lanes.saturating_sub(1)) {
+            workers.push(worker);
         }
         if workers.is_empty() {
             let (requests, request_rx) = mpsc::sync_channel(1);
@@ -1863,9 +1877,13 @@ impl ExportVideoDecoder {
         }
     }
 
-    fn choose_lane(&mut self) -> usize {
-        let lane = self.next_lane % self.workers.len();
-        self.next_lane = (lane + 1) % self.workers.len();
+    const fn choose_lane(&mut self) -> usize {
+        let lane = self.next_lane;
+        self.next_lane = if lane.saturating_add(1) >= self.workers.len() {
+            0
+        } else {
+            lane.saturating_add(1)
+        };
         lane
     }
 
@@ -1877,7 +1895,9 @@ impl ExportVideoDecoder {
 
     fn submit_blocking(&mut self, request: ExportDecodeRequest) -> Result<()> {
         let lane = self.choose_lane();
-        self.workers[lane]
+        self.workers
+            .get(lane)
+            .context("exact export decoder worker disappeared")?
             .requests
             .send(request)
             .map_err(|_| anyhow::anyhow!("exact export decoder worker stopped"))?;
@@ -1890,15 +1910,23 @@ impl ExportVideoDecoder {
             return;
         }
         let lane = self.choose_lane();
-        match self.workers[lane].requests.try_send(request) {
+        assert!(
+            lane < self.workers.len(),
+            "exact export decoder worker disappeared"
+        );
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the assertion verifies the selected worker index"
+        )]
+        let worker = &self.workers[lane];
+        match worker.requests.try_send(request) {
             Ok(()) => {
                 self.pending.push_back((request.key, lane));
                 if !self.prefetch_announced {
                     self.prefetch_announced = true;
                 }
             }
-            Err(TrySendError::Full(_)) => {}
-            Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
         }
     }
 
@@ -1907,7 +1935,10 @@ impl ExportVideoDecoder {
             .pending_lane(wanted)
             .context("exact export decoder request disappeared")?;
         loop {
-            let response = self.workers[lane]
+            let response = self
+                .workers
+                .get(lane)
+                .context("exact export decoder worker disappeared")?
                 .responses
                 .recv()
                 .map_err(|_| anyhow::anyhow!("exact export decoder worker stopped"))?;
@@ -1956,8 +1987,7 @@ impl ExportVideoDecoder {
                         && previous_width == width
                         && previous_height == height
                 });
-        if compatible_previous {
-            let previous_time = self.last_request.expect("checked above").0;
+        if compatible_previous && let Some((previous_time, ..)) = self.last_request {
             let delta = time - previous_time;
             let stable = delta > 0.0
                 && delta <= 1.0
@@ -2106,6 +2136,7 @@ impl SharedPreviewCache {
             .iter()
             .min_by(|(left, _), (right, _)| (left - time).abs().total_cmp(&(right - time).abs()))?;
         let mut display = (**frame).clone();
+        drop(state);
         let (fit_width, fit_height) = fit_size(
             display.source_width,
             display.source_height,
@@ -2156,7 +2187,7 @@ fn shared_video_preview_cache(path: &Path) -> Arc<SharedPreviewCache> {
         .to_owned();
     let _ = thread::Builder::new()
         .name(format!("kama-video-preview-{preview_name}"))
-        .spawn(move || video_preview_worker(worker_path, request_rx, worker_cache));
+        .spawn(move || video_preview_worker(worker_path, &request_rx, &worker_cache));
     cache
 }
 
@@ -2221,13 +2252,15 @@ impl DecodeWorkerQueue {
                     .queue
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                while queue.is_empty() {
+                loop {
+                    if let Some(session) = queue.pop_front() {
+                        break session;
+                    }
                     queue = self
                         .wake
                         .wait(queue)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
-                queue.pop_front().expect("decode queue checked non-empty")
             };
 
             if session.closed.load(Ordering::Acquire) {
@@ -2278,8 +2311,10 @@ impl DecodePool {
     }
 
     fn assign_worker(&self) -> Option<usize> {
-        (!self.workers.is_empty())
-            .then(|| self.next_worker.fetch_add(1, Ordering::AcqRel) as usize % self.workers.len())
+        if self.workers.is_empty() {
+            return None;
+        }
+        (self.next_worker.fetch_add(1, Ordering::AcqRel) as usize).checked_rem(self.workers.len())
     }
 
     fn enqueue(&self, worker: usize, session: Arc<DecodeSession>, urgent: bool) {
@@ -2288,7 +2323,7 @@ impl DecodePool {
         }
     }
 
-    fn has_workers(&self) -> bool {
+    const fn has_workers(&self) -> bool {
         !self.workers.is_empty()
     }
 }
@@ -2335,7 +2370,9 @@ impl DecodeSession {
             return;
         }
         let generation = if interrupt {
-            self.generation.fetch_add(1, Ordering::AcqRel) + 1
+            self.generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1)
         } else {
             self.current_generation()
         };
@@ -2528,6 +2565,10 @@ impl DecodeSession {
                 DecodeRequestKind::Scrub => 0,
             };
             let frame_bytes = frame_bytes.unwrap_or(FRAME_CACHE_MAX_BYTES).max(1);
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "frame_bytes is clamped to at least one above"
+            )]
             let byte_capacity = (FRAME_CACHE_MAX_BYTES / frame_bytes).max(1);
             let preroll_count = max_preroll.min(FRAME_CACHE_CAPACITY).min(byte_capacity);
             let source_fps = request.source_fps.max(1.0);
@@ -2599,8 +2640,8 @@ pub struct VideoDecoder {
 impl VideoDecoder {
     pub fn new(path: PathBuf) -> Self {
         let (response_tx, responses) = mpsc::channel();
-        let session = DecodeSession::new(path.clone(), response_tx);
         let preview_cache = shared_video_preview_cache(&path);
+        let session = DecodeSession::new(path, response_tx);
         let preview_revision = preview_cache.revision();
         Self {
             session,
@@ -2639,8 +2680,7 @@ impl VideoDecoder {
         loop {
             let response = match self.responses.try_recv() {
                 Ok(response) => response,
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
             if response.generation != generation {
                 continue;
@@ -2737,7 +2777,7 @@ impl VideoDecoder {
                 previous.width == key.width
                     && previous.height == key.height
                     && key.frame_index >= previous.frame_index
-                    && (key.frame_index - previous.frame_index) as f64
+                    && key.frame_index.saturating_sub(previous.frame_index) as f64
                         <= expected_advance.mul_add(4.0, 3.0)
             });
         let discontinuity =
@@ -2837,7 +2877,7 @@ impl VideoDecoder {
                 self.cache
                     .iter()
                     .filter(|(cached, _)| cached.width == width && cached.height == height)
-                    .min_by_key(|(cached, _)| (cached.frame_index - key.frame_index).abs())
+                    .min_by_key(|(cached, _)| cached.frame_index.abs_diff(key.frame_index))
                     .map(|(cached, frame)| (*cached, Arc::clone(frame)))
             });
         let presented = if let Some((candidate_key, candidate)) = held {
@@ -2923,23 +2963,29 @@ fn scrub_thumbnail_dimensions(width: u32, height: u32) -> (u32, u32) {
         return (width, height);
     }
     let scale = f64::from(SCRUB_THUMBNAIL_MAX_EDGE) / f64::from(largest);
-    (
-        (f64::from(width) * scale).round().max(1.0) as u32,
-        (f64::from(height) * scale).round().max(1.0) as u32,
-    )
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the scaled dimensions are clamped to at least one"
+    )]
+    let scaled_width = (f64::from(width) * scale).round().max(1.0) as u32;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the scaled dimension is clamped to at least one"
+    )]
+    let scaled_height = (f64::from(height) * scale).round().max(1.0) as u32;
+    (scaled_width, scaled_height)
 }
 
 fn video_preview_worker(
     path: PathBuf,
-    requests: Receiver<PreviewBuildRequest>,
-    cache: Weak<SharedPreviewCache>,
+    requests: &Receiver<PreviewBuildRequest>,
+    cache: &Weak<SharedPreviewCache>,
 ) {
     let duration = probe_av_media(&path).ok().and_then(|probe| probe.duration);
 
     let mut decoder = BlockingVideoDecoder::new_preview(path);
-    let mut request = match requests.recv() {
-        Ok(request) => request,
-        Err(_) => return,
+    let Ok(mut request) = requests.recv() else {
+        return;
     };
     loop {
         let (preview_width, preview_height) =
@@ -3031,9 +3077,17 @@ fn fit_size(
     }
     let scale = (f64::from(target_width) / f64::from(source_width))
         .min(f64::from(target_height) / f64::from(source_height));
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the result is clamped to the positive target dimension"
+    )]
     let width = (f64::from(source_width) * scale)
         .round()
         .clamp(1.0, f64::from(target_width)) as u32;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the result is clamped to the positive target dimension"
+    )]
     let height = (f64::from(source_height) * scale)
         .round()
         .clamp(1.0, f64::from(target_height)) as u32;
@@ -3146,9 +3200,8 @@ fn try_enable_hardware_decode(
                 .map_or((candidate.as_str(), None), |(name, device)| {
                     (name, Some(device))
                 });
-            let c_name = match CString::new(name) {
-                Ok(value) => value,
-                Err(_) => continue,
+            let Ok(c_name) = CString::new(name) else {
+                continue;
             };
             let device_type = ffmpeg::ffi::av_hwdevice_find_type_by_name(c_name.as_ptr());
             if (device_type as i32) == 0 {
@@ -3156,7 +3209,7 @@ fn try_enable_hardware_decode(
             }
 
             let mut hw_pixel_format = None;
-            let mut index = 0;
+            let mut index: i32 = 0;
             loop {
                 let config = ffmpeg::ffi::avcodec_get_hw_config(codec_ptr, index);
                 if config.is_null() {
@@ -3168,7 +3221,10 @@ fn try_enable_hardware_decode(
                     hw_pixel_format = Some((*config).pix_fmt);
                     break;
                 }
-                index += 1;
+                let Some(next) = index.checked_add(1) else {
+                    break;
+                };
+                index = next;
             }
             let Some(hw_pixel_format) = hw_pixel_format else {
                 continue;
@@ -3240,7 +3296,7 @@ fn observe_hardware_frame(
     Ok(())
 }
 
-fn transfer_code(transfer: color::TransferCharacteristic) -> u32 {
+const fn transfer_code(transfer: color::TransferCharacteristic) -> u32 {
     match transfer {
         color::TransferCharacteristic::Linear => 0,
         color::TransferCharacteristic::IEC61966_2_1 => 1,

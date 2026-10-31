@@ -100,6 +100,10 @@ impl Slider {
         });
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the hit, track and value blocks are created in this measured layout"
+    )]
     fn layout(rect: Rect) -> (Rect, Rect, Rect) {
         let ((hit, track, value), measured) = crate::measure_layout(rect, |ctx| {
             let mut hit = BlockId(0);

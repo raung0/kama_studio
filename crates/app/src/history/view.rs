@@ -18,7 +18,7 @@ pub struct HistoryPanelState {
 
 impl HistoryPanelState {
     pub(crate) fn pointer_pressed(
-        &mut self,
+        &self,
         history: &mut HistoryState,
         rect: Rect,
         point: [f32; 2],
@@ -48,6 +48,10 @@ impl HistoryPanelState {
             .scroll_by(-delta[1], (content - rect.height).max(0.0))
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "graph_rows indexes the same immutably borrowed history whose entries are rendered here"
+    )]
     pub(crate) fn build(&self, history: &HistoryState, ctx: &mut BuildCtx, rect: Rect) {
         let rect = Rect::new(0.0, 0.0, rect.width, rect.height);
         let rows = history.graph_rows();
@@ -145,6 +149,10 @@ impl HistoryPanelState {
 }
 
 impl HistoryState {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HistoryGraph parent indices refer to earlier entries and both tables are sized to the entry count"
+    )]
     fn graph_rows(&self) -> Vec<HistoryRow> {
         if self.graph.is_empty() {
             return Vec::new();
@@ -173,8 +181,8 @@ impl HistoryState {
             } else {
                 let lane = next_lane;
                 let branch = next_branch;
-                next_lane += 1;
-                next_branch += 1;
+                next_lane = next_lane.saturating_add(1);
+                next_branch = next_branch.saturating_add(1);
                 (lane, branch)
             };
             lanes[index] = lane;
@@ -250,19 +258,19 @@ fn history_branch_color(branch: usize) -> Color {
     let hue = (branch as f32).mul_add(0.618_034, 0.58).fract();
     let saturation = 0.66;
     let value = 0.92;
-    let h = hue * 6.0;
-    let sector = h.floor() as i32;
-    let f = h - sector as f32;
-    let p = value * (1.0 - saturation);
-    let q = value * f32::mul_add(saturation, -f, 1.0);
-    let t = value * f32::mul_add(saturation, -(1.0 - f), 1.0);
-    let (r, g, b) = match sector.rem_euclid(6) {
-        0 => (value, t, p),
-        1 => (q, value, p),
-        2 => (p, value, t),
-        3 => (p, q, value),
-        4 => (t, p, value),
-        _ => (value, p, q),
+    let scaled_hue = hue * 6.0;
+    let sector = scaled_hue.floor() as i32;
+    let fraction = scaled_hue - sector as f32;
+    let minimum = value * (1.0 - saturation);
+    let falling = value * f32::mul_add(saturation, -fraction, 1.0);
+    let rising = value * f32::mul_add(saturation, -(1.0 - fraction), 1.0);
+    let (red, green, blue) = match sector.rem_euclid(6) {
+        0 => (value, rising, minimum),
+        1 => (falling, value, minimum),
+        2 => (minimum, value, rising),
+        3 => (minimum, falling, value),
+        4 => (rising, minimum, value),
+        _ => (value, minimum, falling),
     };
-    Color::rgba(r, g, b, 1.0)
+    Color::rgba(red, green, blue, 1.0)
 }

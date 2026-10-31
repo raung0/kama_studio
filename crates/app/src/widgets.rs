@@ -39,7 +39,7 @@ pub struct ContextMenuItem<'a, A> {
 }
 
 impl<'a, A> ContextMenuItem<'a, A> {
-    pub(crate) fn new(label: &'a str, icon: Option<AppIcon>, action: A) -> Self {
+    pub(crate) const fn new(label: &'a str, icon: Option<AppIcon>, action: A) -> Self {
         Self {
             label,
             shortcut: None,
@@ -54,7 +54,7 @@ impl<'a, A> ContextMenuItem<'a, A> {
         self
     }
 
-    pub(crate) fn enabled(mut self, enabled: bool) -> Self {
+    pub(crate) const fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
@@ -85,13 +85,17 @@ pub fn context_menu_row(rect: Rect, index: usize) -> Rect {
     )
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the hit test checks the row coordinate is nonnegative before returning the cast"
+)]
 fn context_menu_hit(rect: Rect, point: [f32; 2], item_count: usize) -> Option<usize> {
     let local = [point[0] - rect.x - 2.0, point[1] - rect.y - 2.0];
     (local[0] >= 0.0
         && local[0] < rect.width - 4.0
         && local[1] >= 0.0
         && local[1] < item_count as f32 * CONTEXT_MENU_ROW_H)
-        .then_some((local[1] / CONTEXT_MENU_ROW_H) as usize)
+        .then(|| (local[1] / CONTEXT_MENU_ROW_H) as usize)
 }
 
 pub enum ContextMenuClick<A> {
@@ -122,13 +126,17 @@ pub fn context_menu_click<A: Clone>(
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "the icon is unwrapped only within the immediately enclosing is_some UI branch"
+)]
 pub fn build_context_menu<A>(
     ctx: &mut ui::BuildCtx,
     id: &str,
     rect: Rect,
     cursor: [f32; 2],
     items: &[ContextMenuItem<'_, A>],
-    icons: Icons,
+    icons: &Icons,
 ) {
     ui::ui!(ctx, {
         Block {
@@ -231,6 +239,10 @@ struct GalleryFieldIds {
     control: BlockId,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "BlockBuilder::children invokes its closure synchronously and assigns the field ids"
+)]
 fn gallery_field(ctx: &mut ui::BuildCtx, height: f32, control_width: Size) -> GalleryFieldIds {
     let mut ids = None;
     let flexible = matches!(control_width, Size::Fill);
@@ -267,6 +279,10 @@ fn gallery_field(ctx: &mut ui::BuildCtx, height: f32, control_width: Size) -> Ga
 }
 
 impl GalleryRects {
+    #[expect(
+        clippy::expect_used,
+        reason = "layout builders synchronously assign every field id and measurement contains each constructed block"
+    )]
     fn new(bounds: Rect, accordion_open: f32) -> Self {
         let viewport = bounds;
         let (ids, measured) = ui::measure_layout(viewport, |ctx| {
@@ -436,19 +452,19 @@ impl GalleryRects {
         }
     }
 
-    fn button(self) -> Rect {
+    const fn button(self) -> Rect {
         self.button_action
     }
 
-    fn toggle(self) -> Rect {
+    const fn toggle(self) -> Rect {
         self.toggle_action
     }
 
-    fn combo(self) -> Rect {
+    const fn combo(self) -> Rect {
         self.combo_action
     }
 
-    fn content_bottom(self) -> f32 {
+    const fn content_bottom(self) -> f32 {
         self.content_bottom
     }
 }
@@ -481,6 +497,10 @@ impl WidgetGallery {
         self.focused_stack = stack;
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "column layout returns one rectangle for its single input item"
+    )]
     fn rects(&self, bounds: Rect) -> GalleryRects {
         let content = kama_ui::layout::column(
             bounds,
@@ -520,7 +540,7 @@ impl WidgetGallery {
         self.accordion.tick(dt);
     }
 
-    pub fn is_cursor_lock_dragging(&self) -> bool {
+    pub const fn is_cursor_lock_dragging(&self) -> bool {
         self.number.is_dragging()
     }
 
@@ -634,7 +654,7 @@ impl WidgetGallery {
         color || self.text.pointer_moved(point) || self.slider.pointer_moved(point) || number
     }
 
-    pub fn pointer_released(&mut self) -> bool {
+    pub const fn pointer_released(&mut self) -> bool {
         self.color.pointer_released()
             | self.text.pointer_released()
             | self.slider.pointer_released()
@@ -672,7 +692,7 @@ impl WidgetGallery {
         ctx: &mut ui::BuildCtx,
         stack: StackId,
         content: Rect,
-        icons: Icons,
+        icons: &Icons,
         popup_bounds: Rect,
     ) {
         let layout = GalleryRects::new(

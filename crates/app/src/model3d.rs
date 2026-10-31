@@ -169,8 +169,11 @@ impl ModelMesh {
         let mut vertices = Vec::new();
         let mut triangles = Vec::new();
         for mesh in scene.meshes() {
-            let material = mesh.material_index().min(materials.len() - 1);
-            let uv_channel = materials[material].uv_channel;
+            let material = mesh.material_index().min(materials.len().saturating_sub(1));
+            let uv_channel = materials
+                .get(material)
+                .context("3D model has no material")?
+                .uv_channel;
             let uvs = mesh.texture_coords2(uv_channel);
             let colors = mesh.vertex_colors(0);
             let normals = mesh.normals_raw_opt();
@@ -243,20 +246,30 @@ impl ModelMesh {
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
         for vertex in &vertices {
-            for axis in 0..3 {
-                if !vertex.position[axis].is_finite() {
+            for ((min, max), position) in min.iter_mut().zip(&mut max).zip(vertex.position) {
+                if !position.is_finite() {
                     bail!("3D model contains a non-finite vertex");
                 }
-                min[axis] = min[axis].min(vertex.position[axis]);
-                max[axis] = max[axis].max(vertex.position[axis]);
+                *min = min.min(position);
+                *max = max.max(position);
             }
         }
 
         let mut accumulated = vec![[0.0_f32; 3]; vertices.len()];
         for triangle in &triangles {
-            let [a, b, c] = triangle
-                .indices
-                .map(|index| vertices[index as usize].position);
+            let [a, b, c] = triangle.indices;
+            let a = vertices
+                .get(a as usize)
+                .context("3D triangle vertex index out of bounds")?
+                .position;
+            let b = vertices
+                .get(b as usize)
+                .context("3D triangle vertex index out of bounds")?
+                .position;
+            let c = vertices
+                .get(c as usize)
+                .context("3D triangle vertex index out of bounds")?
+                .position;
             let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
             let face = [
@@ -265,8 +278,11 @@ impl ModelMesh {
                 f32::mul_add(ab[1], -ac[0], ab[0] * ac[1]),
             ];
             for index in triangle.indices {
-                for axis in 0..3 {
-                    accumulated[index as usize][axis] += face[axis];
+                let normal = accumulated
+                    .get_mut(index as usize)
+                    .context("3D triangle vertex index out of bounds")?;
+                for (component, face_component) in normal.iter_mut().zip(face) {
+                    *component += face_component;
                 }
             }
         }
@@ -377,10 +393,11 @@ fn upload_texture(
     source: Option<&ModelTexture>,
     fallback: [u8; 4],
     srgb: bool,
-) -> wgpu::Texture {
+) -> Result<wgpu::Texture> {
     let (width, height, pixels) = source.map_or((1, 1, fallback.as_slice()), |texture| {
         (texture.width, texture.height, texture.pixels.as_slice())
     });
+    let bytes_per_row = width.checked_mul(4).context("3D texture row is too wide")?;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -409,7 +426,7 @@ fn upload_texture(
         pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(width * 4),
+            bytes_per_row: Some(bytes_per_row),
             rows_per_image: Some(height),
         },
         wgpu::Extent3d {
@@ -418,7 +435,7 @@ fn upload_texture(
             depth_or_array_layers: 1,
         },
     );
-    texture
+    Ok(texture)
 }
 
 impl GpuModel {
@@ -426,7 +443,7 @@ impl GpuModel {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         material_layout: &wgpu::BindGroupLayout,
-        mesh: ModelMesh,
+        mesh: &ModelMesh,
     ) -> Result<Self> {
         let vertices = mesh
             .vertices
@@ -453,13 +470,22 @@ impl GpuModel {
             .map(ModelMaterial::is_transparent)
             .collect::<Vec<_>>();
         for triangle in &mesh.triangles {
-            let material = triangle.material.min(transparent_materials.len() - 1);
-            if triangle
-                .indices
-                .iter()
-                .any(|index| mesh.vertices[*index as usize].color[3] < 0.999)
-            {
-                transparent_materials[material] = true;
+            let material = triangle
+                .material
+                .min(transparent_materials.len().saturating_sub(1));
+            let mut transparent = false;
+            for index in triangle.indices {
+                transparent |= mesh
+                    .vertices
+                    .get(index as usize)
+                    .context("3D triangle vertex index out of bounds")?
+                    .color[3]
+                    < 0.999;
+            }
+            if transparent {
+                *transparent_materials
+                    .get_mut(material)
+                    .context("3D model has no material")? = true;
             }
         }
 
@@ -482,7 +508,7 @@ impl GpuModel {
                 material.texture.as_ref(),
                 [255, 255, 255, 255],
                 true,
-            );
+            )?;
             let opacity_texture = upload_texture(
                 device,
                 queue,
@@ -490,7 +516,7 @@ impl GpuModel {
                 material.opacity_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
             let normal_texture = upload_texture(
                 device,
                 queue,
@@ -498,7 +524,7 @@ impl GpuModel {
                 material.normal_texture.as_ref(),
                 [128, 128, 255, 255],
                 false,
-            );
+            )?;
             let metallic_roughness_texture = upload_texture(
                 device,
                 queue,
@@ -506,7 +532,7 @@ impl GpuModel {
                 material.metallic_roughness_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
             let metallic_texture = upload_texture(
                 device,
                 queue,
@@ -514,7 +540,7 @@ impl GpuModel {
                 material.metallic_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
             let roughness_texture = upload_texture(
                 device,
                 queue,
@@ -522,7 +548,7 @@ impl GpuModel {
                 material.roughness_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
             let occlusion_texture = upload_texture(
                 device,
                 queue,
@@ -530,7 +556,7 @@ impl GpuModel {
                 material.occlusion_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
             let emissive_texture = upload_texture(
                 device,
                 queue,
@@ -538,7 +564,7 @@ impl GpuModel {
                 material.emissive_texture.as_ref(),
                 [0, 0, 0, 255],
                 true,
-            );
+            )?;
             let transmission_texture = upload_texture(
                 device,
                 queue,
@@ -546,7 +572,7 @@ impl GpuModel {
                 material.transmission_texture.as_ref(),
                 [255, 255, 255, 255],
                 false,
-            );
+            )?;
 
             let views = [
                 texture.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -654,7 +680,9 @@ impl GpuModel {
             });
             gpu_materials.push(GpuMaterial {
                 bind_group,
-                transparent: transparent_materials[material_index],
+                transparent: *transparent_materials
+                    .get(material_index)
+                    .context("missing 3D material transparency")?,
                 _uniform: uniform,
                 _texture: texture,
                 _opacity_texture: opacity_texture,
@@ -670,8 +698,11 @@ impl GpuModel {
 
         let mut grouped = vec![Vec::<u32>::new(); gpu_materials.len()];
         for triangle in &mesh.triangles {
-            let material = triangle.material.min(grouped.len() - 1);
-            grouped[material].extend_from_slice(&triangle.indices);
+            let material = triangle.material.min(grouped.len().saturating_sub(1));
+            grouped
+                .get_mut(material)
+                .context("3D model has no material")?
+                .extend_from_slice(&triangle.indices);
         }
         let mut draws = Vec::new();
         for (material, indices) in grouped.into_iter().enumerate() {
@@ -709,7 +740,7 @@ struct ModelRenderer {
     transparent_pipeline: wgpu::RenderPipeline,
 }
 
-fn material_texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn material_texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -722,7 +753,7 @@ fn material_texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn material_sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn material_sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -887,10 +918,17 @@ impl ModelRenderer {
     ) -> GpuFrame {
         let width = width.max(1);
         let height = height.max(1);
-        let center: [f32; 3] =
-            std::array::from_fn(|axis| f32::midpoint(model.min[axis], model.max[axis]));
-        let extent: [f32; 3] =
-            std::array::from_fn(|axis| (model.max[axis] - model.min[axis]).abs().max(1.0e-6));
+        let mut center = [0.0; 3];
+        let mut extent = [0.0; 3];
+        for (((center, extent), min), max) in center
+            .iter_mut()
+            .zip(&mut extent)
+            .zip(model.min)
+            .zip(model.max)
+        {
+            *center = f32::midpoint(min, max);
+            *extent = (max - min).abs().max(1.0e-6);
+        }
         let uniform = SceneUniform {
             center: [center[0], center[1], center[2], 0.0],
             extent: [extent[0], extent[1], extent[2], 0.0],
@@ -962,22 +1000,34 @@ impl ModelRenderer {
             pass.set_bind_group(0, &scene_group, &[]);
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_pipeline(&self.opaque_pipeline);
-            for draw in model
+            for (draw, material) in model
                 .draws
                 .iter()
-                .filter(|draw| !model.materials[draw.material].transparent)
+                .filter_map(|draw| {
+                    model
+                        .materials
+                        .get(draw.material)
+                        .map(|material| (draw, material))
+                })
+                .filter(|(_, material)| !material.transparent)
             {
-                pass.set_bind_group(1, &model.materials[draw.material].bind_group, &[]);
+                pass.set_bind_group(1, &material.bind_group, &[]);
                 pass.set_index_buffer(draw.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..draw.index_count, 0, 0..1);
             }
             pass.set_pipeline(&self.transparent_pipeline);
-            for draw in model
+            for (draw, material) in model
                 .draws
                 .iter()
-                .filter(|draw| model.materials[draw.material].transparent)
+                .filter_map(|draw| {
+                    model
+                        .materials
+                        .get(draw.material)
+                        .map(|material| (draw, material))
+                })
+                .filter(|(_, material)| material.transparent)
             {
-                pass.set_bind_group(1, &model.materials[draw.material].bind_group, &[]);
+                pass.set_bind_group(1, &material.bind_group, &[]);
                 pass.set_index_buffer(draw.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..draw.index_count, 0, 0..1);
             }
@@ -1022,7 +1072,7 @@ impl ModelGpuRuntime {
                 device,
                 queue,
                 &self.renderer.material_layout,
-                mesh,
+                &mesh,
             )?);
             self.models.insert(path.to_path_buf(), Arc::clone(&model));
             model
@@ -1066,7 +1116,7 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
                 .diffuse_color()
                 .map(|color| [color.x, color.y, color.z, 1.0])
         })
-        .unwrap_or(ModelMaterial::default().color);
+        .unwrap_or_else(|| ModelMaterial::default().color);
     if let Some(opacity) = material.opacity() {
         let opacity = opacity.clamp(0.0, 1.0);
 
@@ -1085,13 +1135,14 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
         .texture(TextureType::Normals, 0)
         .or_else(|| material.texture(TextureType::NormalCamera, 0));
 
-    let (normal_info, normal_is_height) = if let Some(normal) = normal_info {
-        (Some(normal), false)
-    } else {
-        let height = material.texture(TextureType::Height, 0);
-        let is_height = height.is_some();
-        (height, is_height)
-    };
+    let (normal_info, normal_is_height) = normal_info.map_or_else(
+        || {
+            let height = material.texture(TextureType::Height, 0);
+            let is_height = height.is_some();
+            (height, is_height)
+        },
+        |normal| (Some(normal), false),
+    );
     let metallic_roughness_info = material.texture(TextureType::GltfMetallicRoughness, 0);
     let metallic_info = metallic_roughness_info
         .is_none()
@@ -1245,12 +1296,13 @@ fn decode_embedded_texture(texture: &Texture) -> Option<ModelTexture> {
     match texture.data().ok()? {
         TextureData::Texels(texels) => {
             let (width, height) = texture.dimensions();
-            if width == 0 || height == 0 || texels.len() < width as usize * height as usize {
+            let count = (width as usize).checked_mul(height as usize)?;
+            if width == 0 || height == 0 || texels.len() < count {
                 return None;
             }
             let pixels = texels
                 .into_iter()
-                .take(width as usize * height as usize)
+                .take(count)
                 .flat_map(|texel| [texel.r, texel.g, texel.b, texel.a])
                 .collect();
             Some(ModelTexture {

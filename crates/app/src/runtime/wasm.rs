@@ -43,6 +43,7 @@ fn rgba32f_lengths(width: u32, height: u32) -> Option<(usize, usize)> {
     (bytes <= MEMORY_LIMIT_BYTES).then_some((values, bytes))
 }
 
+#[derive(Clone, Copy)]
 pub struct WasmRenderRequest<'a> {
     pub module_path: &'a Path,
     pub entry: &'a str,
@@ -118,7 +119,7 @@ impl WasmRuntime {
     }
 
     pub fn measure_text(
-        &mut self,
+        &self,
         text: &str,
         font_family: Option<&str>,
         font_size: f32,
@@ -215,11 +216,10 @@ impl WasmRuntime {
             .call(&mut store, params_len)
             .map_err(anyhow::Error::from)
             .context("CPU plugin kama_alloc failed")?;
-        if params_ptr < 0 {
-            bail!("CPU plugin kama_alloc returned a negative pointer");
-        }
+        let params_offset = usize::try_from(params_ptr)
+            .context("CPU plugin kama_alloc returned a negative pointer")?;
         memory
-            .write(&mut store, params_ptr as usize, &params)
+            .write(&mut store, params_offset, &params)
             .context("write CPU plugin parameters")?;
 
         let output_ptr = render
@@ -229,13 +229,12 @@ impl WasmRuntime {
             )
             .map_err(anyhow::Error::from)
             .with_context(|| format!("CPU plugin `{entry}` trapped"))?;
-        if output_ptr < 0 {
-            bail!("CPU plugin returned a negative frame pointer");
-        }
+        let output_offset =
+            usize::try_from(output_ptr).context("CPU plugin returned a negative frame pointer")?;
 
         let mut bytes = vec![0u8; byte_count];
         memory
-            .read(&store, output_ptr as usize, &mut bytes)
+            .read(&store, output_offset, &mut bytes)
             .context("CPU plugin returned an out-of-bounds frame")?;
         let mut pixels = Vec::with_capacity(value_count);
         for bytes in bytes.as_chunks::<4>().0 {
@@ -302,8 +301,8 @@ impl WasmRuntime {
         let descriptor = overlay
             .call(&mut store, (size[0], size[1], time))
             .map_err(anyhow::Error::from)
-            .with_context(|| format!("monitor plugin `{entry}` trapped"))?
-            as u64;
+            .with_context(|| format!("monitor plugin `{entry}` trapped"))?;
+        let descriptor = u64::from_ne_bytes(descriptor.to_ne_bytes());
         let pointer = descriptor as u32 as usize;
         let byte_len = (descriptor >> 32) as usize;
         if !(HEADER_BYTES..=MAX_OVERLAY_BYTES).contains(&byte_len) {
@@ -313,18 +312,16 @@ impl WasmRuntime {
         memory
             .read(&store, pointer, &mut bytes)
             .context("monitor plugin returned an out-of-bounds buffer")?;
-        let u32_at = |offset: usize| {
-            u32::from_le_bytes(
-                bytes[offset..offset + 4]
-                    .try_into()
-                    .expect("checked record"),
-            )
-        };
-        if u32_at(0) != 1 {
+        let mut words = bytes.as_chunks::<4>().0.iter().map(|chunk| {
+            let [a, b, c, d] = chunk;
+            u32::from_le_bytes([*a, *b, *c, *d])
+        });
+        let version = words.next().context("missing monitor version")?;
+        if version != 1 {
             bail!("monitor plugin returned an unsupported overlay version");
         }
-        let handle_count = u32_at(4) as usize;
-        let line_count = u32_at(8) as usize;
+        let handle_count = words.next().context("missing monitor handle count")? as usize;
+        let line_count = words.next().context("missing monitor line count")? as usize;
         let expected = HEADER_BYTES
             .checked_add(
                 handle_count
@@ -337,11 +334,17 @@ impl WasmRuntime {
             bail!("monitor plugin returned a malformed overlay buffer");
         }
         let mut handles = Vec::with_capacity(handle_count);
-        for index in 0..handle_count {
-            let offset = HEADER_BYTES + index * HANDLE_BYTES;
-            let f32_at = |field: usize| f32::from_bits(u32_at(offset + field * 4));
-            let position = [f32_at(2), f32_at(3)];
-            let origin = [f32_at(4), f32_at(5)];
+        for _ in 0..handle_count {
+            let target = words.next().context("missing monitor handle target")?;
+            let element = words.next().context("missing monitor handle element")?;
+            let position = [
+                f32::from_bits(words.next().context("missing monitor handle position")?),
+                f32::from_bits(words.next().context("missing monitor handle position")?),
+            ];
+            let origin = [
+                f32::from_bits(words.next().context("missing monitor handle origin")?),
+                f32::from_bits(words.next().context("missing monitor handle origin")?),
+            ];
             if !position
                 .iter()
                 .chain(origin.iter())
@@ -350,24 +353,28 @@ impl WasmRuntime {
                 bail!("monitor plugin returned non-finite handle geometry");
             }
             handles.push(WasmMonitorHandle {
-                target: u32_at(offset),
-                element: u32_at(offset + 4) as i32,
+                target,
+                element: i32::from_ne_bytes(element.to_ne_bytes()),
                 position,
                 origin,
             });
         }
-        let lines_offset = HEADER_BYTES + handle_count * HANDLE_BYTES;
         let mut lines = Vec::with_capacity(line_count);
-        for index in 0..line_count {
-            let offset = lines_offset + index * LINE_BYTES;
-            let line = [u32_at(offset) as usize, u32_at(offset + 4) as usize];
+        for _ in 0..line_count {
+            let line = [
+                words.next().context("missing monitor line start")? as usize,
+                words.next().context("missing monitor line end")? as usize,
+            ];
             if line[0] >= handles.len() || line[1] >= handles.len() {
                 bail!("monitor plugin line references an unknown handle");
             }
             lines.push(line);
         }
         if let Ok(dealloc) = instance.get_typed_func::<(i32, i32), ()>(&mut store, "kama_dealloc") {
-            let _ = dealloc.call(&mut store, (pointer as i32, byte_len as i32));
+            let pointer_bits = i32::from_ne_bytes((descriptor as u32).to_ne_bytes());
+            let length =
+                i32::try_from(byte_len).context("monitor buffer length exceeds WASM range")?;
+            let _ = dealloc.call(&mut store, (pointer_bits, length));
         }
         Ok(WasmMonitorOverlay { handles, lines })
     }
@@ -524,6 +531,12 @@ impl AudioWasmProcessor {
         {
             bail!("invalid audio plugin block shape");
         }
+        let buffer_offset =
+            usize::try_from(self.buffer_ptr).context("invalid audio plugin buffer pointer")?;
+        let frame_count = samples
+            .len()
+            .checked_div(channels)
+            .context("invalid audio channel count")?;
         self.store.data_mut().parameters = Arc::clone(parameters);
         self.store
             .set_fuel(
@@ -536,7 +549,7 @@ impl AudioWasmProcessor {
             self.memory
                 .write(
                     &mut self.store,
-                    self.buffer_ptr as usize,
+                    buffer_offset,
                     bytemuck::cast_slice(samples),
                 )
                 .context("write audio plugin block")?;
@@ -547,8 +560,7 @@ impl AudioWasmProcessor {
                 &mut self.store,
                 (
                     self.buffer_ptr,
-                    i32::try_from(samples.len() / channels)
-                        .context("audio frame count overflow")?,
+                    i32::try_from(frame_count).context("audio frame count overflow")?,
                     i32::try_from(channels).context("audio channel count overflow")?,
                     i32::try_from(sample_rate).context("audio sample rate overflow")?,
                     i32::from(reset),
@@ -563,7 +575,7 @@ impl AudioWasmProcessor {
             self.memory
                 .read(
                     &self.store,
-                    self.buffer_ptr as usize,
+                    buffer_offset,
                     bytemuck::cast_slice_mut(samples),
                 )
                 .context("read audio plugin block")?;
@@ -590,8 +602,10 @@ macro_rules! install_parameter_host_abi {
                 caller
                     .data()
                     .parameters
-                    .get(&(hash as u32))
-                    .and_then(|value| host_component(value, component.max(0) as usize))
+                    .get(&wasm_hash(hash))
+                    .and_then(|value| {
+                        host_component(value, usize::try_from(component.max(0)).ok()?)
+                    })
                     .unwrap_or(fallback)
             },
         )?;
@@ -602,10 +616,10 @@ macro_rules! install_parameter_host_abi {
                 caller
                     .data()
                     .parameters
-                    .get(&(hash as u32))
+                    .get(&wasm_hash(hash))
                     .and_then(|value| match value {
                         HostValue::Gpu(GpuValue::U32(value) | GpuValue::Enum(value)) => {
-                            Some(*value as i32)
+                            Some(i32::from_ne_bytes(value.to_ne_bytes()))
                         }
                         HostValue::Gpu(GpuValue::I32(value)) => Some(*value),
                         HostValue::Gpu(GpuValue::Bool(value)) => Some(i32::from(*value)),
@@ -622,7 +636,7 @@ macro_rules! install_parameter_host_abi {
                 caller
                     .data()
                     .parameters
-                    .get(&(hash as u32))
+                    .get(&wasm_hash(hash))
                     .and_then(|value| match value {
                         HostValue::F32List(values) => i32::try_from(values.len()).ok(),
                         _ => None,
@@ -640,7 +654,7 @@ macro_rules! install_parameter_host_abi {
                         caller
                             .data()
                             .parameters
-                            .get(&(hash as u32))
+                            .get(&wasm_hash(hash))
                             .and_then(|value| match value {
                                 HostValue::F32List(values) => values.get(index).copied(),
                                 _ => None,
@@ -650,6 +664,11 @@ macro_rules! install_parameter_host_abi {
             },
         )?;
     }};
+}
+
+const fn wasm_hash(hash: i64) -> u32 {
+    let [a, b, c, d, ..] = hash.to_le_bytes();
+    u32::from_le_bytes([a, b, c, d])
 }
 
 fn install_audio_host_abi(linker: &mut Linker<AudioPluginStore>) -> Result<()> {
@@ -675,7 +694,7 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
         "kama",
         "param_vec2_array_len",
         |caller: Caller<'_, PluginStore>, hash: i64| -> i32 {
-            let hash = hash as u32;
+            let hash = wasm_hash(hash);
             caller
                 .data()
                 .parameters
@@ -699,15 +718,16 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
             if index < 0 || !(0..=1).contains(&component) {
                 return fallback;
             }
-            let hash = hash as u32;
+            let hash = wasm_hash(hash);
             caller
                 .data()
                 .parameters
                 .get(&hash)
                 .and_then(|value| match value {
                     HostValue::Vec2Array(points) => points
-                        .get(index as usize)
-                        .map(|point| point[component as usize]),
+                        .get(usize::try_from(index).ok()?)
+                        .and_then(|point| point.get(usize::try_from(component).ok()?))
+                        .copied(),
                     _ => None,
                 })
                 .unwrap_or(fallback)
@@ -722,10 +742,9 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
         "kama",
         "render_origin",
         |caller: Caller<'_, PluginStore>, component: i32| -> f32 {
-            caller
-                .data()
-                .render_origin
-                .get(component.max(0) as usize)
+            usize::try_from(component.max(0))
+                .ok()
+                .and_then(|index| caller.data().render_origin.get(index))
                 .copied()
                 .unwrap_or(0.0)
         },
@@ -739,10 +758,17 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
         "kama",
         "render_text_rgba32f",
         |mut caller: Caller<'_, PluginStore>, output_ptr: i32, width: i32, height: i32| -> i32 {
-            if output_ptr < 0 || width <= 0 || height <= 0 {
+            let (Ok(start), Ok(width), Ok(height)) = (
+                usize::try_from(output_ptr),
+                u32::try_from(width),
+                u32::try_from(height),
+            ) else {
+                return -1;
+            };
+            if width == 0 || height == 0 {
                 return -1;
             }
-            let Some((value_count, byte_len)) = rgba32f_lengths(width as u32, height as u32) else {
+            let Some((value_count, byte_len)) = rgba32f_lengths(width, height) else {
                 return -4;
             };
             let text =
@@ -760,14 +786,9 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
             let color = host_color(host_parameter(&caller.data().parameters, "color"));
             let text_host = Arc::clone(&caller.data().text);
             let frame = match text_host.lock() {
-                Ok(mut host) => host.render(
-                    &text,
-                    family.as_deref(),
-                    font_size,
-                    color,
-                    width as u32,
-                    height as u32,
-                ),
+                Ok(mut host) => {
+                    host.render(&text, family.as_deref(), font_size, color, width, height)
+                }
                 Err(_) => return -2,
             };
             if frame.pixels.len() != value_count {
@@ -776,18 +797,15 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
             let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
                 return -3;
             };
-            let start = output_ptr as usize;
-            let end = match start.checked_add(byte_len) {
-                Some(end) => end,
-                None => return -4,
+            let Some(end) = start.checked_add(byte_len) else {
+                return -4;
             };
             let data = memory.data_mut(&mut caller);
-            if end > data.len() {
+            let Some(output) = data.get_mut(start..end) else {
                 return -5;
-            }
-            for (index, value) in frame.pixels.iter().enumerate() {
-                let offset = start + index * 4;
-                data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            };
+            for (target, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(&frame.pixels) {
+                target.copy_from_slice(&value.to_le_bytes());
             }
             0
         },
@@ -796,8 +814,8 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
 }
 
 pub fn plugin_parameter_hash(value: &str) -> u32 {
-    value.bytes().fold(0x811c9dc5u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x01000193)
+    value.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
     })
 }
 
@@ -815,7 +833,7 @@ fn host_component(value: &HostValue, component: usize) -> Option<f32> {
     }
 }
 
-fn host_color(value: Option<&HostValue>) -> [f32; 4] {
+const fn host_color(value: Option<&HostValue>) -> [f32; 4] {
     match value {
         Some(HostValue::Gpu(GpuValue::Color(value) | GpuValue::Vec4(value))) => *value,
         _ => [1.0, 1.0, 1.0, 1.0],
@@ -849,10 +867,12 @@ impl TextHost {
             height = height.max(run.line_top + run.line_height);
         }
 
-        [
-            width.ceil().max(1.0) as u32 + 4,
-            height.ceil().max(1.0) as u32 + 4,
-        ]
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "max clamps the rounded dimensions to at least one"
+        )]
+        let dimensions = [width.ceil().max(1.0) as u32, height.ceil().max(1.0) as u32];
+        dimensions.map(|dimension| dimension.saturating_add(4))
     }
 
     fn render(
@@ -901,52 +921,72 @@ impl TextHost {
                 continue;
             };
             let mask = swash_to_rgba_mask(
-                &image.content,
+                image.content,
                 &image.data,
                 image.placement.width,
                 image.placement.height,
             );
-            let left = glyph.x + image.placement.left;
-            let top = glyph.y - image.placement.top;
-            for y in 0..image.placement.height as i32 {
-                let py = top + y;
-                if py < 0 || py >= height as i32 {
+            let left = i64::from(glyph.x).saturating_add(i64::from(image.placement.left));
+            let top = i64::from(glyph.y).saturating_sub(i64::from(image.placement.top));
+            let Ok(glyph_width) = usize::try_from(image.placement.width) else {
+                continue;
+            };
+            if glyph_width == 0 {
+                continue;
+            }
+            for (index, pixel) in mask
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .take(glyph_width.saturating_mul(image.placement.height as usize))
+                .enumerate()
+            {
+                let Some(x) = index.checked_rem(glyph_width) else {
+                    continue;
+                };
+                let Some(y) = index.checked_div(glyph_width) else {
+                    continue;
+                };
+                let (Ok(x), Ok(y)) = (i64::try_from(x), i64::try_from(y)) else {
+                    continue;
+                };
+                let (Some(px), Some(py)) = (left.checked_add(x), top.checked_add(y)) else {
+                    continue;
+                };
+                let (Ok(px), Ok(py)) = (u32::try_from(px), u32::try_from(py)) else {
+                    continue;
+                };
+                if px >= width || py >= height {
                     continue;
                 }
-                for x in 0..image.placement.width as i32 {
-                    let px = left + x;
-                    if px < 0 || px >= width as i32 {
-                        continue;
-                    }
-                    let index = ((y as u32 * image.placement.width + x as u32) * 4) as usize;
-                    let glyph_rgba = [
-                        f32::from(mask[index]) / 255.0,
-                        f32::from(mask[index + 1]) / 255.0,
-                        f32::from(mask[index + 2]) / 255.0,
-                        f32::from(mask[index + 3]) / 255.0,
-                    ];
-                    let alpha = (glyph_rgba[3] * color[3]).clamp(0.0, 1.0);
-                    let rgb = if matches!(&image.content, SwashContent::Color) {
-                        [
-                            srgb_to_linear(glyph_rgba[0]) * color[0],
-                            srgb_to_linear(glyph_rgba[1]) * color[1],
-                            srgb_to_linear(glyph_rgba[2]) * color[2],
-                        ]
-                    } else {
-                        [color[0], color[1], color[2]]
-                    };
-                    let src = [rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha, alpha];
-                    let dst = frame.rgba(px as u32, py as u32);
-                    frame.set_rgba(px as u32, py as u32, alpha_over(dst, src));
-                }
+                let [red, green, blue, alpha] = pixel;
+                let glyph_rgba = [
+                    f32::from(*red) / 255.0,
+                    f32::from(*green) / 255.0,
+                    f32::from(*blue) / 255.0,
+                    f32::from(*alpha) / 255.0,
+                ];
+                let alpha = (glyph_rgba[3] * color[3]).clamp(0.0, 1.0);
+                let rgb = if matches!(&image.content, SwashContent::Color) {
+                    [
+                        srgb_to_linear(glyph_rgba[0]) * color[0],
+                        srgb_to_linear(glyph_rgba[1]) * color[1],
+                        srgb_to_linear(glyph_rgba[2]) * color[2],
+                    ]
+                } else {
+                    [color[0], color[1], color[2]]
+                };
+                let src = [rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha, alpha];
+                let dst = frame.rgba(px, py);
+                frame.set_rgba(px, py, alpha_over(dst, src));
             }
         }
         frame
     }
 }
 
-fn swash_to_rgba_mask(content: &SwashContent, data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let count = width as usize * height as usize;
+fn swash_to_rgba_mask(content: SwashContent, data: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let count = (width as usize).saturating_mul(height as usize);
     match content {
         SwashContent::Mask => data
             .iter()
@@ -962,7 +1002,7 @@ fn swash_to_rgba_mask(content: &SwashContent, data: &[u8], width: u32, height: u
             .collect(),
         SwashContent::Color => data.to_vec(),
         #[allow(unreachable_patterns)]
-        _ => vec![0; count * 4],
+        _ => vec![0; count.saturating_mul(4)],
     }
 }
 

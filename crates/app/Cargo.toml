@@ -56,4 +56,3 @@ osx_minimum_system_version = "15.0"
 
 [lints]
 workspace = true
-

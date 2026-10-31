@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicU64;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{
     effects::EffectRuntime,
@@ -34,6 +34,7 @@ pub enum ExportPixelFormat {
     Yuva444p10Le,
 }
 
+#[derive(Clone, Copy)]
 pub struct ExportRgba16Args<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -57,7 +58,7 @@ pub struct ExportYuvBatchArgs<'a, W: std::io::Write> {
 }
 
 impl ExportPixelFormat {
-    pub(crate) fn ffmpeg_name(self) -> &'static str {
+    pub(crate) const fn ffmpeg_name(self) -> &'static str {
         match self {
             Self::Nv12 => "nv12",
             Self::P010Le => "p010le",
@@ -67,19 +68,19 @@ impl ExportPixelFormat {
         }
     }
 
-    fn texture_format(self) -> wgpu::TextureFormat {
+    const fn texture_format(self) -> wgpu::TextureFormat {
         match self {
-            Self::Nv12 | Self::P010Le | Self::P210Le => wgpu::TextureFormat::R16Uint,
+            Self::Nv12 | Self::P010Le | Self::P210Le | Self::Yuva444p10Le => {
+                wgpu::TextureFormat::R16Uint
+            }
             Self::Ayuv64Le => wgpu::TextureFormat::Rgba16Uint,
-            Self::Yuva444p10Le => wgpu::TextureFormat::R16Uint,
         }
     }
 
-    fn plane_count(self) -> usize {
+    const fn plane_count(self) -> usize {
         match self {
-            Self::Nv12 | Self::P010Le => 1,
+            Self::Nv12 | Self::P010Le | Self::Ayuv64Le => 1,
             Self::P210Le => 2,
-            Self::Ayuv64Le => 1,
             Self::Yuva444p10Le => 4,
         }
     }
@@ -89,13 +90,12 @@ impl ExportPixelFormat {
         match self {
             Self::Nv12 => width * 3 / 2,
             Self::P010Le => width * 3,
-            Self::P210Le => width * 2,
+            Self::P210Le | Self::Yuva444p10Le => width * 2,
             Self::Ayuv64Le => width * 8,
-            Self::Yuva444p10Le => width * 2,
         }
     }
 
-    fn direct_buffer_only(self) -> bool {
+    const fn direct_buffer_only(self) -> bool {
         matches!(self, Self::Nv12 | Self::P010Le | Self::P210Le)
     }
 }
@@ -124,8 +124,20 @@ impl EncodeReadbackSurface {
         let height = height.max(1);
         let texture_format = format.texture_format();
         let row_bytes = format.row_bytes(width);
-        let exact_plane_stride = row_bytes * u64::from(height);
-        let exact_size = exact_plane_stride * format.plane_count() as u64;
+        #[expect(
+            clippy::expect_used,
+            reason = "oversized GPU buffers cannot represent an export surface"
+        )]
+        let exact_plane_stride = row_bytes
+            .checked_mul(u64::from(height))
+            .expect("export plane size overflow");
+        #[expect(
+            clippy::expect_used,
+            reason = "oversized GPU buffers cannot represent an export surface"
+        )]
+        let exact_size = exact_plane_stride
+            .checked_mul(format.plane_count() as u64)
+            .expect("export buffer size overflow");
         let storage_limit = device.limits().max_storage_buffer_binding_size;
         let direct_mapped_storage = device
             .features()
@@ -139,7 +151,7 @@ impl EncodeReadbackSurface {
                 || (width.is_multiple_of(4) && height.is_multiple_of(2)));
 
         assert!(
-            !(format.direct_buffer_only() && !direct_mapped_storage),
+            !format.direct_buffer_only() || direct_mapped_storage,
             "{} export requires MAPPABLE_PRIMARY_BUFFERS and compatible 4:2:x dimensions",
             format.ffmpeg_name()
         );
@@ -187,20 +199,41 @@ impl EncodeReadbackSurface {
                 views.push(view);
             }
             let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-            let padded = row_bytes.div_ceil(alignment) * alignment;
+            #[expect(
+                clippy::expect_used,
+                reason = "oversized GPU buffers cannot represent an export surface"
+            )]
+            let padded = row_bytes
+                .div_ceil(alignment)
+                .checked_mul(alignment)
+                .expect("export row size overflow");
+            #[expect(
+                clippy::expect_used,
+                reason = "oversized GPU buffers cannot represent an export surface"
+            )]
+            let stride = padded
+                .checked_mul(u64::from(height))
+                .expect("export plane size overflow");
             (
                 padded,
-                padded * u64::from(height),
+                stride,
                 wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             )
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "oversized GPU buffers cannot represent an export surface"
+        )]
+        let buffer_size = plane_stride
+            .checked_mul(format.plane_count() as u64)
+            .expect("export buffer size overflow");
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(if direct_mapped_storage {
                 "kama direct encoder YUV buffer"
             } else {
                 "kama encoder-native YUV readback"
             }),
-            size: plane_stride * format.plane_count() as u64,
+            size: buffer_size,
             usage,
             mapped_at_creation: false,
         });
@@ -222,6 +255,10 @@ impl EncodeReadbackSurface {
         self.width == width.max(1) && self.height == height.max(1) && self.format == format
     }
 
+    #[expect(
+        clippy::unreachable,
+        reason = "construction forbids texture-backed surfaces for packed 4:2:x formats"
+    )]
     pub(super) fn encode_gpu_conversion(
         &self,
         gpu: &VideoGpuRuntime,
@@ -233,7 +270,7 @@ impl EncodeReadbackSurface {
             match self.format {
                 ExportPixelFormat::Nv12 => {
                     gpu.export_nv12_to_buffer(
-                        ExportPassArgs {
+                        &mut ExportPassArgs {
                             device,
                             encoder,
                             input: frame,
@@ -243,7 +280,7 @@ impl EncodeReadbackSurface {
                 }
                 ExportPixelFormat::P010Le => {
                     gpu.export_p010_to_buffer(
-                        ExportPassArgs {
+                        &mut ExportPassArgs {
                             device,
                             encoder,
                             input: frame,
@@ -253,7 +290,7 @@ impl EncodeReadbackSurface {
                 }
                 ExportPixelFormat::P210Le => {
                     gpu.export_p210_to_buffer(
-                        ExportPassArgs {
+                        &mut ExportPassArgs {
                             device,
                             encoder,
                             input: frame,
@@ -263,7 +300,7 @@ impl EncodeReadbackSurface {
                 }
                 ExportPixelFormat::Ayuv64Le => {
                     gpu.export_ayuv64_to_buffer(
-                        ExportPassArgs {
+                        &mut ExportPassArgs {
                             device,
                             encoder,
                             input: frame,
@@ -273,7 +310,7 @@ impl EncodeReadbackSurface {
                 }
                 ExportPixelFormat::Yuva444p10Le => {
                     gpu.export_yuva10_to_buffer(
-                        ExportPassArgs {
+                        &mut ExportPassArgs {
                             device,
                             encoder,
                             input: frame,
@@ -289,28 +326,38 @@ impl EncodeReadbackSurface {
                 unreachable!("4:2:x packed export is direct-buffer-only")
             }
             ExportPixelFormat::Ayuv64Le => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "constructor creates one view for AYUV texture export"
+                )]
+                let view = self.views.first().expect("AYUV export view exists");
                 gpu.export_ayuv64_into(
                     ExportPassArgs {
                         device,
                         encoder,
                         input: frame,
                     },
-                    &self.views[0],
+                    view,
                 );
             }
             ExportPixelFormat::Yuva444p10Le => {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "constructor creates four views for YUVA texture export"
+                )]
+                let views: &[wgpu::TextureView; 4] = self
+                    .views
+                    .as_slice()
+                    .try_into()
+                    .expect("YUVA export views exist");
+                let [y, u, v, a] = views;
                 gpu.export_yuva10_into(
                     ExportPassArgs {
                         device,
                         encoder,
                         input: frame,
                     },
-                    [
-                        &self.views[0],
-                        &self.views[1],
-                        &self.views[2],
-                        &self.views[3],
-                    ],
+                    [y, u, v, a],
                 );
             }
         }
@@ -321,6 +368,14 @@ impl EncodeReadbackSurface {
             return;
         }
         for (plane, texture) in self.textures.iter().enumerate() {
+            #[expect(
+                clippy::expect_used,
+                reason = "buffer allocation checked the stride times the complete plane count"
+            )]
+            let offset = self
+                .plane_stride
+                .checked_mul(plane as u64)
+                .expect("export plane offset overflow");
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture,
@@ -331,7 +386,7 @@ impl EncodeReadbackSurface {
                 wgpu::TexelCopyBufferInfo {
                     buffer: &self.buffer,
                     layout: wgpu::TexelCopyBufferLayout {
-                        offset: self.plane_stride * plane as u64,
+                        offset,
                         bytes_per_row: Some(self.padded_row_bytes as u32),
                         rows_per_image: Some(self.height),
                     },
@@ -358,14 +413,22 @@ impl EncodeReadbackSurface {
         let padded = self.padded_row_bytes as usize;
         let plane_stride = self.plane_stride as usize;
         for plane in 0..self.format.plane_count() {
-            let base = plane * plane_stride;
-            if row_bytes == padded {
-                writer.write_all(&mapped[base..base + row_bytes * self.height as usize])?;
-            } else {
-                for y in 0..self.height as usize {
-                    let start = base + y * padded;
-                    writer.write_all(&mapped[start..start + row_bytes])?;
-                }
+            let base = plane
+                .checked_mul(plane_stride)
+                .context("export plane offset overflow")?;
+            for y in 0..self.height as usize {
+                let start = y
+                    .checked_mul(padded)
+                    .and_then(|offset| base.checked_add(offset))
+                    .context("export row offset overflow")?;
+                let end = start
+                    .checked_add(row_bytes)
+                    .context("export row end overflow")?;
+                writer.write_all(
+                    mapped
+                        .get(start..end)
+                        .context("mapped export buffer is too short")?,
+                )?;
             }
         }
         Ok(())
@@ -393,10 +456,24 @@ impl ExportReadbackSurface {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let row_bytes = u64::from(width) * 8;
         let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let padded_row_bytes = row_bytes.div_ceil(alignment) * alignment;
+        #[expect(
+            clippy::expect_used,
+            reason = "oversized GPU buffers cannot represent an export surface"
+        )]
+        let padded_row_bytes = row_bytes
+            .div_ceil(alignment)
+            .checked_mul(alignment)
+            .expect("export row size overflow");
+        #[expect(
+            clippy::expect_used,
+            reason = "oversized GPU buffers cannot represent an export surface"
+        )]
+        let size = padded_row_bytes
+            .checked_mul(u64::from(height))
+            .expect("export buffer size overflow");
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("kama export readback"),
-            size: padded_row_bytes * u64::from(height),
+            size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -433,7 +510,11 @@ impl ExportReadbacks {
         }
     }
 
-    pub(super) fn rgba(&self) -> &ExportReadbackSurface {
+    #[expect(
+        clippy::expect_used,
+        reason = "callers initialize the RGBA surface before requesting it"
+    )]
+    pub(super) const fn rgba(&self) -> &ExportReadbackSurface {
         self.rgba
             .as_ref()
             .expect("export readback surface initialized")
@@ -459,6 +540,10 @@ impl ExportReadbacks {
     }
 
     pub(super) fn encode(&self, index: usize) -> &EncodeReadbackSurface {
-        &self.encode[index]
+        #[expect(
+            clippy::expect_used,
+            reason = "callers allocate the batch before requesting a surface"
+        )]
+        self.encode.get(index).expect("export batch index exists")
     }
 }

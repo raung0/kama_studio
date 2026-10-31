@@ -55,35 +55,35 @@ struct PreferencesFile {
     release_channel: ReleaseChannel,
 }
 
-fn default_dark_accent() -> [u8; 4] {
+const fn default_dark_accent() -> [u8; 4] {
     [0xc1, 0x2c, 0xff, 0xff]
 }
 
-fn default_light_accent() -> [u8; 4] {
+const fn default_light_accent() -> [u8; 4] {
     [0xa0, 0x70, 0xff, 0xff]
 }
 
-fn default_rounded_corners() -> bool {
+const fn default_rounded_corners() -> bool {
     true
 }
 
-fn default_brightness() -> f32 {
+const fn default_brightness() -> f32 {
     0.08
 }
 
-fn default_accent_mixing() -> f32 {
+const fn default_accent_mixing() -> f32 {
     0.15
 }
 
-fn default_reveal_strength() -> f32 {
+const fn default_reveal_strength() -> f32 {
     0.5
 }
 
-fn default_reveal_accent_mix() -> f32 {
+const fn default_reveal_accent_mix() -> f32 {
     0.25
 }
 
-fn default_hardware_decoding() -> bool {
+const fn default_hardware_decoding() -> bool {
     true
 }
 
@@ -97,7 +97,7 @@ where
         .unwrap_or_else(updater::default_release_channel))
 }
 
-fn release_channel_index(channel: ReleaseChannel) -> usize {
+const fn release_channel_index(channel: ReleaseChannel) -> usize {
     match channel {
         ReleaseChannel::Alpha => 0,
         ReleaseChannel::Beta => 1,
@@ -106,7 +106,7 @@ fn release_channel_index(channel: ReleaseChannel) -> usize {
     }
 }
 
-fn release_channel_at_index(index: usize) -> ReleaseChannel {
+const fn release_channel_at_index(index: usize) -> ReleaseChannel {
     match index {
         0 => ReleaseChannel::Alpha,
         1 => ReleaseChannel::Beta,
@@ -118,7 +118,7 @@ fn release_channel_at_index(index: usize) -> ReleaseChannel {
 const RELEASE_CHANNEL_OPTION_COUNT: usize = 4;
 const THEME_OPTIONS: [&str; 3] = ["System", "Light", "Dark"];
 
-fn theme_index(theme: ThemePreset) -> usize {
+const fn theme_index(theme: ThemePreset) -> usize {
     match theme {
         ThemePreset::System => 0,
         ThemePreset::Light => 1,
@@ -126,11 +126,34 @@ fn theme_index(theme: ThemePreset) -> usize {
     }
 }
 
-fn theme_at_index(index: usize) -> ThemePreset {
+const fn theme_at_index(index: usize) -> ThemePreset {
     match index {
         1 => ThemePreset::Light,
         2 => ThemePreset::Dark,
         _ => ThemePreset::System,
+    }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "both operands are reduced modulo nonzero count and each branch bounds the result"
+)]
+const fn cyclic_index(selected: usize, count: usize, delta: isize) -> usize {
+    if count == 0 {
+        return selected;
+    }
+    let selected = selected % count;
+    let shift = delta.unsigned_abs() % count;
+    if delta < 0 {
+        if selected >= shift {
+            selected - shift
+        } else {
+            count - (shift - selected)
+        }
+    } else if shift >= count - selected {
+        shift - (count - selected)
+    } else {
+        selected + shift
     }
 }
 
@@ -270,6 +293,10 @@ fn keybinds_rect(width: f32, height: f32) -> Rect {
     )
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each layout row returns one rectangle per item, and both rows specify exactly two items"
+)]
 fn preference_dialog_rects(
     rect: Rect,
     row_count: usize,
@@ -424,21 +451,14 @@ impl SearchDialogState {
             scroll_offset: self.scroll.offset,
             label_ratio,
         };
-        if self
-            .rect_cache
-            .as_ref()
-            .is_none_or(|(cached, _)| *cached != key)
+        if let Some((cached, rects)) = &self.rect_cache
+            && *cached == key
         {
-            self.rect_cache = Some((
-                key,
-                preference_dialog_rects(rect, row_count, self.scroll, label_ratio),
-            ));
+            return rects.clone();
         }
-        self.rect_cache
-            .as_ref()
-            .expect("search dialog rect cache")
-            .1
-            .clone()
+        let rects = preference_dialog_rects(rect, row_count, self.scroll, label_ratio);
+        self.rect_cache = Some((key, rects.clone()));
+        rects
     }
 
     fn cached_rects(&self) -> Option<&PreferenceDialogRects> {
@@ -463,11 +483,8 @@ impl SearchDialogState {
         changed
     }
 
-    fn move_selection(&mut self, count: usize, delta: isize) {
-        if count == 0 {
-            return;
-        }
-        self.selected = (self.selected as isize + delta).rem_euclid(count as isize) as usize;
+    const fn move_selection(&mut self, count: usize, delta: isize) {
+        self.selected = cyclic_index(self.selected, count, delta);
     }
 
     fn edit_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> (bool, bool) {
@@ -508,8 +525,10 @@ impl SearchDialogState {
             self.selected = 0;
             return;
         }
-        self.selected = self.selected.min(rects.items.len() - 1);
-        let selected = rects.items[self.selected].row;
+        self.selected = self.selected.min(rects.items.len().saturating_sub(1));
+        let Some(selected) = rects.items.get(self.selected).map(|item| item.row) else {
+            return;
+        };
         let viewport = rects.shell.rows;
         let max_scroll = rects.shell.max_scroll;
         let next = if selected.y < viewport.y {
@@ -673,9 +692,8 @@ impl SettingsDialog {
                             crate::i18n::text("settings-no-results"),
                         );
                     } else {
-                        let selected = self.search.selected.min(entries.len() - 1);
-                        for (index, entry) in entries.iter().copied().enumerate() {
-                        let row = layout.items[index];
+                        let selected = self.search.selected.min(entries.len().saturating_sub(1));
+                        for (index, (entry, row)) in entries.iter().copied().zip(layout.items.iter().copied()).enumerate() {
                         let active = index == selected;
                         kama_ui::ui!(ctx, {
                             Rect(("settings-row", index), row.row) {
@@ -792,7 +810,7 @@ impl SettingsDialog {
                                 match entry {
                                     SettingEntry::DarkAccent => dark_accent_swatch = Some(row.accent_swatch),
                                     SettingEntry::LightAccent => light_accent_swatch = Some(row.accent_swatch),
-                                    _ => unreachable!(),
+                                    _ => {}
                                 }
                             }
                             SettingEntry::Brightness => {
@@ -877,11 +895,12 @@ impl SettingsDialog {
                 if let Some(index) = entries
                     .iter()
                     .position(|entry| *entry == SettingEntry::Theme)
+                    && let Some(row) = layout.items.get(index)
                 {
                     self.theme_combo.build_popup_in(
                         ctx,
                         "settings-theme-value",
-                        layout.items[index].value,
+                        row.value,
                         &THEME_OPTIONS,
                         Rect::new(0.0, 0.0, width, height),
                         component_style(),
@@ -890,11 +909,12 @@ impl SettingsDialog {
                 if let Some(index) = entries
                     .iter()
                     .position(|entry| *entry == SettingEntry::Language)
+                    && let Some(row) = layout.items.get(index)
                 {
                     self.language_combo.build_popup_in(
                         ctx,
                         "settings-language-value",
-                        layout.items[index].value,
+                        row.value,
                         &language_labels,
                         Rect::new(0.0, 0.0, width, height),
                         component_style(),
@@ -903,11 +923,12 @@ impl SettingsDialog {
                 if let Some(index) = entries
                     .iter()
                     .position(|entry| *entry == SettingEntry::ReleaseChannel)
+                    && let Some(row) = layout.items.get(index)
                 {
                     self.release_channel_combo.build_popup_in(
                         ctx,
                         "settings-release-channel-value",
-                        layout.items[index].value,
+                        row.value,
                         &release_channel_label_refs,
                         Rect::new(0.0, 0.0, width, height),
                         component_style(),
@@ -1017,13 +1038,18 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::Language)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if let Some(option) =
                 self.language_combo
                     .option_at(value, point, language_options.len())
             {
                 self.language_combo.select(option, true);
-                let _ = crate::i18n::set_language(language_options[option].language.as_deref());
+                if let Some(language) = language_options.get(option) {
+                    let _ = crate::i18n::set_language(language.language.as_deref());
+                }
                 self.search.selected = index;
                 self.search.query.set_focused(false);
                 self.plugin_paths.set_focused(false);
@@ -1054,7 +1080,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::Theme)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if let Some(option) = self
                 .theme_combo
                 .option_at(value, point, THEME_OPTIONS.len())
@@ -1092,7 +1121,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::ReleaseChannel)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if let Some(option) =
                 self.release_channel_combo
                     .option_at(value, point, RELEASE_CHANNEL_OPTION_COUNT)
@@ -1132,7 +1164,10 @@ impl SettingsDialog {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let swatch = layout.items[index].accent_swatch;
+            let Some(row) = layout.items.get(index) else {
+                continue;
+            };
+            let swatch = row.accent_swatch;
             let handled = match entry {
                 SettingEntry::DarkAccent => {
                     self.dark_accent.pointer_pressed(swatch, point, modifiers)
@@ -1140,7 +1175,7 @@ impl SettingsDialog {
                 SettingEntry::LightAccent => {
                     self.light_accent.pointer_pressed(swatch, point, modifiers)
                 }
-                _ => unreachable!(),
+                _ => continue,
             };
             if handled {
                 self.search.selected = index;
@@ -1154,7 +1189,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::Brightness)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if self.brightness.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1169,7 +1207,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::AccentMixing)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if self.accent_mixing.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1184,7 +1225,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::RevealStrength)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if self.reveal_strength.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1199,7 +1243,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::RevealAccentMix)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if self.reveal_accent_mix.pointer_pressed(value, point) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1214,7 +1261,10 @@ impl SettingsDialog {
             .iter()
             .position(|entry| *entry == SettingEntry::PluginPaths)
         {
-            let value = layout.items[index].value;
+            let Some(row) = layout.items.get(index) else {
+                return true;
+            };
+            let value = row.value;
             if self.plugin_paths.pointer_pressed(value, point, modifiers) {
                 self.search.selected = index;
                 self.search.query.set_focused(false);
@@ -1235,8 +1285,8 @@ impl SettingsDialog {
         {
             return true;
         }
-        for (index, entry) in entries.into_iter().enumerate() {
-            if layout.items[index].row.contains(point) {
+        for (index, (entry, item)) in entries.into_iter().zip(layout.items.iter()).enumerate() {
+            if item.row.contains(point) {
                 self.search.selected = index;
                 self.activate(entry);
                 return true;
@@ -1249,10 +1299,9 @@ impl SettingsDialog {
         let rect = settings_rect(width, height);
         let entries = filtered_settings(self.search.query.text());
         let layout = self.search.rects(rect, entries.len(), 0.57);
-        let mut changed = false;
-        if self.brightness.pointer_moved(point) {
+        let mut changed = self.brightness.pointer_moved(point);
+        if changed {
             theme::set_brightness(self.brightness.value());
-            changed = true;
         }
         if self.accent_mixing.pointer_moved(point) {
             theme::set_accent_mixing(self.accent_mixing.value());
@@ -1273,11 +1322,14 @@ impl SettingsDialog {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let swatch = layout.items[index].accent_swatch;
+            let Some(row) = layout.items.get(index) else {
+                continue;
+            };
+            let swatch = row.accent_swatch;
             let accent_changed = match entry {
                 SettingEntry::DarkAccent => self.dark_accent.pointer_moved(swatch, point),
                 SettingEntry::LightAccent => self.light_accent.pointer_moved(swatch, point),
-                _ => unreachable!(),
+                _ => continue,
             };
             if accent_changed {
                 self.apply_accent(entry);
@@ -1287,7 +1339,7 @@ impl SettingsDialog {
         changed
     }
 
-    pub(crate) fn pointer_released(&mut self) -> bool {
+    pub(crate) const fn pointer_released(&mut self) -> bool {
         self.dark_accent.pointer_released()
             | self.light_accent.pointer_released()
             | self.brightness.pointer_released()
@@ -1359,19 +1411,20 @@ impl SettingsDialog {
                     return true;
                 }
                 Key::Named(NamedKey::ArrowDown | NamedKey::ArrowUp) => {
-                    let selected = match event.logical_key {
-                        Key::Named(NamedKey::ArrowDown) => {
-                            (self.language_combo.selected() + 1) % language_options.len()
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            (self.language_combo.selected() + language_options.len() - 1)
-                                % language_options.len()
-                        }
-                        _ => unreachable!(),
+                    let delta = if matches!(event.logical_key, Key::Named(NamedKey::ArrowDown)) {
+                        1
+                    } else {
+                        -1
                     };
+                    let selected = cyclic_index(
+                        self.language_combo.selected(),
+                        language_options.len(),
+                        delta,
+                    );
                     self.language_combo.set_selected(selected);
-                    let _ =
-                        crate::i18n::set_language(language_options[selected].language.as_deref());
+                    if let Some(language) = language_options.get(selected) {
+                        let _ = crate::i18n::set_language(language.language.as_deref());
+                    }
                     return true;
                 }
                 _ => {}
@@ -1384,14 +1437,15 @@ impl SettingsDialog {
                     return true;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    let selected = (self.theme_combo.selected() + 1) % THEME_OPTIONS.len();
+                    let selected =
+                        cyclic_index(self.theme_combo.selected(), THEME_OPTIONS.len(), 1);
                     self.theme_combo.set_selected(selected);
                     theme::set_theme(theme_at_index(selected));
                     return true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let selected = (self.theme_combo.selected() + THEME_OPTIONS.len() - 1)
-                        % THEME_OPTIONS.len();
+                    let selected =
+                        cyclic_index(self.theme_combo.selected(), THEME_OPTIONS.len(), -1);
                     self.theme_combo.set_selected(selected);
                     theme::set_theme(theme_at_index(selected));
                     return true;
@@ -1406,16 +1460,21 @@ impl SettingsDialog {
                     return true;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    let selected =
-                        (self.release_channel_combo.selected() + 1) % RELEASE_CHANNEL_OPTION_COUNT;
+                    let selected = cyclic_index(
+                        self.release_channel_combo.selected(),
+                        RELEASE_CHANNEL_OPTION_COUNT,
+                        1,
+                    );
                     self.release_channel_combo.set_selected(selected);
                     updater::set_release_channel(release_channel_at_index(selected));
                     return true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let selected =
-                        (self.release_channel_combo.selected() + RELEASE_CHANNEL_OPTION_COUNT - 1)
-                            % RELEASE_CHANNEL_OPTION_COUNT;
+                    let selected = cyclic_index(
+                        self.release_channel_combo.selected(),
+                        RELEASE_CHANNEL_OPTION_COUNT,
+                        -1,
+                    );
                     self.release_channel_combo.set_selected(selected);
                     updater::set_release_channel(release_channel_at_index(selected));
                     return true;
@@ -1493,17 +1552,20 @@ impl SettingsDialog {
             .position(|entry| *entry == SettingEntry::PluginPaths)
             && self.plugin_paths.is_focused()
         {
-            return Some(self.plugin_paths.caret_rect(layout.items[index].value));
+            return Some(self.plugin_paths.caret_rect(layout.items.get(index)?.value));
         }
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
             };
-            let swatch = layout.items[index].accent_swatch;
+            let Some(row) = layout.items.get(index) else {
+                continue;
+            };
+            let swatch = row.accent_swatch;
             let caret = match entry {
                 SettingEntry::DarkAccent => self.dark_accent.caret_rect(swatch),
                 SettingEntry::LightAccent => self.light_accent.caret_rect(swatch),
-                _ => unreachable!(),
+                _ => continue,
             };
             if caret.is_some() {
                 return caret;
@@ -1520,6 +1582,10 @@ impl SettingsDialog {
         self.light_accent.close();
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "components are clamped to the unit interval; NaN also converts to zero under saturating float-to-integer casts"
+    )]
     fn apply_accent(&self, entry: SettingEntry) {
         let color = match entry {
             SettingEntry::DarkAccent => self.dark_accent.color(),
@@ -1559,17 +1625,11 @@ fn filtered_keybind_indices(registry: &CommandRegistry, query: &str) -> Vec<usiz
                     definition.label, definition.description, definition.id, shortcut
                 ),
             )
-            .map(|score| (score, index))
+            .map(|score| (score, index, &definition.label))
         })
         .collect::<Vec<_>>();
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0).then_with(|| {
-            registry.definitions()[a.1]
-                .label
-                .cmp(&registry.definitions()[b.1].label)
-        })
-    });
-    scored.into_iter().map(|(_, index)| index).collect()
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(b.2)));
+    scored.into_iter().map(|(_, index, _)| index).collect()
 }
 
 pub struct KeybindsDialog {
@@ -1640,9 +1700,8 @@ impl KeybindsDialog {
                             crate::i18n::text("settings-no-results"),
                         );
                     }
-                    for (visible_index, definition_index) in indices.into_iter().enumerate() {
-                    let definition = &registry.definitions()[definition_index];
-                    let row = layout.items[visible_index];
+                    for (visible_index, (definition_index, row)) in indices.into_iter().zip(layout.items.iter().copied()).enumerate() {
+                    let Some(definition) = registry.definitions().get(definition_index) else { continue; };
                     if row.row.bottom() < layout.shell.rows.y || row.row.y > layout.shell.rows.bottom() {
                         continue;
                     }
@@ -1686,7 +1745,7 @@ impl KeybindsDialog {
         width: f32,
         height: f32,
         point: [f32; 2],
-        registry: &mut CommandRegistry,
+        registry: &CommandRegistry,
     ) -> bool {
         let rect = keybinds_rect(width, height);
         let indices = filtered_keybind_indices(registry, self.search.query.text());
@@ -1712,9 +1771,14 @@ impl KeybindsDialog {
         else {
             return true;
         };
-        let definition_index = indices[visible_index];
+        let Some(definition) = indices
+            .get(visible_index)
+            .and_then(|index| registry.definitions().get(*index))
+        else {
+            return true;
+        };
         self.search.selected = visible_index;
-        self.capturing = Some(registry.definitions()[definition_index].id.clone());
+        self.capturing = Some(definition.id.clone());
         self.search.query.set_focused(false);
         true
     }
@@ -1784,10 +1848,11 @@ impl KeybindsDialog {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&definition_index) =
-                    indices.get(self.search.selected.min(indices.len().saturating_sub(1)))
+                if let Some(definition) = indices
+                    .get(self.search.selected.min(indices.len().saturating_sub(1)))
+                    .and_then(|index| registry.definitions().get(*index))
                 {
-                    self.capturing = Some(registry.definitions()[definition_index].id.clone());
+                    self.capturing = Some(definition.id.clone());
                     self.search.query.set_focused(false);
                 }
                 true

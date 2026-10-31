@@ -60,8 +60,10 @@ impl TimelineState {
         }
         if button == MouseButton::Right {
             self.context_menu = None;
-            if let Some(track) = self.header_track_at(layout, point) {
-                if self.tracks[track].kind == TrackKind::Audio {
+            if let Some(track) = self.header_track_at(layout, point)
+                && let Some(track_data) = self.tracks.get(track)
+            {
+                if track_data.kind == TrackKind::Audio {
                     for parameter in [MixerParameter::Volume, MixerParameter::Pan] {
                         if self
                             .mixer_knob_rect(layout, track, parameter)
@@ -71,7 +73,7 @@ impl TimelineState {
                                 stack,
                                 point: [point[0] - layout.rect.x, point[1] - layout.rect.y],
                                 kind: ContextKind::Mixer {
-                                    track: self.tracks[track].id,
+                                    track: track_data.id,
                                     parameter,
                                 },
                             });
@@ -83,8 +85,8 @@ impl TimelineState {
                     stack,
                     point: [point[0] - layout.rect.x, point[1] - layout.rect.y],
                     kind: ContextKind::Track {
-                        id: self.tracks[track].id,
-                        kind: self.tracks[track].kind,
+                        id: track_data.id,
+                        kind: track_data.kind,
                     },
                 });
                 return true;
@@ -103,7 +105,7 @@ impl TimelineState {
                 }
                 let hit = self
                     .clip_at(layout, point)
-                    .map(|(index, _)| self.clips[index].id);
+                    .and_then(|(index, _)| self.clips.get(index).map(|clip| clip.id));
                 if let Some(id) = hit
                     && !self.selected.contains(&id)
                 {
@@ -182,8 +184,11 @@ impl TimelineState {
             });
             return true;
         }
-        if let Some(track) = self.header_track_at(layout, point) {
-            let track_id = self.tracks[track].id;
+        if let Some(track) = self.header_track_at(layout, point)
+            && let Some(track_data) = self.tracks.get(track)
+        {
+            let track_id = track_data.id;
+            let track_kind = track_data.kind;
             if self
                 .keyframe_track_toggle_rect(layout, track)
                 .contains(point)
@@ -192,7 +197,7 @@ impl TimelineState {
                     let was_expanded = self.expanded_keyframe_tracks.contains(&track_id);
                     self.keyframe_track_expansion
                         .entry(track_id)
-                        .or_insert(f32::from(u8::from(was_expanded)));
+                        .or_insert_with(|| f32::from(u8::from(was_expanded)));
                     if !self.expanded_keyframe_tracks.insert(track_id) {
                         self.expanded_keyframe_tracks.remove(&track_id);
                     }
@@ -202,11 +207,17 @@ impl TimelineState {
             }
             for (start, _, rect) in self.keyframe_property_rects(layout, track, true) {
                 if Self::keyframe_lane_toggle_rect(rect).contains(point) {
-                    let target = self.keyframe_lanes_for_track(track)[start].id.group.clone();
+                    let Some(target) = self
+                        .keyframe_lanes_for_track(track)
+                        .get(start)
+                        .map(|lane| lane.id.group.clone())
+                    else {
+                        continue;
+                    };
                     let was_expanded = self.expanded_keyframe_lanes.contains(&target);
                     self.keyframe_lane_expansion
                         .entry(target.clone())
-                        .or_insert(f32::from(u8::from(was_expanded)));
+                        .or_insert_with(|| f32::from(u8::from(was_expanded)));
                     if !self.expanded_keyframe_lanes.insert(target.clone()) {
                         self.expanded_keyframe_lanes.remove(&target);
                     }
@@ -222,11 +233,11 @@ impl TimelineState {
             let local_x = point[0] - layout.rect.x;
             let row_y = self.track_y(layout, track);
             let local_y = point[1] - row_y;
-            if self.tracks[track].kind == TrackKind::Audio {
+            if track_kind == TrackKind::Audio {
                 for parameter in [MixerParameter::Volume, MixerParameter::Pan] {
                     let rect = self.mixer_knob_rect(layout, track, parameter);
                     if rect.contains(point) {
-                        let id = self.tracks[track].id;
+                        let id = track_id;
                         let reset = self
                             .mixer_knobs
                             .get_mut(&(id, parameter))
@@ -246,7 +257,7 @@ impl TimelineState {
                     .map(|(index, track)| (track.id, self.display_track_height(index)))
                     .collect();
                 self.drag = Some(Drag::Track {
-                    id: self.tracks[track].id,
+                    id: track_id,
                     grab_y: local_y,
                     current_y: point[1],
                     origin_y: layout.rect.y,
@@ -256,11 +267,11 @@ impl TimelineState {
                 .header_button_rect(layout, track, false)
                 .contains(point)
             {
-                self.pending_action = Some(TimelineAction::ToggleTrackMute(self.tracks[track].id));
+                self.pending_action = Some(TimelineAction::ToggleTrackMute(track_id));
             } else if self.header_button_rect(layout, track, true).contains(point) {
-                self.pending_action = Some(TimelineAction::ToggleTrackSolo(self.tracks[track].id));
+                self.pending_action = Some(TimelineAction::ToggleTrackSolo(track_id));
             } else if self.header_name_rect(layout, track).contains(point) {
-                let id = self.tracks[track].id;
+                let id = track_id;
                 let now = Instant::now();
                 if self
                     .last_track_click
@@ -301,11 +312,12 @@ impl TimelineState {
             }
             return true;
         }
-        if let Some((index, rect)) = self.clip_at(layout, point) {
+        if let Some((index, rect)) = self.clip_at(layout, point)
+            && let Some(clip) = self.clips.get(index)
+        {
             let left = point[0] - rect.x <= EDGE_W;
             let right = rect.right() - point[0] <= EDGE_W;
             let (id, anchor_start, anchor_track, edge_origin) = {
-                let clip = &self.clips[index];
                 (
                     clip.id,
                     clip.start,
@@ -719,15 +731,16 @@ impl TimelineState {
                                 if !intersects(rect, area) {
                                     continue;
                                 }
-                                let expanded =
-                                    self.keyframe_property_graph_is_settled(&lanes[lane_start].id);
-                                let axis = expanded.then(|| {
-                                    keyframe_property_axis_range(
-                                        &lanes[lane_start..lane_end],
-                                        rect.height,
-                                    )
-                                });
-                                for lane in &lanes[lane_start..lane_end] {
+                                let Some(group) = lanes.get(lane_start..lane_end) else {
+                                    continue;
+                                };
+                                let Some(first) = group.first() else {
+                                    continue;
+                                };
+                                let expanded = self.keyframe_property_graph_is_settled(&first.id);
+                                let axis = expanded
+                                    .then(|| keyframe_property_axis_range(group, rect.height));
+                                for lane in group {
                                     for key in &lane.points {
                                         let key_point = [
                                             self.time_x(layout, key.time as f32),
@@ -876,8 +889,9 @@ impl TimelineState {
                     .find(|clip| self.selected.contains(&clip.id))
                     .and_then(|clip| clip.track_index(&self.tracks))
                     .or_else(|| self.track_at(layout, point[1]))
+                    .and_then(|index| self.tracks.get_mut(index))
                 {
-                    self.tracks[track].height = (self.tracks[track].height + change).max(TRACK_MIN);
+                    track.height = (track.height + change).max(TRACK_MIN);
                 }
             } else {
                 for track in &mut self.tracks {
@@ -932,7 +946,11 @@ impl TimelineState {
         targets.extend(
             self.clips_at(layout, self.cursor)
                 .into_iter()
-                .map(|(index, _)| TimelineHoverTarget::Clip(self.clips[index].id)),
+                .filter_map(|(index, _)| {
+                    self.clips
+                        .get(index)
+                        .map(|clip| TimelineHoverTarget::Clip(clip.id))
+                }),
         );
         if targets.len() < 2 {
             return false;
@@ -941,12 +959,20 @@ impl TimelineState {
             TimelineHoverTarget::Keyframe(lane, time) => self.keyframe_is_selected(lane, *time),
             TimelineHoverTarget::Clip(id) => self.primary_selected == Some(*id),
         });
-        let len = targets.len() as i32;
-        let next = current.map_or_else(
-            || if direction < 0 { targets.len() - 1 } else { 0 },
-            |index| (index as i32 + direction).rem_euclid(len) as usize,
-        );
-        match targets[next].clone() {
+        let next = if direction < 0 {
+            current
+                .and_then(|index| index.checked_sub(1))
+                .or_else(|| targets.len().checked_sub(1))
+        } else {
+            current
+                .and_then(|index| index.checked_add(1))
+                .filter(|&index| index < targets.len())
+                .or(Some(0))
+        };
+        let Some(target) = next.and_then(|index| targets.get(index)).cloned() else {
+            return false;
+        };
+        match target {
             TimelineHoverTarget::Keyframe(lane, time) => {
                 self.selected.clear();
                 self.primary_selected = None;

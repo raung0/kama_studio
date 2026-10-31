@@ -24,7 +24,7 @@ impl TimelineEditState {
         }
     }
 
-    pub(crate) fn document(&self) -> &TimelineDocument {
+    pub(crate) const fn document(&self) -> &TimelineDocument {
         &self.document
     }
 

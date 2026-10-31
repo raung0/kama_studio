@@ -93,8 +93,8 @@ fn collect_upcoming_video_preloads(
                     source_time = source_time.rem_euclid(duration);
                 }
                 let (target_width, target_height) =
-                    asset.video_width.zip(asset.video_height).map_or(
-                        (preview_size[0].max(1), preview_size[1].max(1)),
+                    asset.video_width.zip(asset.video_height).map_or_else(
+                        || (preview_size[0].max(1), preview_size[1].max(1)),
                         |dimensions| {
                             scaled_source_geometry(
                                 dimensions,
@@ -137,25 +137,22 @@ fn collect_upcoming_video_preloads(
                 let mut parent_cursor = overlap_start;
                 let mut segments = 0usize;
                 while parent_cursor < overlap_end && segments < 32 {
-                    segments += 1;
+                    segments = segments.saturating_add(1);
                     let source_time = clip.source_time(parent_cursor) as f32;
-                    let (child_start, parent_segment_end) = if let Some(duration) = duration {
-                        let child_start = source_time.rem_euclid(duration);
-                        let until_wrap = ((duration - child_start).max(1.0e-6) / speed).max(1.0e-6);
-                        (child_start, (parent_cursor + until_wrap).min(overlap_end))
-                    } else {
-                        (source_time, overlap_end)
-                    };
+                    let (child_start, parent_segment_end) =
+                        duration.map_or((source_time, overlap_end), |duration| {
+                            let child_start = source_time.rem_euclid(duration);
+                            let until_wrap =
+                                ((duration - child_start).max(1.0e-6) / speed).max(1.0e-6);
+                            (child_start, (parent_cursor + until_wrap).min(overlap_end))
+                        });
                     let child_end =
                         f32::mul_add(parent_segment_end - parent_cursor, speed, child_start);
                     let child_eta = (parent_cursor - window_start)
                         .max(0.0)
                         .mul_add(root_seconds_per_timeline_second, root_eta_start);
                     let child_preview = scaled_source_geometry(
-                        (
-                            composition.settings.canvas_size[0],
-                            composition.settings.canvas_size[1],
-                        ),
+                        composition.settings.canvas_size.into(),
                         [0.0, 0.0],
                         canvas_size,
                         preview_size[0],
@@ -169,12 +166,12 @@ fn collect_upcoming_video_preloads(
                         Some(child_scope),
                         composition.settings.frame_rate,
                         composition.settings.canvas_size,
-                        [child_preview.0, child_preview.1],
+                        child_preview.into(),
                         child_start,
                         child_end,
                         child_eta,
                         root_seconds_per_timeline_second / speed,
-                        depth + 1,
+                        depth.saturating_add(1),
                         active_path,
                         targets,
                     );

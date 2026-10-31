@@ -200,14 +200,16 @@ impl Project {
                     continue;
                 };
 
-                let size: [f32; 3] = std::array::from_fn(|axis| {
-                    let intrinsic = intrinsic_size[axis];
-                    if intrinsic.abs() > 1.0e-6 {
-                        settings.size[axis] / intrinsic * 2.0
+                let mut size = [0.0; 3];
+                for ((size, intrinsic), requested) in
+                    size.iter_mut().zip(intrinsic_size).zip(settings.size)
+                {
+                    *size = if intrinsic.abs() > 1.0e-6 {
+                        requested / intrinsic * 2.0
                     } else {
                         2.0
-                    }
-                });
+                    };
+                }
                 clip.model3d.apply_legacy(
                     size,
                     settings.scale,
@@ -235,7 +237,8 @@ impl Project {
             .compositions
             .iter()
             .find(|composition| composition.name == "Main")
-            .unwrap_or(&project.compositions[0])
+            .or_else(|| project.compositions.first())
+            .context("project has no composition")?
             .id;
         Ok(project)
     }
@@ -532,7 +535,7 @@ impl Project {
                         track.name
                     );
                     anyhow::ensure!(
-                        track.property_rows[..row_index].iter().all(|other| {
+                        track.property_rows.iter().take(row_index).all(|other| {
                             !other.matches_source(&row.source, row.source_instance)
                         }),
                         "layer {} contains duplicate rows for one source",
@@ -777,7 +780,7 @@ impl Project {
         persisted.format_version = KAMA_FORMAT_VERSION;
         for asset in &mut persisted.media {
             let absolute = absolute_media_path(base, &asset.path);
-            asset.absolute_path = absolute.clone();
+            asset.absolute_path.clone_from(&absolute);
             asset.relative_path = relative_media_path(base, &absolute).unwrap_or_default();
         }
         for composition in &mut persisted.compositions {
@@ -803,12 +806,20 @@ impl Project {
             .find(|composition| composition.id == id)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "new/load establish a nonempty composition list and remove_composition refuses to remove the last one"
+    )]
     pub fn active_composition(&self) -> &Composition {
         self.composition(self.active_composition)
             .or_else(|| self.compositions.first())
             .expect("project always has at least one composition")
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "new/load establish a nonempty composition list and remove_composition refuses to remove the last one"
+    )]
     pub fn active_composition_mut(&mut self) -> &mut Composition {
         let id = self.active_composition;
         let index = self
@@ -816,7 +827,9 @@ impl Project {
             .iter()
             .position(|composition| composition.id == id)
             .unwrap_or(0);
-        &mut self.compositions[index]
+        self.compositions.get_mut(index).expect(
+            "project always has at least one composition; load validates and removal preserves one",
+        )
     }
 
     pub fn active_settings(&self) -> &CompositionSettings {
@@ -854,12 +867,12 @@ impl Project {
         if composition.name == name {
             return false;
         }
-        composition.name = name.to_owned();
+        name.clone_into(&mut composition.name);
         let name = name.to_owned();
         for composition in &mut self.compositions {
             for clip in &mut composition.timeline.clips {
                 if matches!(&clip.source, VisualSource::Composition(child) if *child == id) {
-                    clip.name = name.clone();
+                    clip.name.clone_from(&name);
                 }
             }
         }
@@ -876,14 +889,13 @@ impl Project {
         {
             base
         } else {
-            (2u32..)
+            (2u32..=u32::MAX)
                 .map(|number| format!("{base} {number}"))
                 .find(|candidate| {
                     self.compositions
                         .iter()
                         .all(|composition| composition.name != candidate.as_str())
-                })
-                .expect("composition copy suffix space is unbounded")
+                })?
         };
         let new_id = self.next_composition_id.max(1);
         self.next_composition_id = new_id.saturating_add(1);
@@ -912,8 +924,13 @@ impl Project {
             );
             composition.timeline.prune_unused_property_rows();
         }
-        if self.active_composition == id {
-            self.active_composition = self.compositions[index.min(self.compositions.len() - 1)].id;
+        if self.active_composition == id
+            && let Some(composition) = self
+                .compositions
+                .get(index)
+                .or_else(|| self.compositions.last())
+        {
+            self.active_composition = composition.id;
         }
         true
     }
@@ -988,21 +1005,21 @@ impl Project {
         })
     }
 
-    pub fn import_media(&mut self, path: PathBuf) -> Result<MediaId> {
+    pub fn import_media(&mut self, path: &Path) -> Result<MediaId> {
         let id = self.next_media_id;
-        self.next_media_id += 1;
+        self.next_media_id = id.checked_add(1).context("media id space is exhausted")?;
         let asset = media_asset_from_path(id, path)?;
         self.media.push(asset);
         Ok(id)
     }
 
-    pub fn replace_media(&mut self, id: MediaId, path: PathBuf) -> Result<()> {
-        let Some(index) = self.media.iter().position(|asset| asset.id == id) else {
+    pub fn replace_media(&mut self, id: MediaId, path: &Path) -> Result<()> {
+        let Some(current) = self.media.iter_mut().find(|asset| asset.id == id) else {
             anyhow::bail!("media asset {id} does not exist");
         };
         let replacement = media_asset_from_path(id, path)?;
-        ensure_media_replacement_compatible(self.media[index].kind, replacement.kind)?;
-        self.media[index] = replacement;
+        ensure_media_replacement_compatible(current.kind, replacement.kind)?;
+        *current = replacement;
         Ok(())
     }
 
@@ -1010,25 +1027,25 @@ impl Project {
         let Some(current) = self.media(id) else {
             anyhow::bail!("media asset {id} does not exist");
         };
-        let replacement = media_asset_from_path(id, path.to_path_buf())?;
+        let replacement = media_asset_from_path(id, path)?;
         ensure_media_replacement_compatible(current.kind, replacement.kind)
     }
 
     pub(crate) fn resolve_missing_media_paths(&mut self, base: &Path) -> usize {
-        let mut resolved = 0;
+        let mut resolved = 0usize;
         for asset in &mut self.media {
             if asset.path.is_file() {
                 continue;
             }
             let candidate = resolve_stored_media_path(asset, base);
             if candidate.is_file() && candidate != asset.path {
-                asset.path = candidate.clone();
+                asset.path.clone_from(&candidate);
                 asset.absolute_path = absolute_media_path(base, &candidate);
                 if asset.relative_path.as_os_str().is_empty() {
                     asset.relative_path =
                         relative_media_path(base, &asset.absolute_path).unwrap_or_default();
                 }
-                resolved += 1;
+                resolved = resolved.saturating_add(1);
             }
         }
         resolved
@@ -1037,7 +1054,7 @@ impl Project {
     pub(crate) fn update_media_path_references(&mut self, base: &Path) {
         for asset in &mut self.media {
             let absolute = absolute_media_path(base, &asset.path);
-            asset.absolute_path = absolute.clone();
+            asset.absolute_path.clone_from(&absolute);
             asset.relative_path = relative_media_path(base, &absolute).unwrap_or_default();
         }
     }
@@ -1061,7 +1078,7 @@ impl Project {
             });
             composition.timeline.prune_unused_property_rows();
         }
-        before - self.media.len()
+        before.saturating_sub(self.media.len())
     }
 
     pub fn pipeline(&self, id: PipelineId) -> Option<&EffectPipeline> {
@@ -1174,13 +1191,13 @@ impl Project {
         Some(applied_remaps)
     }
 
-    pub fn create_pipeline(&mut self) -> PipelineId {
+    pub fn create_pipeline(&mut self) -> Option<PipelineId> {
         self.create_pipeline_kind(PipelineKind::Video)
     }
 
-    pub fn create_pipeline_kind(&mut self, kind: PipelineKind) -> PipelineId {
+    pub fn create_pipeline_kind(&mut self, kind: PipelineKind) -> Option<PipelineId> {
         let id = self.next_pipeline_id;
-        self.next_pipeline_id += 1;
+        let next_id = id.checked_add(1)?;
         let label = if kind == PipelineKind::Audio {
             "Audio Pipeline"
         } else {
@@ -1197,13 +1214,14 @@ impl Project {
             ui_input_position: None,
             ui_output_position: None,
         });
-        id
+        self.next_pipeline_id = next_id;
+        Some(id)
     }
 
     pub fn duplicate_pipeline(&mut self, pipeline: PipelineId) -> Option<PipelineId> {
         let source = self.pipeline(pipeline)?.clone();
         let id = self.next_pipeline_id;
-        self.next_pipeline_id += 1;
+        self.next_pipeline_id = self.next_pipeline_id.checked_add(1)?;
         let mut duplicate = source;
         duplicate.id = id;
         duplicate.name = format!("{} Copy", duplicate.name);
@@ -1250,7 +1268,7 @@ impl Project {
         let mut node = instantiate(id).ok()?;
         node.ui_position = ui_position;
         self.next_node_id = next_id;
-        let pipeline = &mut self.pipelines[index];
+        let pipeline = self.pipelines.get_mut(index)?;
         pipeline.nodes.push(node);
         pipeline.revision = pipeline.revision.saturating_add(1);
         Some(id)
@@ -1391,7 +1409,6 @@ impl Project {
         let id = self.next_node_id;
         let next_id = id.checked_add(1)?;
         let value = match kind {
-            ValueNodeKind::Float => GpuValue::F32(0.0),
             ValueNodeKind::Vec2 => GpuValue::Vec2([0.0, 0.0]),
             ValueNodeKind::Color => GpuValue::Color([1.0, 1.0, 1.0, 1.0]),
             _ => GpuValue::F32(0.0),
@@ -1401,11 +1418,14 @@ impl Project {
             .iter()
             .map(|name| {
                 let default = match (kind, *name) {
-                    (ValueNodeKind::Divide | ValueNodeKind::Modulo | ValueNodeKind::Power, "B") => {
-                        1.0
-                    }
-                    (ValueNodeKind::Clamp, "Max") => 1.0,
-                    (ValueNodeKind::Lerp, "B") => 1.0,
+                    (
+                        ValueNodeKind::Divide
+                        | ValueNodeKind::Modulo
+                        | ValueNodeKind::Power
+                        | ValueNodeKind::Lerp,
+                        "B",
+                    )
+                    | (ValueNodeKind::Clamp, "Max") => 1.0,
                     (ValueNodeKind::Lerp, "T") => 0.5,
                     _ => 0.0,
                 };
@@ -1416,7 +1436,7 @@ impl Project {
             })
             .collect();
         self.next_node_id = next_id;
-        let pipeline = &mut self.pipelines[index];
+        let pipeline = self.pipelines.get_mut(index)?;
         pipeline.value_nodes.push(ValueNode {
             id,
             kind,
@@ -1720,8 +1740,11 @@ impl Project {
                 frame_rate: 60.0,
             },
         )
-        .unwrap_or(pipeline.value_nodes[index].value)
-        .zeroed();
+        .or_else(|| pipeline.value_nodes.get(index).map(|value| value.value));
+        let Some(fallback) = fallback else {
+            return false;
+        };
+        let fallback = fallback.zeroed();
         let _removed = pipeline.value_nodes.remove(index);
         for effect in &mut pipeline.nodes {
             for binding in effect.inputs.values_mut() {
@@ -1898,7 +1921,7 @@ impl Project {
         ui_position: Option<[f32; 2]>,
     ) -> Option<NodeId> {
         let id = self.next_node_id;
-        self.next_node_id += 1;
+        self.next_node_id = id.checked_add(1)?;
         let pipeline = self.pipeline_mut(pipeline)?;
         let mut node = EffectNode::builtin(id, preset);
         node.ui_position = ui_position;
@@ -1941,7 +1964,10 @@ impl Project {
         else {
             return false;
         };
-        let upstream = pipeline.nodes[index]
+        let Some(removed) = pipeline.nodes.get(index) else {
+            return false;
+        };
+        let upstream = removed
             .stack_image_input()
             .map_or(ImageBinding::Disconnected, |(_, binding)| binding.clone());
         pipeline.nodes.remove(index);
@@ -2156,11 +2182,15 @@ impl Project {
             let Some(path_index) = path.iter().position(|(candidate, _)| *candidate == node) else {
                 return false;
             };
-            let target = path_index as i32 + direction.signum();
-            if target < 0 || target >= path.len() as i32 {
+            let target = if direction < 0 {
+                path_index.checked_sub(1)
+            } else {
+                path_index.checked_add(1)
+            };
+            let Some(target) = target.filter(|target| *target < path.len()) else {
                 return false;
-            }
-            path.swap(path_index, target as usize);
+            };
+            path.swap(path_index, target);
 
             let mut upstream = ImageBinding::PipelineInput;
             for (node_id, input) in path {
@@ -2184,26 +2214,26 @@ impl Project {
         label: &str,
         edit: impl FnOnce(&mut EffectPipeline) -> bool,
     ) -> bool {
-        let Some(index) = self
+        let Some(pipeline) = self
             .pipelines
-            .iter()
-            .position(|candidate| candidate.id == pipeline)
+            .iter_mut()
+            .find(|candidate| candidate.id == pipeline)
         else {
             return false;
         };
-        let mut candidate = self.pipelines[index].clone();
+        let mut candidate = pipeline.clone();
         if !edit(&mut candidate)
             || validate_image_graph(&candidate.nodes, &candidate.output, label).is_err()
         {
             return false;
         }
         candidate.revision = candidate.revision.saturating_add(1);
-        self.pipelines[index] = candidate;
+        *pipeline = candidate;
         true
     }
 }
 
-fn pipeline_output_socket(kind: PipelineKind) -> &'static str {
+const fn pipeline_output_socket(kind: PipelineKind) -> &'static str {
     match kind {
         PipelineKind::Video => "image",
         PipelineKind::Audio => "audio",
@@ -2238,8 +2268,8 @@ fn next_u64_id(current: u64, ids: impl Iterator<Item = u64>) -> u64 {
     }
 }
 
-fn media_asset_from_path(id: MediaId, path: PathBuf) -> Result<MediaAsset> {
-    let path = absolute_media_path(Path::new("."), &path);
+fn media_asset_from_path(id: MediaId, path: &Path) -> Result<MediaAsset> {
+    let path = absolute_media_path(Path::new("."), path);
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -2349,7 +2379,7 @@ fn ensure_media_replacement_compatible(current: MediaKind, replacement: MediaKin
     Ok(())
 }
 
-fn media_kind_label(kind: MediaKind) -> &'static str {
+const fn media_kind_label(kind: MediaKind) -> &'static str {
     match kind {
         MediaKind::Image { .. } => "image",
         MediaKind::Video => "video",
@@ -2360,7 +2390,7 @@ fn media_kind_label(kind: MediaKind) -> &'static str {
     }
 }
 
-fn media_replacement_requirement(kind: MediaKind) -> &'static str {
+const fn media_replacement_requirement(kind: MediaKind) -> &'static str {
     match kind {
         MediaKind::Image { .. } | MediaKind::Video => "an image or video",
         MediaKind::Audio => "audio",
@@ -2374,7 +2404,7 @@ fn migrate_and_resolve_media_path(asset: &mut MediaAsset, base: &Path, format_ve
     if format_version < 7 {
         let legacy = asset.absolute_path.clone();
         if legacy.is_relative() {
-            asset.relative_path = legacy.clone();
+            asset.relative_path.clone_from(&legacy);
             asset.absolute_path = absolute_media_path(base, &legacy);
         } else {
             asset.absolute_path = legacy;
@@ -2384,7 +2414,7 @@ fn migrate_and_resolve_media_path(asset: &mut MediaAsset, base: &Path, format_ve
     }
 
     let resolved = resolve_stored_media_path(asset, base);
-    asset.path = resolved.clone();
+    asset.path.clone_from(&resolved);
     asset.absolute_path = absolute_media_path(base, &resolved);
     if asset.relative_path.as_os_str().is_empty() {
         asset.relative_path = relative_media_path(base, &asset.absolute_path).unwrap_or_default();
@@ -2438,12 +2468,12 @@ fn relative_media_path(base: &Path, target: &Path) -> Option<PathBuf> {
     }
 
     let mut relative = PathBuf::new();
-    for component in &base_components[common..] {
+    for component in base_components.iter().skip(common) {
         if matches!(component, std::path::Component::Normal(_)) {
             relative.push("..");
         }
     }
-    for component in &target_components[common..] {
+    for component in target_components.iter().skip(common) {
         relative.push(component.as_os_str());
     }
     Some(relative)
@@ -2474,7 +2504,7 @@ fn guess_media_kind(path: &Path) -> MediaKind {
     }
 }
 
-fn image_binding_has_source(binding: &ImageBinding, source: Option<NodeId>) -> bool {
+const fn image_binding_has_source(binding: &ImageBinding, source: Option<NodeId>) -> bool {
     match (binding, source) {
         (ImageBinding::PipelineInput, None) => true,
         (ImageBinding::Node(socket), Some(source)) => socket.node == source,
@@ -2515,6 +2545,25 @@ fn validate_image_graph(nodes: &[EffectNode], output: &ImageBinding, label: &str
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn create_test_pipeline(project: &mut Project) -> PipelineId {
+        project
+            .create_pipeline()
+            .expect("fresh test project has an available pipeline id")
+    }
+
+    #[test]
+    fn exhausted_pipeline_ids_do_not_create_or_duplicate_pipelines() {
+        let mut project = Project::new();
+        let existing = create_test_pipeline(&mut project);
+        project.next_pipeline_id = u64::MAX;
+        let original_count = project.pipelines.len();
+        assert_eq!(project.create_pipeline_kind(PipelineKind::Audio), None);
+        assert_eq!(project.pipelines.len(), original_count);
+
+        assert_eq!(project.duplicate_pipeline(existing), None);
+        assert_eq!(project.pipelines.len(), original_count);
+    }
 
     #[test]
     fn media_replacement_compatibility_keeps_visual_and_audio_categories_separate() {
@@ -2624,7 +2673,7 @@ mod tests {
             legacy_model: None,
         });
         project.next_media_id = 2;
-        let pipeline = project.create_pipeline();
+        let pipeline = create_test_pipeline(&mut project);
         assert!(project.rename_pipeline(pipeline, "Shared Grade"));
         let exposure = project
             .add_builtin_node(pipeline, BuiltinNodePreset::Exposure)
@@ -2714,7 +2763,7 @@ mod tests {
     #[test]
     fn pipeline_image_connections_reject_cycles() {
         let mut project = Project::new();
-        let pipeline = project.create_pipeline();
+        let pipeline = create_test_pipeline(&mut project);
         let a = project
             .add_builtin_node(pipeline, BuiltinNodePreset::Exposure)
             .unwrap();
@@ -2728,7 +2777,7 @@ mod tests {
     #[test]
     fn inserting_node_on_named_image_wire_preserves_destination_socket() {
         let mut project = Project::new();
-        let pipeline_id = project.create_pipeline();
+        let pipeline_id = create_test_pipeline(&mut project);
         let inserted_id = 100;
         let mask_id = 101;
         let inserted = EffectNode {
@@ -2788,7 +2837,7 @@ mod tests {
     #[test]
     fn inserting_connected_node_on_wire_rejects_cycles_atomically() {
         let mut project = Project::new();
-        let pipeline_id = project.create_pipeline();
+        let pipeline_id = create_test_pipeline(&mut project);
         let inserted_id = 200;
         let destination_id = 201;
         let inserted = EffectNode {
@@ -2849,7 +2898,7 @@ mod tests {
     #[test]
     fn reordering_stack_rejects_secondary_input_cycles_atomically() {
         let mut project = Project::new();
-        let pipeline_id = project.create_pipeline();
+        let pipeline_id = create_test_pipeline(&mut project);
         let first_id = 210;
         let second_id = 211;
         let first = EffectNode {
@@ -2911,7 +2960,7 @@ mod tests {
     #[test]
     fn dynamic_image_count_is_structural_not_value_connectable() {
         let mut project = Project::new();
-        let pipeline_id = project.create_pipeline();
+        let pipeline_id = create_test_pipeline(&mut project);
         let value = project
             .add_value_node_at(pipeline_id, ValueNodeKind::Float, None)
             .unwrap();
@@ -2955,7 +3004,7 @@ mod tests {
     #[test]
     fn value_graph_rejects_cycles() {
         let mut project = Project::new();
-        let pipeline = project.create_pipeline();
+        let pipeline = create_test_pipeline(&mut project);
         let a = project
             .add_value_node_at(pipeline, ValueNodeKind::Add, None)
             .unwrap();

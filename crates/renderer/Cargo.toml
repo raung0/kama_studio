@@ -9,11 +9,10 @@ anyhow = "1"
 bytemuck = { version = "1.16", features = ["derive"] }
 num-traits = "0.2"
 wgpu = "30.0.1"
-winit = "0.30"
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 
 [build-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 
 [lints]
 workspace = true
-

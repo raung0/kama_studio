@@ -1,7 +1,6 @@
 use super::{
-    Accordion, EnumControlsExt, INSPECTOR_SECTION_PAD, IconId, InspectorSectionRects,
-    KnobControlsExt, MediaKind, MediaStream, NumberControlsExt, PANEL_HEADER_H, ROW_H, Rect,
-    SliderControlsExt, TimelineState, TrackKind, accordion_header, format_duration,
+    Accordion, INSPECTOR_SECTION_PAD, IconId, InspectorSectionRects, MediaKind, MediaStream,
+    PANEL_HEADER_H, ROW_H, Rect, TimelineState, TrackKind, accordion_header, format_duration,
     inspector_accordion_body, inspector_section_content, measure_inspector_sections,
     media_kind_label, media_streams, panel_title, property_label_rect, row_hit, theme,
 };
@@ -21,11 +20,15 @@ pub(super) struct MediaInspectorSections<'a> {
     pub(super) model: &'a Accordion,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "measurement returns one slot per four specifications and the general section is always present"
+)]
 pub(super) fn media_inspector_rects(
     rect: Rect,
     asset: &crate::project::MediaAsset,
     selected_stream: MediaStream,
-    sections: MediaInspectorSections<'_>,
+    sections: &MediaInspectorSections<'_>,
     start: f32,
 ) -> MediaInspectorRects {
     let MediaInspectorSections {
@@ -114,7 +117,7 @@ pub(super) fn build_media_detail_section(
                 ui_text!(
                     ctx,
                     ("media-detail-value", id, index),
-                    kama_ui::layout::row(
+                    kama_ui::layout::row_array(
                         row,
                         &[
                             kama_ui::layout::Item::width(label_rect.width + 9.0),
@@ -151,10 +154,10 @@ pub(super) fn build_media_inspector(
         &match selected_stream {
             MediaStream::All => format!("Media: {}", asset.name),
             MediaStream::Video(index) => {
-                format!("Video track {}: {}", index + 1, asset.name)
+                format!("Video track {}: {}", index.saturating_add(1), asset.name)
             }
             MediaStream::Audio(index) => {
-                format!("Audio track {}: {}", index + 1, asset.name)
+                format!("Audio track {}: {}", index.saturating_add(1), asset.name)
             }
         },
         scroll_y,
@@ -164,7 +167,7 @@ pub(super) fn build_media_inspector(
         content,
         asset,
         selected_stream,
-        MediaInspectorSections {
+        &MediaInspectorSections {
             general,
             video,
             audio,
@@ -181,7 +184,7 @@ pub(super) fn build_media_inspector(
     );
     if let Some(section) = layout.video {
         let title = match selected_stream {
-            MediaStream::Video(index) => format!("Video Track {}", index + 1),
+            MediaStream::Video(index) => format!("Video Track {}", index.saturating_add(1)),
             _ => "Video Tracks".to_string(),
         };
         build_media_detail_section(
@@ -194,7 +197,7 @@ pub(super) fn build_media_inspector(
     }
     if let Some(section) = layout.audio {
         let title = match selected_stream {
-            MediaStream::Audio(index) => format!("Audio Track {}", index + 1),
+            MediaStream::Audio(index) => format!("Audio Track {}", index.saturating_add(1)),
             _ => "Audio Tracks".to_string(),
         };
         build_media_detail_section(
@@ -299,7 +302,7 @@ pub(super) fn media_video_detail_rows(
 
     let mut rows = Vec::new();
     for (index, track) in video_tracks {
-        let prefix = format!("Track {}", index + 1);
+        let prefix = format!("Track {}", index.saturating_add(1));
         rows.push((format!("{prefix} codec"), track.codec.clone()));
         rows.push((
             format!("{prefix} stream"),
@@ -344,7 +347,7 @@ pub(super) fn media_audio_detail_rows(
         rows.push(("Track 1 type".into(), "Audio".into()));
     } else {
         for (index, track) in audio_tracks {
-            let prefix = format!("Track {}", index + 1);
+            let prefix = format!("Track {}", index.saturating_add(1));
             rows.push((format!("{prefix} codec"), track.codec.clone()));
             rows.push((
                 format!("{prefix} stream"),
@@ -377,10 +380,13 @@ pub(super) fn format_bit_rate(bit_rate: u64) -> String {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "gcd returns at least one, so division is defined"
+)]
 pub(super) fn format_aspect_ratio(width: u32, height: u32) -> String {
     fn gcd(mut a: u32, mut b: u32) -> u32 {
-        while b != 0 {
-            let next = a % b;
+        while let Some(next) = a.checked_rem(b) {
             a = b;
             b = next;
         }

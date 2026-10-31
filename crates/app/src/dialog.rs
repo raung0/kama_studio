@@ -59,6 +59,11 @@ pub struct SearchSurfaceRects {
     pub(crate) items: Arc<[Rect]>,
 }
 
+#[expect(
+    clippy::panic,
+    clippy::expect_used,
+    reason = "all queried IDs are built unconditionally in this measurement; a missing rectangle indicates a layout engine invariant violation"
+)]
 pub fn measure_search_surface(
     rect: Rect,
     metrics: SearchSurfaceMetrics,
@@ -218,6 +223,10 @@ pub struct SearchDialogRects {
     pub(crate) items: Arc<[Rect]>,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "SearchSurfaceMetrics::dialog always enables the footer, help and close blocks"
+)]
 pub fn measure_search_dialog(
     rect: Rect,
     has_title: bool,
@@ -245,7 +254,7 @@ pub fn measure_search_dialog(
     }
 }
 
-fn scrim() -> Color {
+const fn scrim() -> Color {
     Color::rgba8(0x00, 0x00, 0x00, 0x38)
 }
 

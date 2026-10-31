@@ -18,7 +18,7 @@ impl HistorySnapshot {
 
         let mut authored = project.clone();
         for composition in &mut authored.compositions {
-            composition.timeline.view = Default::default();
+            composition.timeline.view = crate::timeline::TimelineViewState::default();
         }
         let signature = authored.authored_signature();
         Self { project, signature }
@@ -48,25 +48,21 @@ impl HistoryState {
             .reset(label, HistorySnapshot::capture(project, timeline));
     }
 
-    pub fn capture(&self, project: &Project, timeline: &TimelineDocument) -> HistorySnapshot {
-        HistorySnapshot::capture(project, timeline)
-    }
-
-    pub fn revision(&self) -> u64 {
+    pub const fn revision(&self) -> u64 {
         self.graph.revision()
     }
 
     pub fn record_after(
         &mut self,
         label: impl Into<String>,
-        before: HistorySnapshot,
+        before: &HistorySnapshot,
         project: &Project,
         timeline: &TimelineDocument,
         coalesce: bool,
     ) -> bool {
         self.graph.record_after(
             label,
-            &before,
+            before,
             HistorySnapshot::capture(project, timeline),
             coalesce,
             HistorySnapshot::same_document,
@@ -85,11 +81,11 @@ impl HistoryState {
         self.graph.select(index)
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         self.graph.len()
     }
 
-    fn current(&self) -> usize {
+    const fn current(&self) -> usize {
         self.graph.current()
     }
 

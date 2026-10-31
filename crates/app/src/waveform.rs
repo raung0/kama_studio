@@ -28,6 +28,56 @@ const VIDEO_ANALYSIS_WIDTH: u32 = 96;
 const TEXTURE_SEGMENT_WIDTH: usize = 256;
 const AUDIO_BANDS: usize = 6;
 
+const fn nonnegative_f32_to_usize(value: f32) -> usize {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as usize
+    }
+}
+
+const fn nonnegative_f64_to_usize(value: f64) -> usize {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as usize
+    }
+}
+
+const fn nonnegative_f64_to_u32(value: f64) -> u32 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as u32
+    }
+}
+
+const fn nonnegative_f64_to_u64(value: f64) -> u64 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as u64
+    }
+}
+
+const fn nonnegative_f32_to_u8(value: f32) -> u8 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as u8
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct WaveformSegment {
     pub texture: TextureId,
@@ -143,11 +193,9 @@ impl WaveformTextures {
             if result.epoch != self.epoch {
                 continue;
             }
-            let Some(asset) = project
-                .media
-                .iter_mut()
-                .find(|asset| asset.id == result.media && asset.path == result.path)
-            else {
+            let Some(asset) = project.media.iter_mut().find(|asset| {
+                (asset.id, asset.path.as_path()) == (result.media, result.path.as_path())
+            }) else {
                 continue;
             };
             asset.waveform = result.waveform.map(Arc::new);
@@ -168,23 +216,29 @@ impl WaveformTextures {
             if sample_count == 0 {
                 continue;
             }
-            let texture_rows =
-                usize::from(data.video.is_some()) + usize::from(data.audio.is_some()) * 2;
+            let texture_rows: usize = match (data.video.is_some(), data.audio.is_some()) {
+                (false, false) => 0,
+                (true, false) => 1,
+                (false, true) => 2,
+                (true, true) => 3,
+            };
             let row_uv = |row: usize| {
                 if texture_rows <= 1 {
                     0.0
                 } else {
-                    row as f32 / (texture_rows - 1) as f32
+                    row as f32 / texture_rows.saturating_sub(1) as f32
                 }
             };
             let video_y = data.video.as_ref().map(|_| [row_uv(0); 2]);
             let audio_y = data.audio.as_ref().map(|_| {
                 let row = usize::from(data.video.is_some());
-                [row_uv(row), row_uv(row + 1)]
+                [row_uv(row), row_uv(row.saturating_add(1))]
             });
             let mut segments = Vec::new();
             for sample_start in (0..sample_count).step_by(TEXTURE_SEGMENT_WIDTH) {
-                let sample_end = (sample_start + TEXTURE_SEGMENT_WIDTH).min(sample_count);
+                let sample_end = sample_start
+                    .saturating_add(TEXTURE_SEGMENT_WIDTH)
+                    .min(sample_count);
                 let (width, height, pixels) =
                     waveform_segment_pixels(data, sample_start, sample_end);
                 let texture = renderer
@@ -219,7 +273,7 @@ pub fn analyze_media(asset: &MediaAsset) -> Option<WaveformData> {
     let has_audio = asset.has_audio || matches!(asset.kind, MediaKind::Audio);
     let target_samples = asset
         .duration
-        .map(|duration| (duration * ANALYSIS_FPS).ceil().max(1.0) as usize)
+        .map(|duration| nonnegative_f64_to_usize((duration * ANALYSIS_FPS).ceil().max(1.0)))
         .or_else(|| video.as_ref().map(|video| video.activity.len()));
     let audio = has_audio
         .then(|| analyze_audio(&asset.path, target_samples))
@@ -259,10 +313,11 @@ fn analyze_video(path: &Path) -> Result<VideoWaveform> {
         .context("open waveform video decoder")?;
     let source_width = decoder.width().max(1);
     let source_height = decoder.height().max(1);
-    let analysis_height = ((f64::from(source_height) * f64::from(VIDEO_ANALYSIS_WIDTH)
-        / f64::from(source_width))
-    .round() as u32)
-        .max(1);
+    let analysis_height = nonnegative_f64_to_u32(
+        (f64::from(source_height) * f64::from(VIDEO_ANALYSIS_WIDTH) / f64::from(source_width))
+            .round(),
+    )
+    .max(1);
     let mut scaler = ScalingContext::get(
         decoder.format(),
         source_width,
@@ -353,11 +408,14 @@ fn receive_video_samples(
         let row_bytes = VIDEO_ANALYSIS_WIDTH as usize * 3;
         let stride = rgb.stride(0);
         let source = rgb.data(0);
-        let mut packed = Vec::with_capacity(row_bytes * analysis_height as usize);
-        for y in 0..analysis_height as usize {
-            let start = y * stride;
-            if start + row_bytes <= source.len() {
-                packed.extend_from_slice(&source[start..start + row_bytes]);
+        anyhow::ensure!(stride > 0, "waveform frame has zero stride");
+        let capacity = row_bytes
+            .checked_mul(analysis_height as usize)
+            .context("waveform frame size overflow")?;
+        let mut packed = Vec::with_capacity(capacity);
+        for row in source.chunks(stride).take(analysis_height as usize) {
+            if let Some(pixels) = row.get(..row_bytes) {
+                packed.extend_from_slice(pixels);
             }
         }
         if packed.is_empty() {
@@ -369,12 +427,14 @@ fn receive_video_samples(
             .0
             .iter()
             .map(|pixel| {
-                f32::mul_add(
-                    f32::from(pixel[2]),
-                    0.114,
-                    f32::mul_add(f32::from(pixel[1]), 0.587, f32::from(pixel[0]) * 0.299),
+                nonnegative_f32_to_u8(
+                    f32::mul_add(
+                        f32::from(pixel[2]),
+                        0.114,
+                        f32::mul_add(f32::from(pixel[1]), 0.587, f32::from(pixel[0]) * 0.299),
+                    )
+                    .round(),
                 )
-                .round() as u8
             })
             .collect::<Vec<_>>();
         raw_activity.push(lucas_kanade_flow_score(
@@ -392,26 +452,47 @@ fn lucas_kanade_flow_score(previous: &[u8], current: &[u8], width: usize, height
     if previous.len() != current.len() || width < 7 || height < 7 {
         return 0.0;
     }
-    let mut magnitudes = Vec::with_capacity(width * height / 9);
-    for cy in (3..height - 3).step_by(3) {
-        for cx in (3..width - 3).step_by(3) {
+    #[expect(
+        clippy::expect_used,
+        reason = "an image whose dimensions overflow cannot fit in a slice"
+    )]
+    let pixel_count = width
+        .checked_mul(height)
+        .expect("waveform image dimensions overflow");
+    assert_eq!(
+        current.len(),
+        pixel_count,
+        "waveform image dimensions do not match pixels"
+    );
+    let pixel = |data: &[u8], index: usize| {
+        #[expect(
+            clippy::expect_used,
+            reason = "the image length is validated and the neighborhood stays inside the three-pixel border"
+        )]
+        *data.get(index).expect("waveform flow pixel in bounds")
+    };
+    let mut magnitudes = Vec::with_capacity(pixel_count / 9);
+    for cy in (3..height.saturating_sub(3)).step_by(3) {
+        for cx in (3..width.saturating_sub(3)).step_by(3) {
             let mut xx = 0.0;
             let mut yy = 0.0;
             let mut xy = 0.0;
             let mut xt = 0.0;
             let mut yt = 0.0;
-            for y in cy - 2..=cy + 2 {
-                for x in cx - 2..=cx + 2 {
-                    let i = y * width + x;
-                    let ix = (f32::from(current[i + 1]) - f32::from(current[i - 1])
-                        + f32::from(previous[i + 1])
-                        - f32::from(previous[i - 1]))
+            for y in cy.saturating_sub(2)..=cy.saturating_add(2) {
+                for x in cx.saturating_sub(2)..=cx.saturating_add(2) {
+                    let i = y.saturating_mul(width).saturating_add(x);
+                    let ix = (f32::from(pixel(current, i.saturating_add(1)))
+                        - f32::from(pixel(current, i.saturating_sub(1)))
+                        + f32::from(pixel(previous, i.saturating_add(1)))
+                        - f32::from(pixel(previous, i.saturating_sub(1))))
                         * 0.25;
-                    let iy = (f32::from(current[i + width]) - f32::from(current[i - width])
-                        + f32::from(previous[i + width])
-                        - f32::from(previous[i - width]))
+                    let iy = (f32::from(pixel(current, i.saturating_add(width)))
+                        - f32::from(pixel(current, i.saturating_sub(width)))
+                        + f32::from(pixel(previous, i.saturating_add(width)))
+                        - f32::from(pixel(previous, i.saturating_sub(width))))
                         * 0.25;
-                    let it = f32::from(current[i]) - f32::from(previous[i]);
+                    let it = f32::from(pixel(current, i)) - f32::from(pixel(previous, i));
                     xx = ix.mul_add(ix, xx);
                     yy = iy.mul_add(iy, yy);
                     xy = ix.mul_add(iy, xy);
@@ -430,9 +511,10 @@ fn lucas_kanade_flow_score(previous: &[u8], current: &[u8], width: usize, height
     if magnitudes.is_empty() {
         return 0.0;
     }
-    let index = ((magnitudes.len() - 1) as f32 * 0.75).round() as usize;
+    let index =
+        nonnegative_f32_to_usize((magnitudes.len().saturating_sub(1) as f32 * 0.75).round());
     let (_, value, _) = magnitudes.select_nth_unstable_by(index, f32::total_cmp);
-    *value / ((width * width + height * height) as f32).sqrt().max(1.0)
+    *value / (width as f32).hypot(height as f32).max(1.0)
 }
 
 fn representative_lab_rgb(pixels: &[u8]) -> [u8; 3] {
@@ -443,7 +525,7 @@ fn representative_lab_rgb(pixels: &[u8]) -> [u8; 3] {
         sum[0] += f64::from(l);
         sum[1] += f64::from(a);
         sum[2] += f64::from(b);
-        count += 1;
+        count = count.saturating_add(1);
     }
     lab_to_rgb([
         (sum[0] / count.max(1) as f64) as f32,
@@ -452,7 +534,7 @@ fn representative_lab_rgb(pixels: &[u8]) -> [u8; 3] {
     ])
 }
 
-fn rgb_to_lab(r: u8, g: u8, b: u8) -> [f32; 3] {
+fn rgb_to_lab(red: u8, green: u8, blue: u8) -> [f32; 3] {
     let linear = |value: u8| {
         let value = f32::from(value) / 255.0;
         if value <= 0.04045 {
@@ -461,14 +543,26 @@ fn rgb_to_lab(r: u8, g: u8, b: u8) -> [f32; 3] {
             ((value + 0.055) / 1.055).powf(2.4)
         }
     };
-    let r = linear(r);
-    let g = linear(g);
-    let b = linear(b);
-    let x = f32::mul_add(b, 0.1804375, f32::mul_add(g, 0.3575761, r * 0.4124564)) / 0.95047;
-    let y = f32::mul_add(b, 0.072175, f32::mul_add(g, 0.7151522, r * 0.2126729));
-    let z = f32::mul_add(b, 0.9503041, f32::mul_add(g, 0.119192, r * 0.0193339)) / 1.08883;
+    let red = linear(red);
+    let green = linear(green);
+    let blue = linear(blue);
+    let x = f32::mul_add(
+        blue,
+        0.180_437_5,
+        f32::mul_add(green, 0.357_576_1, red * 0.412_456_4),
+    ) / 0.95047;
+    let y = f32::mul_add(
+        blue,
+        0.072_175,
+        f32::mul_add(green, 0.715_152_2, red * 0.212_672_9),
+    );
+    let z = f32::mul_add(
+        blue,
+        0.950_304_1,
+        f32::mul_add(green, 0.119_192, red * 0.019_333_9),
+    ) / 1.08883;
     let f = |value: f32| {
-        if value > 0.008856 {
+        if value > 0.008_856 {
             value.cbrt()
         } else {
             7.787f32.mul_add(value, 16.0 / 116.0)
@@ -490,7 +584,7 @@ fn lab_to_rgb(lab: [f32; 3]) -> [u8; 3] {
     let fz = fy - lab[2] / 200.0;
     let inverse = |value: f32| {
         let cube = value * value * value;
-        if cube > 0.008856 {
+        if cube > 0.008_856 {
             cube
         } else {
             (value - 16.0 / 116.0) / 7.787
@@ -500,17 +594,25 @@ fn lab_to_rgb(lab: [f32; 3]) -> [u8; 3] {
     let y = inverse(fy);
     let z = inverse(fz) * 1.08883;
     let channels = [
-        f32::mul_add(z, -0.4985314, f32::mul_add(y, -1.5371385, x * 3.2404542)),
-        f32::mul_add(z, 0.041556, f32::mul_add(y, 1.8760108, -x * 0.969266)),
-        f32::mul_add(z, 1.0572252, f32::mul_add(y, -0.2040259, x * 0.0556434)),
+        f32::mul_add(
+            z,
+            -0.498_531_4,
+            f32::mul_add(y, -1.537_138_5, x * 3.240_454_2),
+        ),
+        f32::mul_add(z, 0.041_556, f32::mul_add(y, 1.876_010_8, -x * 0.969_266)),
+        f32::mul_add(
+            z,
+            1.057_225_2,
+            f32::mul_add(y, -0.204_025_9, x * 0.055_643_4),
+        ),
     ];
     let encode = |value: f32| {
-        let value = if value <= 0.0031308 {
+        let value = if value <= 0.003_130_8 {
             12.92 * value
         } else {
             1.055f32.mul_add(value.max(0.0).powf(1.0 / 2.4), -0.055)
         };
-        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+        nonnegative_f32_to_u8((value.clamp(0.0, 1.0) * 255.0).round())
     };
     [
         encode(channels[0]),
@@ -581,7 +683,7 @@ struct AudioBands {
 
 impl AudioBands {
     fn new(rate: f32) -> Self {
-        let q = [0.5411961, 1.306563];
+        let q = [0.541_196_1, 1.306_563];
         Self {
             low: q.map(|q| Biquad::lowpass(rate, 250.0, q)),
             mid_high: q.map(|q| Biquad::highpass(rate, 250.0, q)),
@@ -617,23 +719,24 @@ fn analyze_audio(path: &Path, target_samples: Option<usize>) -> Result<AudioWave
         Decoder::try_from(file).with_context(|| format!("decode audio {}", path.display()))?;
     let channels = source.channels().get() as usize;
     let sample_rate = source.sample_rate().get() as usize;
-    let bucket_frames = (sample_rate as f64 / ANALYSIS_FPS).round().max(1.0) as usize;
+    let bucket_frames =
+        nonnegative_f64_to_usize((sample_rate as f64 / ANALYSIS_FPS).round().max(1.0));
     let mut filters = [
         AudioBands::new(sample_rate as f32),
         AudioBands::new(sample_rate as f32),
     ];
     let mut peaks: [Vec<f32>; AUDIO_BANDS] = std::array::from_fn(|_| Vec::new());
     let mut bucket = [0.0f32; AUDIO_BANDS];
-    let mut histograms = [[0u64; 2048]; AUDIO_BANDS];
+    let mut histograms = vec![[0u64; 2048]; AUDIO_BANDS];
     let mut channel = 0usize;
     let mut frame = [0.0f32; 2];
     let mut frames_in_bucket = 0usize;
 
     for sample in &mut source {
-        if channel < 2 {
-            frame[channel] = sample;
+        if let Some(value) = frame.get_mut(channel) {
+            *value = sample;
         }
-        channel += 1;
+        channel = channel.saturating_add(1);
         if channel < channels.max(1) {
             continue;
         }
@@ -641,27 +744,40 @@ fn analyze_audio(path: &Path, target_samples: Option<usize>) -> Result<AudioWave
         if channels == 1 {
             frame[1] = frame[0];
         }
-        for side in 0..2 {
-            let values = filters[side].process(frame[side]);
-            for (band, value) in values.into_iter().enumerate() {
-                let index = side * 3 + band;
-                bucket[index] = bucket[index].max(value);
-                let bin = (value.min(4.0) * (2047.0 / 4.0)).round() as usize;
-                histograms[index][bin] += 1;
+        let (bucket_chunks, _) = bucket.as_chunks_mut::<3>();
+        let (histogram_chunks, _) = histograms.as_chunks_mut::<3>();
+        for (((filter, input), buckets), histograms) in filters
+            .iter_mut()
+            .zip(frame)
+            .zip(bucket_chunks)
+            .zip(histogram_chunks)
+        {
+            let values = filter.process(input);
+            for ((value, bucket), histogram) in values.into_iter().zip(buckets).zip(histograms) {
+                *bucket = bucket.max(value);
+                let bin = nonnegative_f32_to_usize((value.min(4.0) * (2047.0 / 4.0)).round());
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the magnitude is clamped to 0..=4 before mapping to 2048 bins"
+                )]
+                let count = histogram
+                    .get_mut(bin)
+                    .expect("audio histogram bin in bounds");
+                *count = count.saturating_add(1);
             }
         }
-        frames_in_bucket += 1;
+        frames_in_bucket = frames_in_bucket.saturating_add(1);
         if frames_in_bucket >= bucket_frames {
-            for band in 0..AUDIO_BANDS {
-                peaks[band].push(bucket[band]);
-                bucket[band] = 0.0;
+            for (peaks, value) in peaks.iter_mut().zip(&mut bucket) {
+                peaks.push(*value);
+                *value = 0.0;
             }
             frames_in_bucket = 0;
         }
     }
     if frames_in_bucket > 0 {
-        for band in 0..AUDIO_BANDS {
-            peaks[band].push(bucket[band]);
+        for (peaks, value) in peaks.iter_mut().zip(bucket) {
+            peaks.push(value);
         }
     }
     anyhow::ensure!(
@@ -670,12 +786,22 @@ fn analyze_audio(path: &Path, target_samples: Option<usize>) -> Result<AudioWave
     );
 
     let target = target_samples.unwrap_or(peaks[0].len()).max(1);
-    let bands = std::array::from_fn(|band| {
-        let reference = histogram_percentile(&histograms[band], 99.5).max(1.0e-9);
-        let values = resample_peak_f32(&peaks[band], target);
+    let mut histograms = histograms.into_iter();
+    let bands = peaks.map(|peaks| {
+        #[expect(
+            clippy::expect_used,
+            reason = "histograms and peaks both have AUDIO_BANDS elements"
+        )]
+        let histogram = histograms.next().expect("audio band histogram exists");
+        let reference = histogram_percentile(&histogram, 99.5).max(1.0e-9);
+        let values = resample_peak_f32(&peaks, target);
         values
             .into_iter()
-            .map(|value| ((value / reference).clamp(0.0, 1.0).powf(0.62) * 255.0).round() as u8)
+            .map(|value| {
+                nonnegative_f32_to_u8(
+                    ((value / reference).clamp(0.0, 1.0).powf(0.62) * 255.0).round(),
+                )
+            })
             .collect()
     });
     Ok(AudioWaveform { bands })
@@ -686,10 +812,10 @@ fn histogram_percentile(histogram: &[u64; 2048], percentile: f32) -> f32 {
     if total == 0 {
         return 1.0;
     }
-    let target = (total as f64 * f64::from(percentile) / 100.0).ceil() as u64;
+    let target = nonnegative_f64_to_u64((total as f64 * f64::from(percentile) / 100.0).ceil());
     let mut cumulative = 0u64;
     for (index, count) in histogram.iter().enumerate() {
-        cumulative += count;
+        cumulative = cumulative.saturating_add(*count);
         if cumulative >= target {
             return index as f32 * 4.0 / 2047.0;
         }
@@ -708,7 +834,9 @@ fn normalize_activity(values: &[f32], gamma: f32, percentile: f32, close_gaps: b
         .collect::<Vec<_>>();
     nonzero.sort_by(f32::total_cmp);
     let scale = nonzero
-        .get(((nonzero.len().saturating_sub(1)) as f32 * percentile / 100.0).round() as usize)
+        .get(nonnegative_f32_to_usize(
+            ((nonzero.len().saturating_sub(1)) as f32 * percentile / 100.0).round(),
+        ))
         .copied()
         .unwrap_or(1.0)
         .max(1.0e-8);
@@ -725,7 +853,7 @@ fn normalize_activity(values: &[f32], gamma: f32, percentile: f32, close_gaps: b
     }
     normalized
         .into_iter()
-        .map(|value| (value * 255.0).round() as u8)
+        .map(|value| nonnegative_f32_to_u8((value * 255.0).round()))
         .collect()
 }
 
@@ -738,18 +866,67 @@ fn rolling_extreme(
     (0..values.len())
         .map(|index| {
             let start = index.saturating_sub(radius);
-            let end = (index + radius + 1).min(values.len());
-            values[start..end].iter().copied().fold(initial, combine)
+            let end = index
+                .saturating_add(radius)
+                .saturating_add(1)
+                .min(values.len());
+            #[expect(
+                clippy::expect_used,
+                reason = "the rolling window endpoints are ordered and clamped to the slice length"
+            )]
+            values
+                .get(start..end)
+                .expect("rolling window in bounds")
+                .iter()
+                .copied()
+                .fold(initial, combine)
         })
         .collect()
 }
 
 fn resample_peak_f32(values: &[f32], width: usize) -> Vec<f32> {
+    assert!(
+        !values.is_empty() || width == 0,
+        "cannot resample empty peaks"
+    );
+    let Some(nonzero_width) = std::num::NonZeroU128::new(width as u128) else {
+        return Vec::new();
+    };
     (0..width)
         .map(|x| {
-            let start = x * values.len() / width;
-            let end = ((x + 1) * values.len()).div_ceil(width).max(start + 1);
-            values[start.min(values.len() - 1)..end.min(values.len())]
+            #[expect(
+                clippy::expect_used,
+                reason = "the product of two usize values fits u128 on supported platforms"
+            )]
+            let start_numerator = (x as u128)
+                .checked_mul(values.len() as u128)
+                .expect("resample offset overflow");
+            #[expect(
+                clippy::expect_used,
+                reason = "nonzero_width is constructed from a nonzero width"
+            )]
+            let start = start_numerator
+                .checked_div(nonzero_width.get())
+                .expect("resample divisor is nonzero");
+            #[expect(
+                clippy::expect_used,
+                reason = "x is less than width, so x + 1 fits usize and its product fits u128"
+            )]
+            let end = (x.saturating_add(1) as u128)
+                .checked_mul(values.len() as u128)
+                .expect("resample end overflow")
+                .div_ceil(nonzero_width.get());
+            let start = (start as usize).min(values.len().saturating_sub(1));
+            let end = (end as usize)
+                .max(start.saturating_add(1))
+                .min(values.len());
+            #[expect(
+                clippy::expect_used,
+                reason = "start and end are ordered and clamped to the nonempty slice"
+            )]
+            values
+                .get(start..end)
+                .expect("resample window in bounds")
                 .iter()
                 .copied()
                 .fold(0.0, f32::max)
@@ -762,9 +939,28 @@ fn waveform_segment_pixels(
     sample_start: usize,
     sample_end: usize,
 ) -> (u32, u32, Vec<u8>) {
-    let width = sample_end - sample_start;
-    let height = usize::from(data.video.is_some()) + usize::from(data.audio.is_some()) * 2;
-    let mut pixels = vec![0u8; width * height * 4];
+    #[expect(
+        clippy::expect_used,
+        reason = "segment endpoints are generated in ascending order"
+    )]
+    let width = sample_end
+        .checked_sub(sample_start)
+        .expect("invalid waveform segment");
+    let height = match (data.video.is_some(), data.audio.is_some()) {
+        (false, false) => 0usize,
+        (true, false) => 1,
+        (false, true) => 2,
+        (true, true) => 3,
+    };
+    #[expect(
+        clippy::expect_used,
+        reason = "segment pixels must fit in an addressable allocation"
+    )]
+    let size = width
+        .checked_mul(height)
+        .and_then(|size| size.checked_mul(4))
+        .expect("waveform texture size overflow");
+    let mut pixels = vec![0u8; size];
     let mut row = 0usize;
     if let Some(video) = &data.video {
         for (x, sample) in (sample_start..sample_end).enumerate() {
@@ -778,20 +974,20 @@ fn waveform_segment_pixels(
                 [color[0], color[1], color[2], activity],
             );
         }
-        row += 1;
+        row = row.saturating_add(1);
     }
     if let Some(audio) = &data.audio {
         for (x, sample) in (sample_start..sample_end).enumerate() {
-            let levels = |offset: usize| {
-                [
-                    encode_linear_byte(audio.bands[offset].get(sample).copied().unwrap_or(0)),
-                    encode_linear_byte(audio.bands[offset + 1].get(sample).copied().unwrap_or(0)),
-                    encode_linear_byte(audio.bands[offset + 2].get(sample).copied().unwrap_or(0)),
-                    255,
-                ]
+            let levels = |bands: &[Vec<u8>]| {
+                let mut levels = [0, 0, 0, 255];
+                for (channel, band) in levels.iter_mut().zip(bands) {
+                    *channel = encode_linear_byte(band.get(sample).copied().unwrap_or(0));
+                }
+                levels
             };
-            set_pixel(&mut pixels, width, x, row, levels(0));
-            set_pixel(&mut pixels, width, x, row + 1, levels(3));
+            let (left, right) = audio.bands.split_at(3);
+            set_pixel(&mut pixels, width, x, row, levels(left));
+            set_pixel(&mut pixels, width, x, row.saturating_add(1), levels(right));
         }
     }
     (width as u32, height as u32, pixels)
@@ -804,12 +1000,32 @@ fn encode_linear_byte(value: u8) -> u8 {
     } else {
         1.055f32.mul_add(value.powf(1.0 / 2.4), -0.055)
     };
-    (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+    nonnegative_f32_to_u8((encoded.clamp(0.0, 1.0) * 255.0).round())
 }
 
 fn set_pixel(pixels: &mut [u8], texture_width: usize, x: usize, y: usize, color: [u8; 4]) {
-    let index = (y * texture_width + x) * 4;
-    pixels[index..index + 4].copy_from_slice(&color);
+    #[expect(
+        clippy::expect_used,
+        reason = "pixel coordinates come from the allocated waveform segment"
+    )]
+    let index = y
+        .checked_mul(texture_width)
+        .and_then(|index| index.checked_add(x))
+        .and_then(|index| index.checked_mul(4))
+        .expect("waveform pixel offset overflow");
+    #[expect(
+        clippy::expect_used,
+        reason = "pixel coordinates come from the allocated waveform segment"
+    )]
+    let end = index.checked_add(4).expect("waveform pixel end overflow");
+    #[expect(
+        clippy::expect_used,
+        reason = "pixel coordinates come from the allocated waveform segment"
+    )]
+    pixels
+        .get_mut(index..end)
+        .expect("waveform pixel in bounds")
+        .copy_from_slice(&color);
 }
 
 #[cfg(test)]

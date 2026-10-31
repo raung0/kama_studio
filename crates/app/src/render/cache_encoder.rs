@@ -76,7 +76,7 @@ impl CacheEncoder {
             .and_then(|width| {
                 usize::try_from(height)
                     .ok()
-                    .map(|height| width * height * 8)
+                    .and_then(|height| width.checked_mul(height)?.checked_mul(8))
             })
             .context("cache frame size overflow")?;
 
@@ -96,24 +96,37 @@ impl CacheEncoder {
     }
 
     fn encode_frame(&mut self, bytes: &[u8]) -> Result<()> {
-        let row_bytes = self.width as usize * 2;
-        let plane_bytes = row_bytes * self.height as usize;
+        let row_bytes = usize::try_from(self.width)?
+            .checked_mul(2)
+            .context("cache row size overflow")?;
+        let plane_bytes = row_bytes
+            .checked_mul(usize::try_from(self.height)?)
+            .context("cache plane size overflow")?;
         anyhow::ensure!(
-            bytes.len() == plane_bytes * 4,
+            Some(bytes.len()) == plane_bytes.checked_mul(4),
             "invalid cache frame byte count"
         );
         let mut video = frame::Video::new(format::Pixel::YUVA444P10LE, self.width, self.height);
-        for plane in 0..4 {
+        for (plane, source) in bytes.chunks_exact(plane_bytes).enumerate() {
             let stride = video.stride(plane);
             let target = video.data_mut(plane);
-            let source = &bytes[plane * plane_bytes..(plane + 1) * plane_bytes];
-            for row in 0..self.height as usize {
-                target[row * stride..row * stride + row_bytes]
-                    .copy_from_slice(&source[row * row_bytes..(row + 1) * row_bytes]);
+            anyhow::ensure!(stride >= row_bytes, "invalid cache frame stride");
+            let mut target_rows = target.chunks_mut(stride);
+            for source_row in source.chunks_exact(row_bytes) {
+                let target_row = target_rows
+                    .next()
+                    .context("cache frame plane is too short")?;
+                target_row
+                    .get_mut(..row_bytes)
+                    .context("cache frame row is too short")?
+                    .copy_from_slice(source_row);
             }
         }
         video.set_pts(Some(self.next_pts));
-        self.next_pts += 1;
+        self.next_pts = self
+            .next_pts
+            .checked_add(1)
+            .context("cache frame timestamp overflow")?;
         self.encoder
             .send_frame(&video)
             .context("submit ProRes cache frame")?;

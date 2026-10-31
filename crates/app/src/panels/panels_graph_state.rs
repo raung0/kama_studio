@@ -2,9 +2,9 @@ use super::{
     ANGLE_ROW_H, AppIcon, BUILTIN_GRADIENT_GENERATOR, Color, ColorButton, ComboBox,
     ContextMenuClick, ContextMenuItem, CursorShape, EnumControlsExt, FormatKey, GeneratorSource,
     GpuValue, GraphicEqBuild, Hash, HashMap, HashSet, IconId, Icons, Ime, InputType, Key, KeyEvent,
-    KnobControlsExt, ModifiersState, NamedKey, NumberControlsExt, NumberInput, NumberSettings,
-    PipelineKind, PluginInput, PluginRegistry, Project, PropertyControls, RADIUS_SM, Rect,
-    Renderer, Result, Size, SliderControlsExt, Style, TextEdit, TimelineState, build_context_menu,
+    ModifiersState, NamedKey, NumberControlsExt, NumberInput, NumberSettings, PipelineKind,
+    PluginInput, PluginRegistry, Project, PropertyControls, RADIUS_SM, Rect, Renderer, Result,
+    Size, SliderControlsExt, Style, TextEdit, TimelineState, build_context_menu,
     build_graphic_eq_controls, colors_from_values, colors_to_values, context_menu_click,
     context_menu_rect, format_gpu_value, friendly_name, graph_canvas_rect, graph_card_header_parts,
     graph_card_scale, graph_component_rect, graph_component_style, graph_host_eq_parts,
@@ -33,7 +33,7 @@ pub enum GraphNodeTarget {
 }
 
 impl GraphNodeTarget {
-    fn header_color(self) -> Color {
+    const fn header_color(self) -> Color {
         match self {
             Self::Input => Color::rgb8(0x2f, 0x45, 0x36),
             Self::Output => Color::rgb8(0x3a, 0x3a, 0x3a),
@@ -94,7 +94,7 @@ enum GraphControlTarget {
 }
 
 impl GraphControlTarget {
-    fn node(&self) -> GraphNodeTarget {
+    const fn node(&self) -> GraphNodeTarget {
         match self {
             Self::Property(key) => key.target,
             Self::ValueNode(node) => GraphNodeTarget::Value(*node),
@@ -333,7 +333,7 @@ struct GraphModel<'a> {
 }
 
 impl<'a> GraphModel<'a> {
-    fn new(project: &'a Project, timeline: &'a TimelineState, pinned: Option<u64>) -> Self {
+    const fn new(project: &'a Project, timeline: &'a TimelineState, pinned: Option<u64>) -> Self {
         Self {
             project,
             timeline,
@@ -377,7 +377,7 @@ struct GraphWireGeometry {
 }
 
 impl GraphWireGeometry {
-    fn editable(wire: GraphWire, from: [f32; 2], to: [f32; 2]) -> Self {
+    const fn editable(wire: GraphWire, from: [f32; 2], to: [f32; 2]) -> Self {
         Self {
             wire,
             from,
@@ -405,7 +405,7 @@ fn graph_input_at<T: AsRef<str>>(
         .map(|(_, input)| input.as_ref())
 }
 
-fn pending_from_wire(wire: &GraphWire) -> PendingGraphWire {
+const fn pending_from_wire(wire: &GraphWire) -> PendingGraphWire {
     match wire {
         GraphWire::LocalImage { source, .. } => PendingGraphWire::LocalImage(*source),
         GraphWire::Image { source, .. } => PendingGraphWire::Image(*source),
@@ -421,8 +421,8 @@ fn occupied_graph_input(
     let index = graph_card_draw_order(&scene.cards, order)
         .into_iter()
         .next_back()?;
-    let card = &scene.cards[index];
-    let rect = scene.rects[index];
+    let card = scene.cards.get(index)?;
+    let rect = *scene.rects.get(index)?;
     let wire = match card.kind {
             GraphNodeTarget::Local(node) if graph_image_input_port(rect).contains(point) => scene
                 .wires
@@ -478,8 +478,8 @@ fn graph_output_at(
         .into_iter()
         .rev()
         .find_map(|index| {
-            let card = &cards[index];
-            let rect = rects[index];
+            let card = cards.get(index)?;
+            let rect = *rects.get(index)?;
             match card.kind {
                 GraphNodeTarget::Input if graph_image_output_port(rect).contains(point) => {
                     Some(if shared_input {
@@ -575,13 +575,20 @@ fn graph_connect_action(
 }
 
 pub(super) fn set_eq_band(values: &mut Vec<f32>, index: usize, normalized: f32) {
+    assert!(
+        index < usize::MAX,
+        "equalizer band index exceeds addressable storage"
+    );
+    let len = index.saturating_add(1);
     if values.len() <= index {
-        values.resize(index + 1, 0.0);
+        values.resize(len, 0.0);
     }
-    values[index] = normalized
-        .clamp(0.0, 1.0)
-        .mul_add(48.0, -24.0)
-        .clamp(-24.0, 24.0);
+    if let Some(value) = values.get_mut(index) {
+        *value = normalized
+            .clamp(0.0, 1.0)
+            .mul_add(48.0, -24.0)
+            .clamp(-24.0, 24.0);
+    }
 }
 
 pub(super) const GRAPH_CARD_W: f32 = 184.0;
@@ -617,7 +624,7 @@ fn graph_host_inputs(
                             _ => None,
                         })
                         .unwrap_or(0);
-                    Some((count + 1).max(1) as f32 * GRAPH_INPUT_H)
+                    Some(count.saturating_add(1) as f32 * GRAPH_INPUT_H)
                 } else {
                     None
                 };
@@ -671,7 +678,7 @@ fn graph_generator_inputs(
                     Some(crate::project::HostValue::Vec2Array(points)) => points.len(),
                     _ => 0,
                 };
-                Some((count + 1).max(1) as f32 * GRAPH_INPUT_H)
+                Some(count.saturating_add(1) as f32 * GRAPH_INPUT_H)
             } else {
                 None
             },
@@ -864,8 +871,7 @@ fn graph_node_inputs(
 pub(super) fn graph_property_row_height(definition: Option<&PluginInput>) -> f32 {
     match definition.map(|definition| definition.ty) {
         Some(InputType::Angle) => ANGLE_ROW_H,
-        Some(InputType::Color) => 24.0,
-        Some(InputType::Enum | InputType::Bool) => 24.0,
+        Some(InputType::Color | InputType::Enum | InputType::Bool) => 24.0,
         _ => 22.0,
     }
 }
@@ -1023,11 +1029,6 @@ fn graph_effect_value(
         pinned,
     } = graph;
     match kind {
-        GraphNodeTarget::Local(_) => graph
-            .effect(kind)?
-            .inputs
-            .get(input)?
-            .evaluate(timeline.selected_keyframe_time()),
         GraphNodeTarget::Shared(id) if pinned.is_none() => {
             let pipeline_id = timeline.selected_pipeline()?.pipeline?;
             let node = project.pipeline(pipeline_id)?.node(id)?;
@@ -1043,7 +1044,7 @@ fn graph_effect_value(
                 timeline.pipeline_input_value(project, id, input)
             }
         }
-        GraphNodeTarget::Shared(_) => graph
+        GraphNodeTarget::Local(_) | GraphNodeTarget::Shared(_) => graph
             .effect(kind)?
             .inputs
             .get(input)?
@@ -1159,11 +1160,18 @@ fn graph_property_definition<'a>(
 }
 
 fn set_gradient_color_values(values: &mut Vec<f32>, index: usize, color: [f32; 4]) {
-    let base = index * 4;
-    if values.len() < base + 4 {
-        values.resize(base + 4, 0.0);
+    assert!(
+        index < usize::MAX / 4,
+        "gradient stop index exceeds addressable storage"
+    );
+    let base = index.saturating_mul(4);
+    let end = base.saturating_add(4);
+    if values.len() < end {
+        values.resize(end, 0.0);
     }
-    values[base..base + 4].copy_from_slice(&color);
+    if let Some(target) = values.get_mut(base..end) {
+        target.copy_from_slice(&color);
+    }
 }
 
 fn card_index(cards: &[GraphCard], target: GraphNodeTarget) -> Option<usize> {
@@ -1171,15 +1179,15 @@ fn card_index(cards: &[GraphCard], target: GraphNodeTarget) -> Option<usize> {
 }
 
 fn graph_card_draw_order(cards: &[GraphCard], z_order: &[GraphNodeTarget]) -> Vec<usize> {
-    let mut order = (0..cards.len()).collect::<Vec<_>>();
-    order.sort_by_key(|index| {
-        let target = cards[*index].kind;
+    let mut order = cards.iter().enumerate().collect::<Vec<_>>();
+    order.sort_by_key(|(_, card)| {
+        let target = card.kind;
         z_order
             .iter()
             .position(|candidate| *candidate == target)
-            .map_or(0usize, |position| position + 1)
+            .map_or(0usize, |position| position.saturating_add(1))
     });
-    order
+    order.into_iter().map(|(index, _)| index).collect()
 }
 
 fn graph_unique_property_at(
@@ -1226,6 +1234,10 @@ fn graph_unique_property_at(
     })
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "color components are clamped to nonnegative values before conversion"
+)]
 fn graph_value_summary(value: GpuValue, definition: Option<&PluginInput>) -> String {
     match value {
         GpuValue::Color(color) => format!(
@@ -1272,17 +1284,20 @@ fn graph_number_settings(
         0.01
     };
     let mut precision = if integer { 0 } else { 3 };
-    let mut suffix = "";
-    if let Some(definition) = definition {
+    let suffix = definition.map_or("", |definition| {
         minimum = definition.min.map_or(minimum, f64::from);
         maximum = definition.max.map_or(maximum, f64::from);
         sensitivity = definition.step.map_or(sensitivity, f64::from);
         precision = definition.precision.unwrap_or(precision);
-        suffix = &definition.suffix;
-    }
+        definition.suffix.as_str()
+    });
     ((minimum, maximum), sensitivity, precision, suffix)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 fn graph_property_label_rect(card_rect: Rect, card: &GraphCard, input_index: usize) -> Rect {
     let row = graph_property_row_rect(card_rect, card, input_index);
     let scale = graph_card_scale(card_rect);
@@ -1300,6 +1315,10 @@ fn graph_property_label_rect(card_rect: Rect, card: &GraphCard, input_index: usi
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 fn graph_property_value_area(
     card_rect: Rect,
     card: &GraphCard,
@@ -1323,6 +1342,10 @@ fn graph_property_value_area(
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row returns one rectangle per supplied layout item"
+)]
 fn graph_property_link_rect(card_rect: Rect, card: &GraphCard, input_index: usize) -> Rect {
     let row = graph_property_row_rect(card_rect, card, input_index);
     let scale = graph_card_scale(card_rect);
@@ -1359,6 +1382,10 @@ fn graph_property_component_rect(
     )
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row and column return one rectangle per supplied layout item"
+)]
 fn graph_angle_parts(card_rect: Rect, card: &GraphCard, input_index: usize) -> (Rect, Rect, Rect) {
     let scale = graph_card_scale(card_rect);
     let area = graph_property_value_area(card_rect, card, input_index, false);
@@ -1412,7 +1439,10 @@ fn graph_node_output_point(
     target: impl FnOnce(u64) -> GraphNodeTarget,
     node: u64,
 ) -> Option<[f32; 2]> {
-    card_index(cards, target(node)).map(|index| graph_image_output_point(rects[index]))
+    card_index(cards, target(node))
+        .and_then(|index| rects.get(index))
+        .copied()
+        .map(graph_image_output_point)
 }
 
 fn shared_pipeline_output_point(
@@ -1428,7 +1458,9 @@ fn shared_pipeline_output_point(
     let input = cards
         .iter()
         .position(|card| matches!(card.kind, GraphNodeTarget::Input))
-        .map(|index| graph_image_output_point(rects[index]))?;
+        .and_then(|index| rects.get(index))
+        .copied()
+        .map(graph_image_output_point)?;
     let Some(pipeline_id) = pinned.or_else(|| timeline.selected_pipeline()?.pipeline) else {
         return Some(input);
     };
@@ -1454,12 +1486,16 @@ fn pending_graph_source_point(
         PendingGraphWire::Image(None) => cards
             .iter()
             .position(|card| matches!(card.kind, GraphNodeTarget::Input))
-            .map(|index| graph_image_output_point(rects[index])),
+            .and_then(|index| rects.get(index))
+            .copied()
+            .map(graph_image_output_point),
         PendingGraphWire::Image(Some(node)) => {
             graph_node_output_point(cards, rects, GraphNodeTarget::Shared, node)
         }
         PendingGraphWire::Value(node) => card_index(cards, GraphNodeTarget::Value(node))
-            .map(|index| graph_value_output_point(rects[index])),
+            .and_then(|index| rects.get(index))
+            .copied()
+            .map(graph_value_output_point),
     }
 }
 
@@ -1472,7 +1508,8 @@ fn graph_value_source(
         return None;
     };
     card_index(cards, GraphNodeTarget::Value(socket.node))
-        .map(|index| (socket.node, graph_value_output_point(rects[index])))
+        .and_then(|index| rects.get(index))
+        .map(|rect| (socket.node, graph_value_output_point(*rect)))
 }
 
 fn graph_wire_geometry(
@@ -1499,7 +1536,13 @@ fn graph_wire_geometry(
     else {
         return wires;
     };
-    let graph_input = graph_image_output_point(rects[input_index]);
+    let Some(&input_rect) = rects.get(input_index) else {
+        return wires;
+    };
+    let Some(&output_rect) = rects.get(output_index) else {
+        return wires;
+    };
+    let graph_input = graph_image_output_point(input_rect);
     let followed_instance = pinned
         .is_none()
         .then(|| timeline.selected_pipeline())
@@ -1516,7 +1559,12 @@ fn graph_wire_geometry(
             else {
                 continue;
             };
-            for (image_index, name) in cards[destination_index].image_inputs.iter().enumerate() {
+            let (Some(destination), Some(&destination_rect)) =
+                (cards.get(destination_index), rects.get(destination_index))
+            else {
+                continue;
+            };
+            for (image_index, name) in destination.image_inputs.iter().enumerate() {
                 let binding = node
                     .image_inputs
                     .get(name)
@@ -1533,7 +1581,7 @@ fn graph_wire_geometry(
                             input: Some(name.clone()),
                         },
                         from,
-                        graph_named_image_input_point(rects[destination_index], image_index),
+                        graph_named_image_input_point(destination_rect, image_index),
                     ));
                 }
             }
@@ -1553,11 +1601,7 @@ fn graph_wire_geometry(
                         input: name.clone(),
                     },
                     from,
-                    graph_scalar_input_point(
-                        rects[destination_index],
-                        &cards[destination_index],
-                        input_index,
-                    ),
+                    graph_scalar_input_point(destination_rect, destination, input_index),
                 ));
             }
         }
@@ -1565,7 +1609,12 @@ fn graph_wire_geometry(
             let Some(destination_index) = card_index(cards, GraphNodeTarget::Value(node.id)) else {
                 continue;
             };
-            for (input_index, input) in cards[destination_index].inputs.iter().enumerate() {
+            let (Some(destination), Some(&destination_rect)) =
+                (cards.get(destination_index), rects.get(destination_index))
+            else {
+                continue;
+            };
+            for (input_index, input) in destination.inputs.iter().enumerate() {
                 let Some((source, from)) = node
                     .inputs
                     .get(&input.name)
@@ -1580,7 +1629,7 @@ fn graph_wire_geometry(
                         input: input.name.clone(),
                     },
                     from,
-                    graph_value_input_point(rects[destination_index], input_index),
+                    graph_value_input_point(destination_rect, input_index),
                 ));
             }
         }
@@ -1590,6 +1639,9 @@ fn graph_wire_geometry(
     if let Some(instance) = selected_instance {
         for node in &instance.local_nodes {
             let Some(destination_index) = card_index(cards, GraphNodeTarget::Local(node.id)) else {
+                continue;
+            };
+            let Some(&destination_rect) = rects.get(destination_index) else {
                 continue;
             };
             let binding = node
@@ -1605,7 +1657,7 @@ fn graph_wire_geometry(
                         destination: Some(node.id),
                     },
                     from,
-                    graph_image_input_point(rects[destination_index]),
+                    graph_image_input_point(destination_rect),
                 ));
             }
         }
@@ -1620,7 +1672,7 @@ fn graph_wire_geometry(
                     destination: None,
                 },
                 from,
-                graph_image_input_point(rects[output_index]),
+                graph_image_input_point(output_rect),
             ));
         }
         return wires;
@@ -1639,12 +1691,16 @@ fn graph_wire_geometry(
                 input: None,
             },
             from,
-            graph_image_input_point(rects[output_index]),
+            graph_image_input_point(output_rect),
         ));
     }
     wires
 }
 
+#[expect(
+    clippy::while_float,
+    reason = "grid lines advance by pixel spacing until the viewport edge"
+)]
 fn draw_graph_grid(ctx: &mut kama_ui::BuildCtx, canvas: Rect, pan: [f32; 2], zoom: f32) {
     for (level, world, min_pixels, color) in [
         (
@@ -1690,18 +1746,18 @@ fn draw_graph_grid(ctx: &mut kama_ui::BuildCtx, canvas: Rect, pan: [f32; 2], zoo
                     }
                 });
                 position += spacing;
-                index += 1;
+                index = index.saturating_add(1);
             }
         }
     }
 }
 
 fn graph_curve_points(from: [f32; 2], to: [f32; 2], zoom: f32) -> Vec<[f32; 2]> {
+    const STEPS: usize = 24;
     let zoom = zoom.max(0.000_1);
     let handle = ((to[0] - from[0]).abs() * 0.45).clamp(52.0 * zoom, 180.0 * zoom);
     let c1 = [from[0] + handle, from[1]];
     let c2 = [to[0] - handle, to[1]];
-    const STEPS: usize = 24;
     (0..=STEPS)
         .map(|step| {
             let t = step as f32 / STEPS as f32;
@@ -1753,8 +1809,7 @@ fn draw_graph_curve(
     let half_width = (1.5 * zoom).max(0.6);
     let mut vertices = Vec::with_capacity(24 * 6);
     for pair in points.windows(2) {
-        let a = pair[0];
-        let b = pair[1];
+        let [a, b] = pair else { continue };
         let dx = b[0] - a[0];
         let dy = b[1] - a[1];
         let length = dx.hypot(dy).max(0.0001);
@@ -1793,7 +1848,7 @@ fn graph_wire_hit(from: [f32; 2], to: [f32; 2], point: [f32; 2], zoom: f32) -> b
     let tolerance = (10.0 * zoom).max(4.0);
     graph_curve_points(from, to, zoom)
         .windows(2)
-        .any(|pair| point_segment_distance(point, pair[0], pair[1]) <= tolerance)
+        .any(|pair| matches!(pair, [a, b] if point_segment_distance(point, *a, *b) <= tolerance))
 }
 
 fn graph_wire_crosses_rect(from: [f32; 2], to: [f32; 2], rect: Rect, zoom: f32) -> bool {
@@ -1834,7 +1889,6 @@ impl PipelineGraphState {
             GraphNodeTarget::Local(node) if self.pinned_pipeline.is_none() => {
                 Some(GraphMonitorSelection::Local { node })
             }
-            GraphNodeTarget::Local(_) => None,
             GraphNodeTarget::Shared(node) => {
                 let pipeline = self.pinned_pipeline.or_else(|| {
                     timeline
@@ -1847,7 +1901,10 @@ impl PipelineGraphState {
                     follows_clip: self.pinned_pipeline.is_none(),
                 })
             }
-            GraphNodeTarget::Input | GraphNodeTarget::Value(_) | GraphNodeTarget::Output => None,
+            GraphNodeTarget::Input
+            | GraphNodeTarget::Local(_)
+            | GraphNodeTarget::Value(_)
+            | GraphNodeTarget::Output => None,
         }
     }
 
@@ -2066,7 +2123,7 @@ impl PipelineGraphState {
         ctx: &mut kama_ui::BuildCtx,
         rect: Rect,
         timeline: &TimelineState,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let Some(menu) = self.context_menu.as_ref() else {
             return;
@@ -2136,7 +2193,7 @@ impl PipelineGraphState {
             })
     }
 
-    pub fn is_pinned(&self) -> bool {
+    pub const fn is_pinned(&self) -> bool {
         self.pinned_pipeline.is_some()
     }
 
@@ -2174,7 +2231,7 @@ impl PipelineGraphState {
                     .iter()
                     .position(|pipeline| pipeline.id == id)
             })
-            .map_or(0, |index| index + 1);
+            .map_or(0, |index| index.saturating_add(1));
         if !self.pipeline_combo.is_open() {
             self.pipeline_combo.set_selected(selected);
         }
@@ -2184,7 +2241,7 @@ impl PipelineGraphState {
     fn build_graph_numeric(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
-        target: GraphControlTarget,
+        target: &GraphControlTarget,
         value: GpuValue,
         link_rect: impl FnOnce() -> Rect,
         component_rect: impl Fn(usize, usize, bool) -> Rect,
@@ -2196,7 +2253,7 @@ impl PipelineGraphState {
     ) {
         let count = value.component_count();
         let linkable = value.components_linkable();
-        let linked = self.property_links.contains(&target);
+        let linked = self.property_links.contains(target);
         if linkable {
             let rect = link_rect();
             self.property_link_rects.insert(target.clone(), rect);
@@ -2233,7 +2290,7 @@ impl PipelineGraphState {
     fn build_graph_color(
         &mut self,
         ctx: &mut kama_ui::BuildCtx,
-        target: GraphControlTarget,
+        target: &GraphControlTarget,
         layout: (Rect, Rect),
         color: [f32; 4],
         id: impl std::fmt::Display,
@@ -2242,7 +2299,7 @@ impl PipelineGraphState {
         let (swatch, _bounds) = layout;
         ColorButton::build(ctx, id, swatch, ui_color(color), style);
         self.color_swatch_rects.insert(target.clone(), swatch);
-        if self.controls.color_target.as_ref() == Some(&target) {
+        if self.controls.color_target.as_ref() == Some(target) {
             self.controls.color_rect = Some(swatch);
             if !self.controls.color_picker.is_dragging() {
                 self.controls.color_picker.set_linear(color);
@@ -2263,7 +2320,7 @@ impl PipelineGraphState {
         card: &GraphCard,
         layout: (Rect, Rect, usize),
         property: (GraphNodeTarget, &str, Option<GpuValue>, bool),
-        icons: Icons,
+        icons: &Icons,
     ) {
         let chevron = icons.get(AppIcon::Chevron);
         let (bounds, card_rect, input_index) = layout;
@@ -2350,7 +2407,7 @@ impl PipelineGraphState {
             }
             Some(InputType::Color) => self.build_graph_color(
                 ctx,
-                GraphControlTarget::Property(key),
+                &GraphControlTarget::Property(key),
                 (
                     graph_color_swatch_rect(card_rect, card, input_index),
                     bounds,
@@ -2372,7 +2429,7 @@ impl PipelineGraphState {
             }
             _ => self.build_graph_numeric(
                 ctx,
-                GraphControlTarget::Property(key),
+                &GraphControlTarget::Property(key),
                 value,
                 || graph_property_link_rect(card_rect, card, input_index),
                 |component, count, linkable| {
@@ -2401,9 +2458,9 @@ impl PipelineGraphState {
         project: &Project,
         timeline: &TimelineState,
         plugins: &PluginRegistry,
-        icons: Icons,
-        popup_bounds: Rect,
+        chrome: (&Icons, Rect),
     ) {
+        let (icons, popup_bounds) = chrome;
         let chevron = icons.get(AppIcon::Chevron);
         let graph = GraphModel::new(project, timeline, self.pinned_pipeline);
         self.sync_pipeline_name(project, timeline);
@@ -2428,8 +2485,8 @@ impl PipelineGraphState {
                 let followed = self
                     .target_pipeline(project, timeline)
                     .and_then(|id| project.pipeline(id))
-                    .map_or("selection".to_string(), |pipeline| pipeline.name.clone());
-                let mut option_names = Vec::with_capacity(project.pipelines.len() + 1);
+                    .map_or_else(|| "selection".to_string(), |pipeline| pipeline.name.clone());
+                let mut option_names = Vec::new();
                 option_names.push(format!("Follow instance: {followed}"));
                 option_names.extend(project.pipelines.iter().map(|pipeline| {
                     let kind = if pipeline.kind == PipelineKind::Audio {
@@ -2530,8 +2587,10 @@ impl PipelineGraphState {
         }
 
         for index in graph_card_draw_order(&scene.cards, &self.z_order) {
-            let card = &scene.cards[index];
-            let card_rect = scene.rects[index];
+            let (Some(card), Some(&card_rect)) = (scene.cards.get(index), scene.rects.get(index))
+            else {
+                continue;
+            };
             let target = card.kind;
             let selected =
                 self.selected_node == Some(target) || self.selected_nodes.contains(&target);
@@ -2614,7 +2673,7 @@ impl PipelineGraphState {
                             }) {
                                 self.build_graph_numeric(
                                     ctx,
-                                    GraphControlTarget::Property(GraphPropertyKey {
+                                    &GraphControlTarget::Property(GraphPropertyKey {
                                         target,
                                         input: input.name.clone(),
                                     }),
@@ -2656,7 +2715,7 @@ impl PipelineGraphState {
                             if let (true, GpuValue::Color(value)) = (color, value_node.value) {
                                 self.build_graph_color(
                                     ctx,
-                                    GraphControlTarget::ValueNode(id),
+                                    &GraphControlTarget::ValueNode(id),
                                     (graph_value_swatch_rect(card_rect), rect),
                                     value,
                                     FormatKey::new(format_args!("graph-value-swatch-{id}")),
@@ -2665,7 +2724,7 @@ impl PipelineGraphState {
                             }
                             self.build_graph_numeric(
                                 ctx,
-                                GraphControlTarget::ValueNode(id),
+                                &GraphControlTarget::ValueNode(id),
                                 value_node.value,
                                 || graph_value_link_rect(card_rect),
                                 |component, _, linkable| {
@@ -2792,11 +2851,10 @@ impl PipelineGraphState {
                                 graph_style,
                             );
 
-                            const BAND_COUNTS: [usize; 5] = [3, 5, 10, 15, 31];
                             let mode = graph_effect_value(card.kind, "band_count", graph)
                                 .and_then(GpuValue::enum_index)
                                 .unwrap_or(2) as usize;
-                            let count = BAND_COUNTS[mode.min(BAND_COUNTS.len() - 1)];
+                            let count = [3, 5, 10, 15, 31].get(mode).copied().unwrap_or(31);
                             let values = graph_host_value(target, name, graph)
                                 .and_then(|value| match value {
                                     crate::project::HostValue::F32List(values) => Some(values),
@@ -2811,7 +2869,7 @@ impl PipelineGraphState {
                                     ("pipeline-host-eq-bg", index, host_index),
                                     ("pipeline-host-eq-zero", index, host_index),
                                 ),
-                                GraphicEqBuild {
+                                &GraphicEqBuild {
                                     viewport,
                                     count,
                                     scroll: *self.host_eq_scroll.get(&target).unwrap_or(&0.0),
@@ -2864,14 +2922,17 @@ impl PipelineGraphState {
                                 row,
                                 &vec![
                                     crate::ui_layout::Item::height(GRAPH_INPUT_H * scale);
-                                    colors.len() + 1
+                                    colors.len().saturating_add(1)
                                 ],
                                 0.0,
                                 0.0,
                                 kama_ui::Align::Start,
                                 None,
                             );
-                            let (label, _) = graph_host_value_parts(rows[0], scale);
+                            let Some(&header_row) = rows.first() else {
+                                continue;
+                            };
+                            let (label, _) = graph_host_value_parts(header_row, scale);
                             ui_text!(
                                 ctx,
                                 ("pipeline-host-input-label", index, host_index),
@@ -2899,7 +2960,7 @@ impl PipelineGraphState {
                                     stop_label,
                                     7.2 * card_scale,
                                     theme::muted(),
-                                    &format!("Stop {}", stop_index + 1),
+                                    &format!("Stop {}", stop_index.saturating_add(1)),
                                 );
                                 let swatch = Rect::new(
                                     value_rect.x,
@@ -2916,7 +2977,7 @@ impl PipelineGraphState {
                                     .insert(color_target.clone(), color_values.clone());
                                 self.build_graph_color(
                                     ctx,
-                                    color_target,
+                                    &color_target,
                                     (swatch, rect),
                                     color,
                                     FormatKey::new(format_args!(
@@ -3001,6 +3062,10 @@ impl PipelineGraphState {
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality detects whether the color picker changed its stored value"
+    )]
     pub fn pointer_pressed(
         &mut self,
         rect: Rect,
@@ -3052,7 +3117,7 @@ impl PipelineGraphState {
             };
         }
         let toolbar = graph_toolbar_layout(rect);
-        let option_count = project.pipelines.len() + 1;
+        let option_count = project.pipelines.len().saturating_add(1);
         if !self.renaming {
             if let Some(index) = self
                 .pipeline_combo
@@ -3064,7 +3129,10 @@ impl PipelineGraphState {
                     PipelineGraphAction::SelectPipeline(None)
                 } else {
                     PipelineGraphAction::SelectPipeline(
-                        project.pipelines.get(index - 1).map(|pipeline| pipeline.id),
+                        index
+                            .checked_sub(1)
+                            .and_then(|index| project.pipelines.get(index))
+                            .map(|pipeline| pipeline.id),
                     )
                 };
             }
@@ -3169,8 +3237,12 @@ impl PipelineGraphState {
                 GraphControlTarget::HostGradientStop { index, .. } => self
                     .host_gradient_colors
                     .get(&target)
-                    .and_then(|values| values.get(index * 4..index * 4 + 4))
-                    .map(|value| [value[0], value[1], value[2], value[3]]),
+                    .and_then(|values| {
+                        index.checked_mul(4).and_then(|start| {
+                            start.checked_add(4).and_then(|end| values.get(start..end))
+                        })
+                    })
+                    .and_then(|value| <[f32; 4]>::try_from(value).ok()),
             }
             .unwrap_or([0.0, 0.0, 0.0, 1.0]);
             self.pipeline_name.set_focused(false);
@@ -3269,8 +3341,10 @@ impl PipelineGraphState {
 
         let draw_order = graph_card_draw_order(&scene.cards, &self.z_order);
         for index in draw_order.into_iter().rev() {
-            let card = &scene.cards[index];
-            let card_rect = scene.rects[index];
+            let (Some(card), Some(&card_rect)) = (scene.cards.get(index), scene.rects.get(index))
+            else {
+                continue;
+            };
             if card_rect.contains(point) {
                 let target = card.kind;
                 let command_additive = modifiers.control_key() || modifiers.super_key();
@@ -3392,8 +3466,10 @@ impl PipelineGraphState {
         let scene = self.scene(rect, project, timeline, plugins);
         let draw_order = graph_card_draw_order(&scene.cards, &self.z_order);
         for index in draw_order.into_iter().rev() {
-            let card = &scene.cards[index];
-            let card_rect = scene.rects[index];
+            let (Some(card), Some(&card_rect)) = (scene.cards.get(index), scene.rects.get(index))
+            else {
+                continue;
+            };
             if !card_rect.contains(point) {
                 continue;
             }
@@ -3436,6 +3512,10 @@ impl PipelineGraphState {
         PipelineGraphAction::InsertNode
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality detects whether the color picker changed its stored value"
+    )]
     pub fn pointer_moved(&mut self, rect: Rect, point: [f32; 2]) -> PipelineGraphAction {
         self.cursor = [point[0] - rect.x, point[1] - rect.y];
         if let Some(selection) = &mut self.block_selection {
@@ -3546,7 +3626,7 @@ impl PipelineGraphState {
             let draw_order = graph_card_draw_order(&scene.cards, &self.z_order)
                 .into_iter()
                 .rev()
-                .map(|index| scene.cards[index].kind)
+                .filter_map(|index| scene.cards.get(index).map(|card| card.kind))
                 .filter(|target| self.selected_nodes.contains(target))
                 .collect::<Vec<_>>();
             self.selected_node = draw_order
@@ -3572,8 +3652,8 @@ impl PipelineGraphState {
                 .find_map(|index| {
                     graph_connect_action(
                         pending,
-                        &scene.cards[index],
-                        scene.rects[index],
+                        scene.cards.get(index)?,
+                        *scene.rects.get(index)?,
                         point,
                         followed_shared,
                     )
@@ -3597,9 +3677,8 @@ impl PipelineGraphState {
                 .cards
                 .iter()
                 .position(|card| matches!(card.kind, GraphNodeTarget::Shared(id) if id == node))
-        {
-            let dropped = scene.rects[card_index];
-            if let Some((source, destination, destination_input)) = scene
+            && let Some(&dropped) = scene.rects.get(card_index)
+            && let Some((source, destination, destination_input)) = scene
                 .wires
                 .iter()
                 .filter(|geometry| geometry.editable)
@@ -3621,14 +3700,13 @@ impl PipelineGraphState {
                     }
                     _ => None,
                 })
-            {
-                return PipelineGraphAction::InsertNodeOnWire {
-                    node,
-                    source,
-                    destination,
-                    destination_input,
-                };
-            }
+        {
+            return PipelineGraphAction::InsertNodeOnWire {
+                node,
+                source,
+                destination,
+                destination_input,
+            };
         }
         PipelineGraphAction::None
     }
@@ -4017,6 +4095,10 @@ impl PipelineGraphState {
         false
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality detects whether the color picker changed its stored value"
+    )]
     pub fn handle_key(
         &mut self,
         event: &KeyEvent,
@@ -4068,10 +4150,14 @@ impl PipelineGraphState {
         false
     }
 
-    pub fn take_action(&mut self) -> Option<PipelineGraphAction> {
+    pub const fn take_action(&mut self) -> Option<PipelineGraphAction> {
         self.pending_action.take()
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality detects whether the color picker changed its stored value"
+    )]
     pub fn handle_ime(
         &mut self,
         event: &Ime,

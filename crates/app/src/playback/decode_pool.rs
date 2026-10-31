@@ -38,37 +38,35 @@ impl VideoDecoderPool {
 
     pub(super) fn get(&mut self, owner: u64, path: &Path, reserve: bool) -> &mut VideoDecoder {
         let generation = self.generation;
-        if let Some(index) = self
+        let existing = self
             .slots
             .iter()
-            .position(|slot| slot.owner == owner && slot.path.as_path() == path)
-        {
+            .position(|slot| slot.owner == owner && slot.path.as_path() == path);
+        let reusable = existing.or_else(|| {
             if reserve {
-                self.slots[index].last_used = generation;
+                self.slots
+                    .iter()
+                    .position(|slot| slot.path.as_path() == path && slot.last_used != generation)
+            } else {
+                let previous_generation = generation.wrapping_sub(1);
+                self.slots.iter().position(|slot| {
+                    slot.path.as_path() == path
+                        && slot.last_used != generation
+                        && slot.last_used != previous_generation
+                })
             }
-            return &mut self.slots[index].decoder;
-        }
-
-        if reserve {
-            if let Some(index) = self
-                .slots
-                .iter()
-                .position(|slot| slot.path.as_path() == path && slot.last_used != generation)
-            {
-                self.slots[index].owner = owner;
-                self.slots[index].last_used = generation;
-                return &mut self.slots[index].decoder;
+        });
+        if let Some(index) = reusable {
+            #[expect(
+                clippy::expect_used,
+                reason = "index comes from position on the unchanged slots"
+            )]
+            let slot = self.slots.get_mut(index).expect("decoder slot exists");
+            slot.owner = owner;
+            if reserve {
+                slot.last_used = generation;
             }
-        } else {
-            let previous_generation = generation.wrapping_sub(1);
-            if let Some(index) = self.slots.iter().position(|slot| {
-                slot.path.as_path() == path
-                    && slot.last_used != generation
-                    && slot.last_used != previous_generation
-            }) {
-                self.slots[index].owner = owner;
-                return &mut self.slots[index].decoder;
-            }
+            return &mut slot.decoder;
         }
 
         self.slots.push(VideoDecoderSlot {
@@ -81,11 +79,9 @@ impl VideoDecoderPool {
                 Default::default()
             },
         });
-        &mut self
-            .slots
-            .last_mut()
-            .expect("decoder slot inserted")
-            .decoder
+        #[expect(clippy::expect_used, reason = "a decoder slot was just pushed")]
+        let slot = self.slots.last_mut().expect("decoder slot inserted");
+        &mut slot.decoder
     }
 
     pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = &mut VideoDecoder> {

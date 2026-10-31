@@ -41,6 +41,7 @@ impl ComboBox {
         }
     }
 
+    #[must_use]
     pub const fn open_direction(mut self, direction: ComboBoxOpenDirection) -> Self {
         self.open_direction = direction;
         self
@@ -357,6 +358,10 @@ impl ComboBox {
         Some(bounds)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "each option ID is created in this measured layout"
+    )]
     fn option_rects(&self, popup: Rect, len: usize) -> Vec<Rect> {
         let scale = self.ui_scale.get().clamp(0.25, 4.0);
         let (ids, measured) = crate::measure_layout(popup, |ctx| {

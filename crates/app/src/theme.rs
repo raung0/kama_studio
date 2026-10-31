@@ -33,11 +33,10 @@ fn resolved_theme(theme: ThemePreset) -> ThemePreset {
 }
 
 fn theme_target(theme: ThemePreset) -> f32 {
-    match resolved_theme(theme) {
-        ThemePreset::Dark => 0.0,
-        ThemePreset::Light => 1.0,
-        ThemePreset::System => unreachable!("system theme resolves to light or dark"),
-    }
+    f32::from(u8::from(matches!(
+        resolved_theme(theme),
+        ThemePreset::Light
+    )))
 }
 
 fn store_theme(theme: ThemePreset) {
@@ -122,7 +121,7 @@ pub fn light_accent_rgba8() -> [u8; 4] {
     LIGHT_ACCENT_RGBA.load(Ordering::Relaxed).to_be_bytes()
 }
 
-fn rgba8_color(rgba: [u8; 4]) -> Color {
+const fn rgba8_color(rgba: [u8; 4]) -> Color {
     Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3])
 }
 
@@ -171,6 +170,10 @@ pub fn accent_mixing() -> f32 {
     f32::from_bits(ACCENT_MIXING_BITS.load(Ordering::Relaxed)).clamp(0.0, 1.0)
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "max is selected from the original RGB components; equality identifies which component was selected"
+)]
 fn rgb_to_hsl(color: Color) -> [f32; 3] {
     let max = color.r.max(color.g).max(color.b);
     let min = color.r.min(color.g).min(color.b);

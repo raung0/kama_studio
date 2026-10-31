@@ -1,15 +1,12 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
 use anyhow::Result;
 
 use crate::{
-    EditorApp, MEDIA_PRESENCE_CHECK_INTERVAL, MissingMediaDialog, Modal, PendingDiscardAction,
+    EditorApp, MissingMediaDialog, Modal, PendingDiscardAction,
     app_events::remember_recent_project,
     app_shared::{missing_project_media, sanitize_file_name},
-    model3d,
+    model3d, next_media_check,
     project::{MediaKind, Project},
     project_io, sync_missing_media_entries,
 };
@@ -19,7 +16,7 @@ impl EditorApp {
         self.editor.project = Project::new();
         self.editor.project_path = None;
         self.prompted_missing_media.clear();
-        self.next_media_presence_check = Instant::now() + MEDIA_PRESENCE_CHECK_INTERVAL;
+        self.next_media_presence_check = next_media_check(Instant::now());
         self.reset_project_runtime("New project");
         self.mark_document_saved();
         self.update_window_title();
@@ -35,9 +32,11 @@ impl EditorApp {
         self.audio.clear();
         self.media.clear_selection();
         self.waveform_textures.clear();
-        self.editor
-            .history
-            .reset(&self.editor.project, &self.editor.timeline, history_label);
+        self.editor.history.reset(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+            history_label,
+        );
         self.editor.history_gesture = None;
         self.effects.rebuild(&self.editor.project.pipelines);
         self.render_panel.clear_project_cache();
@@ -71,7 +70,7 @@ impl EditorApp {
         let project = project_io::load(path)?;
         let missing = missing_project_media(&project);
         if missing.is_empty() {
-            self.finish_project_load(path.to_path_buf(), project);
+            self.finish_project_load(path, project);
         } else {
             self.open_modal(Modal::MissingMedia(MissingMediaDialog::new(
                 path.to_path_buf(),
@@ -83,7 +82,7 @@ impl EditorApp {
     }
 
     pub(super) fn choose_missing_media_replacement(
-        &mut self,
+        &self,
         dialog: &mut MissingMediaDialog,
         index: usize,
     ) {
@@ -100,11 +99,10 @@ impl EditorApp {
             picker = picker.set_file_name(name.to_string_lossy().to_string());
         }
         if let Some(path) = picker.pick_file() {
-            let validation = if let Some(pending) = dialog.pending.as_ref() {
-                pending.project.validate_media_replacement(media, &path)
-            } else {
-                self.editor.project.validate_media_replacement(media, &path)
-            };
+            let validation = dialog.pending.as_ref().map_or_else(
+                || self.editor.project.validate_media_replacement(media, &path),
+                |pending| pending.project.validate_media_replacement(media, &path),
+            );
             match validation {
                 Ok(()) => {
                     if let Some(entry) = dialog.missing.get_mut(index) {
@@ -125,7 +123,7 @@ impl EditorApp {
 
         if let Some(pending) = dialog.pending.as_mut() {
             for (media, path) in &replacements {
-                if let Err(error) = pending.project.replace_media(*media, path.clone()) {
+                if let Err(error) = pending.project.replace_media(*media, path) {
                     crate::messages::warning("Relink media", format!("{error:#}"));
                 }
             }
@@ -137,20 +135,20 @@ impl EditorApp {
             if !dialog.missing.is_empty() {
                 return false;
             }
-            let pending = dialog
-                .take()
-                .expect("pending project load must still exist");
-            self.finish_project_load(pending.path, pending.project);
+            let Some(pending) = dialog.take() else {
+                return false;
+            };
+            self.finish_project_load(&pending.path, pending.project);
             return true;
         }
 
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
         let mut changed = false;
         for (media, path) in replacements {
-            match self.editor.project.replace_media(media, path.clone()) {
+            match self.editor.project.replace_media(media, &path) {
                 Ok(()) => {
                     changed = true;
                     self.prompted_missing_media.remove(&media);
@@ -179,9 +177,9 @@ impl EditorApp {
             self.playback.invalidate();
             self.editor.history.record_after(
                 "Relink media",
-                before,
+                &before,
                 &self.editor.project,
-                &self.editor.timeline,
+                &self.editor.timeline.document(),
                 false,
             );
         }
@@ -199,7 +197,7 @@ impl EditorApp {
         dialog.missing.is_empty()
     }
 
-    pub(super) fn finish_project_load(&mut self, path: PathBuf, mut project: Project) {
+    pub(super) fn finish_project_load(&mut self, path: &Path, mut project: Project) {
         project.reconcile_plugin_metadata(&self.plugins);
         self.editor.project = project;
         self.reset_project_runtime("Project opened");
@@ -208,21 +206,23 @@ impl EditorApp {
         self.editor
             .timeline
             .reconcile_pipeline_overrides(&self.editor.project);
-        self.editor.project_path = Some(path.clone());
+        self.editor.project_path = Some(path.to_path_buf());
         self.prompted_missing_media = missing_project_media(&self.editor.project)
             .into_iter()
             .map(|(media, _)| media)
             .collect();
-        self.next_media_presence_check = Instant::now() + MEDIA_PRESENCE_CHECK_INTERVAL;
+        self.next_media_presence_check = next_media_check(Instant::now());
         for asset in &self.editor.project.media {
             if matches!(asset.kind, MediaKind::WasmPlugin) {
                 let _ = self.playback.precompile_wasm(&asset.path);
             }
         }
         self.mark_document_saved();
-        remember_recent_project(&path);
+        remember_recent_project(path);
         #[cfg(target_os = "macos")]
-        self.native_menu.refresh_recent_projects();
+        if let Err(error) = self.native_menu.refresh_recent_projects() {
+            crate::messages::warning("Refresh native menu", format!("{error:#}"));
+        }
         self.update_window_title();
     }
 
@@ -268,7 +268,9 @@ impl EditorApp {
         self.mark_document_saved();
         remember_recent_project(path);
         #[cfg(target_os = "macos")]
-        self.native_menu.refresh_recent_projects();
+        if let Err(error) = self.native_menu.refresh_recent_projects() {
+            crate::messages::warning("Refresh native menu", format!("{error:#}"));
+        }
         self.update_window_title();
         Ok(())
     }
@@ -291,7 +293,7 @@ impl EditorApp {
             return;
         };
         for path in paths {
-            let _ = self.import_path(path);
+            let _ = self.import_path(&path);
         }
     }
 }

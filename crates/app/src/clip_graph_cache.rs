@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, OnceLock,
-        mpsc::{self, SyncSender, TrySendError},
+        mpsc::{self, SyncSender},
     },
     thread,
 };
@@ -106,10 +106,7 @@ fn enqueue(write: CacheWrite) {
     let Some(writer) = writer() else {
         return;
     };
-    match writer.try_send(write) {
-        Ok(()) | Err(TrySendError::Full(_)) => {}
-        Err(TrySendError::Disconnected(_)) => {}
-    }
+    let _ = writer.try_send(write);
 }
 
 pub fn store_frame_async(key: u64, frame: Arc<CpuFrame>) {
@@ -117,7 +114,11 @@ pub fn store_frame_async(key: u64, frame: Arc<CpuFrame>) {
         .checked_mul(frame.height as usize)
         .and_then(|pixels| pixels.checked_mul(4));
     if expected == Some(frame.pixels.len())
-        && frame.pixels.len() <= MAX_FRAME_BYTES / std::mem::size_of::<f32>()
+        && frame
+            .pixels
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .is_some_and(|bytes| bytes <= MAX_FRAME_BYTES)
     {
         enqueue(CacheWrite::Frame { key, frame });
     }

@@ -42,13 +42,7 @@ static REVEAL_STRENGTH_BITS: AtomicU32 = AtomicU32::new(0.5f32.to_bits());
 static REVEAL_ACCENT_MIX_BITS: AtomicU32 = AtomicU32::new(0.25f32.to_bits());
 
 pub fn set_popup_accent(color: Color) {
-    let rgba = [
-        (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.a.clamp(0.0, 1.0) * 255.0).round() as u8,
-    ];
-    POPUP_ACCENT_RGBA.store(u32::from_be_bytes(rgba), Ordering::Relaxed);
+    store_color(&POPUP_ACCENT_RGBA, color);
 }
 
 fn atomic_color(value: &AtomicU32) -> Color {
@@ -57,13 +51,16 @@ fn atomic_color(value: &AtomicU32) -> Color {
 }
 
 fn store_color(value: &AtomicU32, color: Color) {
-    let rgba = [
-        (color.r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.b.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.a.clamp(0.0, 1.0) * 255.0).round() as u8,
-    ];
+    let rgba = [color.r, color.g, color.b, color.a].map(color_byte);
     value.store(u32::from_be_bytes(rgba), Ordering::Relaxed);
+}
+
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "clamping makes the rounded channel nonnegative; NaN casts to zero"
+)]
+fn color_byte(channel: f32) -> u8 {
+    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 fn popup_accent() -> Color {
@@ -262,8 +259,7 @@ impl Hash for FormatKey<'_> {
             }
         }
 
-        std::fmt::write(&mut HashWriter(state), self.0)
-            .expect("formatting into hasher cannot fail");
+        let _ = std::fmt::write(&mut HashWriter(state), self.0);
     }
 }
 
@@ -401,6 +397,10 @@ impl PopupState {
 /// texture aspect ratio and centers it inside block bounds.
 pub const TEXTURE_MODE_CONTAIN: u32 = 3;
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "text wrapping, clipping, centering, interaction, animation and reveal are independent block properties"
+)]
 pub struct Block {
     pub id: BlockId,
     pub width: Size,
@@ -558,11 +558,6 @@ pub fn measure_layout<R>(
     viewport: Rect,
     build: impl FnOnce(&mut BuildCtx) -> R,
 ) -> (R, LayoutRects) {
-    let mut ctx = BuildCtx::with_seed(ROOT_SCOPE_SEED);
-    let result = build(&mut ctx);
-    let mut blocks = ctx.blocks;
-    layout_roots(&mut blocks, viewport);
-
     fn collect(
         blocks: &[Block],
         rects: &mut HashMap<BlockId, Rect>,
@@ -576,6 +571,11 @@ pub fn measure_layout<R>(
             collect(&block.children, rects, scroll_ranges);
         }
     }
+
+    let mut ctx = BuildCtx::with_seed(ROOT_SCOPE_SEED);
+    let result = build(&mut ctx);
+    let mut blocks = ctx.blocks;
+    layout_roots(&mut blocks, viewport);
 
     let mut rects = HashMap::new();
     let mut scroll_ranges = HashMap::new();
@@ -600,14 +600,25 @@ impl BuildCtx {
     }
 
     #[allow(clippy::new_ret_no_self)]
+    #[expect(
+        clippy::expect_used,
+        reason = "block ID exhaustion must fail rather than reuse an ID; the last block exists because it was just pushed"
+    )]
+    /// Creates a block in this scope.
+    ///
+    /// # Panics
+    /// Panics if more than `u32::MAX` blocks are created in this scope.
     pub fn new(&mut self) -> BlockBuilder<'_> {
         let auto_id = hash_pair(self.scope_seed, u64::from(self.next_index));
-        self.next_index += 1;
+        self.next_index = self
+            .next_index
+            .checked_add(1)
+            .expect("block ID space exhausted");
         let mut block = Block::new(BlockId(auto_id), auto_id);
         block.explicit_clips.clone_from(&self.clip_stack);
         self.blocks.push(block);
         BlockBuilder {
-            block: self.blocks.last_mut().unwrap(),
+            block: self.blocks.last_mut().expect("just pushed a block"),
         }
     }
 
@@ -641,17 +652,29 @@ macro_rules! builder_setters {
     };
 }
 
+macro_rules! const_builder_setters {
+    ($($name:ident($arg:ident: $ty:ty) => $field:ident = $value:expr;)*) => {
+        $(
+            #[must_use]
+            pub const fn $name(self, $arg: $ty) -> Self {
+                self.block.$field = $value;
+                self
+            }
+        )*
+    };
+}
+
 macro_rules! builder_flags {
     ($($name:ident, $conditional:ident => $($field:ident = $value:expr),+;)*) => {
         $(
             #[must_use]
-            pub fn $name(self) -> Self {
+            pub const fn $name(self) -> Self {
                 let block = &mut *self.block;
                 $(block.$field = $value;)+
                 self
             }
             #[must_use]
-            pub fn $conditional(self, enabled: bool) -> Self {
+            pub const fn $conditional(self, enabled: bool) -> Self {
                 if enabled { self.$name() } else { self }
             }
         )*
@@ -659,6 +682,7 @@ macro_rules! builder_flags {
 }
 
 impl BlockBuilder<'_> {
+    #[must_use]
     pub fn id<K: Hash>(self, key: K) -> Self {
         let block = &mut *self.block;
         let id = hash_value(block.scope_seed, &key);
@@ -667,7 +691,7 @@ impl BlockBuilder<'_> {
         self
     }
 
-    builder_setters! {
+    const_builder_setters! {
         width(value: Size) => width = value;
         height(value: Size) => height = value;
         direction(value: Direction) => direction = value;
@@ -676,17 +700,13 @@ impl BlockBuilder<'_> {
         justify_content(align: Align) => justify_content = align;
         align_items(align: Align) => align_items = align;
         fill(color: Color) => fill = Some(color);
-        fill_texture(texture: impl Into<TextureSource>) => fill_texture = Some(texture.into());
         texture_uv(uv: [f32; 4]) => texture_uv = uv;
         texture_mode(mode: u32) => texture_mode = mode;
         texture_rotation(radians: f32) => texture_rotation = radians;
         border(pixels: u32) => border_width = pixels as f32;
         border_color(color: Color) => border_color = color;
-        border_texture(texture: impl Into<TextureSource>) => border_texture = Some(texture.into());
         border_radius(value: f32) => border_radius = value.max(0.0);
-        text(text: impl Into<String>) => text = Some(text.into());
         text_color(color: Color) => text_color = color;
-        foreground(kind: impl Into<ColorKind>) => foreground = Some(kind.into());
         font_size(pixels: f32) => font_size = pixels.max(1.0);
         font_kind(value: FontKind) => font_kind = value;
         text_align(align: Align) => text_align = align;
@@ -695,11 +715,20 @@ impl BlockBuilder<'_> {
         cursor(shape: CursorShape) => cursor = shape;
     }
 
+    builder_setters! {
+        fill_texture(texture: impl Into<TextureSource>) => fill_texture = Some(texture.into());
+        border_texture(texture: impl Into<TextureSource>) => border_texture = Some(texture.into());
+        text(text: impl Into<String>) => text = Some(text.into());
+        foreground(kind: impl Into<ColorKind>) => foreground = Some(kind.into());
+    }
+
+    #[must_use]
     pub fn fill_texture_opt<T: Into<TextureSource>>(self, texture: Option<T>) -> Self {
         self.block.fill_texture = texture.map(Into::into);
         self
     }
 
+    #[must_use]
     pub fn tooltip(self, text: impl Into<String>) -> Self {
         self.block.tooltip = Some(text.into());
         self.block.interactive = true;
@@ -720,13 +749,14 @@ impl BlockBuilder<'_> {
         no_wrap, no_wrap_if => text_wrap = false;
     }
 
+    #[must_use]
     pub fn vertices(self, vertices: impl IntoIterator<Item = [f32; 2]>) -> Self {
         let block = &mut *self.block;
         block.custom_vertices = Some(vertices.into_iter().collect());
         self
     }
 
-    builder_setters! {
+    const_builder_setters! {
         clip_children(enabled: bool) => clip_children = enabled;
         backdrop_tint(color: Color) => backdrop_tint = color;
         animate_entry(enabled: bool) => animate_entry = enabled;
@@ -781,12 +811,14 @@ impl BlockBuilder<'_> {
         self
     }
 
+    #[must_use]
     pub fn on_mouse_enter(self, callback: impl FnMut() + 'static) -> Self {
         self.block.on_mouse_enter = Some(Box::new(callback));
         self.block.interactive = true;
         self
     }
 
+    #[must_use]
     pub fn on_click(self, callback: impl FnMut(ClickEvent) + 'static) -> Self {
         let block = &mut *self.block;
         block.on_click = Some(Box::new(callback));
@@ -797,6 +829,7 @@ impl BlockBuilder<'_> {
         self
     }
 
+    #[must_use]
     pub fn children<R>(self, f: impl FnOnce(&mut BuildCtx) -> R) -> Self {
         let seed = self.block.scope_seed;
         let mut ctx = BuildCtx::with_seed(seed);
@@ -877,9 +910,11 @@ impl TooltipState {
     }
 
     fn is_animating(&self) -> bool {
-        (self.hovered.is_some() && !self.ready)
-            || (self.ready && self.opacity < 0.999)
-            || (!self.ready && self.opacity > 0.001)
+        if self.ready {
+            self.opacity < 0.999
+        } else {
+            self.hovered.is_some() || self.opacity > 0.001
+        }
     }
 }
 
@@ -1029,6 +1064,10 @@ impl Ui<'_> {
         self.root.new()
     }
 
+    /// Submits the built UI to the renderer.
+    ///
+    /// # Errors
+    /// Returns an error if preparing or submitting renderer resources fails.
     pub fn finish(mut self) -> Result<()> {
         let viewport = Rect::new(
             0.0,
@@ -1155,6 +1194,10 @@ impl Ui<'_> {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "glyph x and placement left are i32 values whose widened i64 sum cannot overflow"
+)]
 fn measure_text_ink_width(
     font_system: &mut FontSystem,
     swash_cache: &mut SwashCache,
@@ -1191,7 +1234,10 @@ fn measure_text_ink_width(
             swash_cache
                 .get_image(font_system, cache_key)
                 .as_ref()
-                .map(|image| (x + image.placement.left) as f32 + image.placement.width as f32)
+                .map(|image| {
+                    (i64::from(x) + i64::from(image.placement.left)) as f32
+                        + image.placement.width as f32
+                })
         })
         .fold(0.0_f32, f32::max)
         .max(0.0)
@@ -1491,9 +1537,9 @@ fn alignment_offset(available: f32, occupied: f32, align: Align) -> f32 {
 fn flow_metrics(blocks: &[Block], horizontal: bool, gap: f32) -> (f32, f32) {
     let mut fixed = 0.0;
     let mut fill_weight = 0.0;
-    let mut count = 0usize;
-    for block in blocks.iter().filter(|block| is_flow(block)) {
-        count += 1;
+    let flow = blocks.iter().filter(|block| is_flow(block));
+    let count = flow.clone().count();
+    for block in flow {
         match axis_spec(block, horizontal) {
             Size::Pixels(value) => fixed += value.max(0.0),
             Size::Fit => fixed += intrinsic_size(block, horizontal),
@@ -1611,16 +1657,16 @@ fn intrinsic_size(block: &Block, horizontal: bool) -> f32 {
     }
 
     let parallel = horizontal == (block.direction == Direction::Row);
-    let mut count = 0usize;
     let mut size = 0.0f32;
-    for child in block.children.iter().filter(|child| is_flow(child)) {
+    let flow = block.children.iter().filter(|child| is_flow(child));
+    let count = flow.clone().count();
+    for child in flow {
         let child_size = preferred_size(child, horizontal);
         size = if parallel {
             size + child_size
         } else {
             size.max(child_size)
         };
-        count += 1;
     }
     size + if parallel {
         block.gap * count.saturating_sub(1) as f32
@@ -1798,7 +1844,8 @@ fn update_animation_tree(
         if tracked {
             let settled = {
                 let animation = animations.entry(block.id).or_default();
-                let was_absent = animation.last_seen == 0 || animation.last_seen + 1 < frame;
+                let was_absent =
+                    animation.last_seen == 0 || animation.last_seen.saturating_add(1) < frame;
                 if was_absent && block.animate_entry {
                     animation.appear = 0.0;
                 }
@@ -1904,7 +1951,7 @@ fn emit_block(
     let interactive_fill = fill_color.mix(interaction_target, block.press_t * 0.08);
     let border_color = block.border_color;
     let (physical_clips, clip_count) = scaled_clips(&block.clips, scale);
-    let physical_clips = &physical_clips[..clip_count];
+    let physical_clips = clip_prefix(&physical_clips, clip_count);
 
     if effective_layer != Layer::Base && block.backdrop_blur > 0.0 {
         commands.push(DrawCommand::backdrop_blur(
@@ -1988,10 +2035,10 @@ fn emit_block(
     if let Some(text) = block.text.as_deref() {
         let (content_clips, clip_count) = scaled_clips(&block.content_clips, scale);
         emit_text(
-            TextRenderArgs {
+            &TextRenderArgs {
                 block,
                 text,
-                clips: &content_clips[..clip_count],
+                clips: clip_prefix(&content_clips, clip_count),
                 opacity,
                 text_color: foreground.map_or(block.text_color, |kind| kind.resolve(background)),
             },
@@ -2039,13 +2086,23 @@ fn composite_over(foreground: Color, background: Color) -> Color {
 fn scaled_clips(clips: &[ClipShape], scale: f32) -> ([ClipShape; MAX_CLIPS], usize) {
     let mut scaled = [ClipShape::default(); MAX_CLIPS];
     let count = clips.len().min(MAX_CLIPS);
-    for (output, clip) in scaled.iter_mut().zip(&clips[..count]) {
+    for (output, clip) in scaled.iter_mut().zip(clips.iter()) {
         *output = ClipShape {
             rect: clip.rect.scaled(scale),
             radius: clip.radius * scale,
         };
     }
     (scaled, count)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "scaled_clips limits the returned count to the fixed array length"
+)]
+fn clip_prefix(clips: &[ClipShape; MAX_CLIPS], count: usize) -> &[ClipShape] {
+    clips
+        .get(..count)
+        .expect("scaled clip count exceeds capacity")
 }
 
 struct TextRenderArgs<'a> {
@@ -2057,7 +2114,7 @@ struct TextRenderArgs<'a> {
 }
 
 fn emit_text(
-    args: TextRenderArgs<'_>,
+    args: &TextRenderArgs<'_>,
     gui: &mut Gui,
     renderer: &mut Renderer,
     commands: &mut Vec<DrawCommand>,

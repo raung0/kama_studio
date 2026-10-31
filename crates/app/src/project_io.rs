@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -12,6 +12,6 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
     project.save(path)
 }
 
-pub fn import_media(project: &mut Project, path: PathBuf) -> Result<MediaId> {
+pub fn import_media(project: &mut Project, path: &Path) -> Result<MediaId> {
     project.import_media(path)
 }

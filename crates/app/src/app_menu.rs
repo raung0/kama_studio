@@ -508,7 +508,7 @@ pub struct NativeMenu {
 
 #[cfg(target_os = "macos")]
 impl NativeMenu {
-    pub(super) fn install(commands: &CommandRegistry) -> Self {
+    pub(super) fn install(commands: &CommandRegistry) -> anyhow::Result<Self> {
         let menu = Menu::new();
 
         let app_menu = Submenu::new("Kama Studio", true);
@@ -537,9 +537,9 @@ impl NativeMenu {
                 &PredefinedMenuItem::separator(),
                 &quit,
             ])
-            .expect("append native application menu items");
+            .map_err(|error| anyhow::anyhow!("append native application menu items: {error}"))?;
         menu.append(&app_menu)
-            .expect("append native application menu");
+            .map_err(|error| anyhow::anyhow!("append native application menu: {error}"))?;
 
         let file_menu = Submenu::new(i18n::text(AppMenuSection::File.label_key()), true);
         let new_project = MenuItem::new(
@@ -585,7 +585,7 @@ impl NativeMenu {
                 &PredefinedMenuItem::separator(),
                 &exit,
             ])
-            .expect("append native File menu items");
+            .map_err(|error| anyhow::anyhow!("append native File menu items: {error}"))?;
 
         let edit_menu = Submenu::new(i18n::text(AppMenuSection::Edit.label_key()), true);
         let mut edit_items = Vec::with_capacity(EDIT_MENU_COMMANDS.len());
@@ -610,7 +610,7 @@ impl NativeMenu {
             let item = MenuItem::new(label, true, accelerator);
             edit_menu
                 .append(&item)
-                .expect("append native Edit menu item");
+                .map_err(|error| anyhow::anyhow!("append native Edit menu item: {error}"))?;
             edit_items.push((item, command));
         }
 
@@ -622,7 +622,7 @@ impl NativeMenu {
         );
         view_menu
             .append(&view_palette)
-            .expect("append native View menu item");
+            .map_err(|error| anyhow::anyhow!("append native View menu item: {error}"))?;
 
         let help_menu = Submenu::new(i18n::text(AppMenuSection::Help.label_key()), true);
         let mut help_items = Vec::with_capacity(HELP_MENU_COMMANDS.len());
@@ -630,7 +630,7 @@ impl NativeMenu {
             let item = MenuItem::new(i18n::text(command.label_key), true, None);
             help_menu
                 .append(&item)
-                .expect("append native Help menu item");
+                .map_err(|error| anyhow::anyhow!("append native Help menu item: {error}"))?;
             help_items.push((item, command.id));
         }
 
@@ -646,7 +646,7 @@ impl NativeMenu {
                 &restore_default_layout,
                 &delete_layout_menu,
             ])
-            .expect("append native Layout menu items");
+            .map_err(|error| anyhow::anyhow!("append native Layout menu items: {error}"))?;
 
         for section in APP_MENU_SECTIONS {
             let submenu = match section {
@@ -656,8 +656,9 @@ impl NativeMenu {
                 AppMenuSection::Layout => &layout_menu,
                 AppMenuSection::Help => &help_menu,
             };
-            menu.append(submenu)
-                .expect("append native application menu section");
+            menu.append(submenu).map_err(|error| {
+                anyhow::anyhow!("append native application menu section: {error}")
+            })?;
         }
         menu.init_for_nsapp();
 
@@ -686,9 +687,9 @@ impl NativeMenu {
             layout_items: Vec::new(),
             delete_layout_items: Vec::new(),
         };
-        native.refresh_layouts();
-        native.refresh_recent_projects();
-        native
+        native.refresh_layouts()?;
+        native.refresh_recent_projects()?;
+        Ok(native)
     }
 
     pub(super) fn about_requested(&self, event: &MenuEvent) -> bool {
@@ -746,12 +747,18 @@ impl NativeMenu {
             .map(|(_, command)| *command)
     }
 
-    pub(super) fn refresh_recent_projects(&mut self) {
-        if let Some((item, _)) = self.latest_item.take() {
-            let _ = self.file_menu.remove(&item);
+    pub(super) fn refresh_recent_projects(&mut self) -> anyhow::Result<()> {
+        if let Some((item, _)) = &self.latest_item {
+            self.file_menu
+                .remove(item)
+                .map_err(|error| anyhow::anyhow!("remove native menu item: {error}"))?;
+            self.latest_item = None;
         }
-        for (item, _) in self.recent_items.drain(..) {
-            let _ = self.recent_menu.remove(&item);
+        while let Some((item, _)) = self.recent_items.last() {
+            self.recent_menu
+                .remove(item)
+                .map_err(|error| anyhow::anyhow!("remove native menu item: {error}"))?;
+            self.recent_items.pop();
         }
         let recent = recent_projects();
         for path in &recent {
@@ -762,7 +769,7 @@ impl NativeMenu {
             let item = MenuItem::new(label, true, None);
             self.recent_menu
                 .append(&item)
-                .expect("append recent project menu item");
+                .map_err(|error| anyhow::anyhow!("append recent project menu item: {error}"))?;
             self.recent_items.push((item, path.clone()));
         }
         self.recent_menu.set_enabled(!self.recent_items.is_empty());
@@ -779,33 +786,41 @@ impl NativeMenu {
             );
             self.file_menu
                 .insert(&item, 5)
-                .expect("insert latest project menu item");
+                .map_err(|error| anyhow::anyhow!("insert latest project menu item: {error}"))?;
             self.latest_item = Some((item, path.clone()));
         }
+        Ok(())
     }
 
-    pub(super) fn refresh_layouts(&mut self) {
-        for (item, _) in self.layout_items.drain(..) {
-            let _ = self.layout_menu.remove(&item);
+    pub(super) fn refresh_layouts(&mut self) -> anyhow::Result<()> {
+        while let Some((item, _)) = self.layout_items.last() {
+            self.layout_menu
+                .remove(item)
+                .map_err(|error| anyhow::anyhow!("remove native menu item: {error}"))?;
+            self.layout_items.pop();
         }
-        for (item, _) in self.delete_layout_items.drain(..) {
-            let _ = self.delete_layout_menu.remove(&item);
+        while let Some((item, _)) = self.delete_layout_items.last() {
+            self.delete_layout_menu
+                .remove(item)
+                .map_err(|error| anyhow::anyhow!("remove native menu item: {error}"))?;
+            self.delete_layout_items.pop();
         }
         for (index, layout) in saved_layouts().into_iter().enumerate() {
             let load = MenuItem::new(&layout.name, true, None);
             self.layout_menu
-                .insert(&load, 1 + index)
-                .expect("insert saved layout menu item");
+                .insert(&load, index.saturating_add(1))
+                .map_err(|error| anyhow::anyhow!("insert saved layout menu item: {error}"))?;
             self.layout_items.push((load, layout.path.clone()));
 
             let delete = MenuItem::new(&layout.name, true, None);
             self.delete_layout_menu
                 .append(&delete)
-                .expect("append delete layout menu item");
+                .map_err(|error| anyhow::anyhow!("append delete layout menu item: {error}"))?;
             self.delete_layout_items.push((delete, layout.path));
         }
         self.delete_layout_menu
             .set_enabled(!self.delete_layout_items.is_empty());
+        Ok(())
     }
 
     pub(super) fn layout_command(&self, event: &MenuEvent) -> Option<LayoutCommand> {
@@ -1595,7 +1610,7 @@ pub(super) fn build_app_menu(
     }
 }
 
-pub fn app_menu_height() -> f32 {
+pub const fn app_menu_height() -> f32 {
     if cfg!(target_os = "macos") {
         0.0
     } else {
@@ -1603,6 +1618,10 @@ pub fn app_menu_height() -> f32 {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "layout returns one rectangle for each of the two supplied items"
+)]
 pub fn dock_tab_close_rect(tab: Rect) -> Rect {
     kama_ui::layout::row(
         tab,

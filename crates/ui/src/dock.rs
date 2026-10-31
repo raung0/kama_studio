@@ -107,9 +107,15 @@ impl Stack {
         self.active = index;
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "an in-memory dock cannot hold more tabs than the usize index space"
+    )]
     fn append(&mut self, source: Self) {
         let base = self.tabs.len();
-        self.active = base + source.active.min(source.tabs.len().saturating_sub(1));
+        self.active = base
+            .checked_add(source.active.min(source.tabs.len().saturating_sub(1)))
+            .expect("dock tab index space exhausted");
         self.tabs.extend(source.tabs);
     }
 
@@ -386,9 +392,16 @@ impl DockState {
         state
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "dock ID exhaustion must fail rather than reuse an ID"
+    )]
     const fn alloc_id(&mut self) -> u64 {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("dock ID space exhausted");
         id
     }
 
@@ -596,6 +609,14 @@ impl DockState {
         Some(transfer)
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the active tab offset is bounded by the inserted tabs and available usize indices"
+    )]
+    /// Inserts tabs from an external dock transfer.
+    ///
+    /// # Panics
+    /// Panics if the active-tab index cannot be represented after insertion.
     pub fn drop_external(
         &mut self,
         transfer: DockTransfer,
@@ -619,10 +640,10 @@ impl DockState {
             let index = insert_index
                 .unwrap_or(stack.tabs.len())
                 .min(stack.tabs.len());
-            for (offset, tab) in tabs.into_iter().enumerate() {
-                stack.tabs.insert(index + offset, tab);
-            }
-            stack.active = index + active;
+            drop(stack.tabs.splice(index..index, tabs));
+            stack.active = index
+                .checked_add(active)
+                .expect("dock active tab index space exhausted");
             target
         } else {
             let id = StackId(self.alloc_id());
@@ -801,6 +822,10 @@ impl DockState {
         self.focused = Some(focused);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "resolve_stack returns an existing nonempty stack"
+    )]
     fn insert_tab(&mut self, target: StackId, tab: Tab, index: Option<usize>) -> StackId {
         let target = self.resolve_stack(target);
         find_stack_mut(&mut self.root, target)
@@ -809,6 +834,14 @@ impl DockState {
         target
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "resolve_stack returns an existing nonempty stack"
+    )]
+    #[expect(
+        clippy::unreachable,
+        reason = "replace_stack_with_split returns the supplied source, which is a stack"
+    )]
     fn place_stack(&mut self, target: StackId, source: Stack, zone: DropZone) -> StackId {
         let Some((axis, before)) = zone.split() else {
             let target = self.resolve_stack(target);
@@ -839,6 +872,10 @@ impl DockState {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a live dock root contains a nonempty stack"
+    )]
     fn resolve_stack(&self, preferred: StackId) -> StackId {
         find_stack(&self.root, preferred).map_or_else(
             || stack_id_of(&self.root).expect("dock root must contain a stack"),
@@ -977,6 +1014,10 @@ fn split_rects(rect: Rect, axis: Axis, ratio: f32) -> (Rect, Rect, Rect) {
     (first, splitter, second)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the tab bar, content and viewport blocks are created in their measured layouts"
+)]
 fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
     let ((tab_bar, content), measured) = crate::measure_layout(rect, |ctx| {
         let mut tab_bar = crate::BlockId(0);
@@ -1037,6 +1078,10 @@ fn stack_regions(rect: Rect, show_maximize: bool) -> (Rect, Rect, Rect) {
     )
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "each tab, plus and trailing block is created in this measured layout"
+)]
 fn tab_strip_layout(tab_bar: Rect, widths: &[f32], scroll: f32) -> (Vec<Rect>, Rect, f32) {
     let ((tabs, plus, trailing), measured) = crate::measure_layout(tab_bar, |ctx| {
         let mut tabs = Vec::with_capacity(widths.len());
@@ -1066,14 +1111,15 @@ fn tab_strip_layout(tab_bar: Rect, widths: &[f32], scroll: f32) -> (Vec<Rect>, R
                             .width(crate::Size::Pixels(TAB_BAR_LEFT_PADDING))
                             .height(crate::Size::Fill)
                             .build();
-                        for (index, width) in widths.iter().copied().enumerate() {
+                        let mut widths = widths.iter().copied().peekable();
+                        while let Some(width) = widths.next() {
                             tabs.push(
                                 ctx.new()
                                     .width(crate::Size::Pixels(width))
                                     .height(crate::Size::Fill)
                                     .build(),
                             );
-                            if index + 1 < widths.len() {
+                            if widths.peek().is_some() {
                                 let _ = ctx
                                     .new()
                                     .width(crate::Size::Pixels(1.0))
@@ -1114,6 +1160,10 @@ fn tab_strip_layout(tab_bar: Rect, widths: &[f32], scroll: f32) -> (Vec<Rect>, R
     (tabs, plus, strip_width)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the button block is created in this measured layout"
+)]
 fn maximize_rect(tab_bar: Rect, visible: bool) -> Rect {
     let ((button, _), measured) = crate::measure_layout(tab_bar, |ctx| {
         let mut button = crate::BlockId(0);
@@ -1254,6 +1304,10 @@ fn stack_id_of(node: &DockNode) -> Option<StackId> {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the tab and stack counts are bounded by the allocated dock tree"
+)]
 fn node_counts(node: &DockNode) -> (usize, usize) {
     match node {
         DockNode::Stack(stack) => (stack.tabs.len(), usize::from(!stack.tabs.is_empty())),
@@ -1289,26 +1343,38 @@ fn find_stack(node: &DockNode, id: StackId) -> Option<&Stack> {
     }
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "the search predicate only matches stack nodes"
+)]
 fn find_stack_mut(node: &mut DockNode, id: StackId) -> Option<&mut Stack> {
     match find_node_mut(
         node,
         &|node| matches!(node, DockNode::Stack(stack) if stack.id == id),
     )? {
         DockNode::Stack(stack) => Some(stack),
-        _ => unreachable!(),
+        DockNode::Split { .. } => unreachable!(),
     }
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "the search predicate only matches split nodes"
+)]
 fn split_axis_ratio_mut(node: &mut DockNode, id: SplitId) -> Option<(Axis, &mut f32)> {
     match find_node_mut(
         node,
         &|node| matches!(node, DockNode::Split { id: split, .. } if *split == id),
     )? {
         DockNode::Split { axis, ratio, .. } => Some((*axis, ratio)),
-        _ => unreachable!(),
+        DockNode::Stack(_) => unreachable!(),
     }
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "the search predicate only matches stack nodes"
+)]
 fn take_stack(node: &mut DockNode, id: StackId) -> Option<Stack> {
     let DockNode::Stack(stack) = find_node_mut(
         node,
@@ -1320,6 +1386,10 @@ fn take_stack(node: &mut DockNode, id: StackId) -> Option<Stack> {
     Some(std::mem::replace(stack, Stack::empty(StackId(0))))
 }
 
+#[expect(
+    clippy::unreachable,
+    reason = "the search predicate only matches stack nodes"
+)]
 fn remove_tab(node: &mut DockNode, tab_id: TabId) -> Option<Tab> {
     let DockNode::Stack(stack) = find_node_mut(
         node,
@@ -1334,9 +1404,9 @@ fn remove_tab(node: &mut DockNode, tab_id: TabId) -> Option<Tab> {
         stack.id = StackId(0);
         stack.active = 0;
     } else if stack.active >= stack.tabs.len() {
-        stack.active = stack.tabs.len() - 1;
+        stack.active = stack.tabs.len().saturating_sub(1);
     } else if index < stack.active {
-        stack.active -= 1;
+        stack.active = stack.active.saturating_sub(1);
     }
     Some(tab)
 }
@@ -1438,9 +1508,6 @@ pub fn drop_zone(rect: Rect, point: [f32; 2]) -> DropZone {
 
 #[must_use]
 pub fn drop_preview(rect: Rect, zone: DropZone) -> Rect {
-    if zone == DropZone::Center {
-        return rect.inset(6.0);
-    }
     let mut preview = rect;
     match zone {
         DropZone::Left => preview.width *= 0.5,
@@ -1453,7 +1520,7 @@ pub fn drop_preview(rect: Rect, zone: DropZone) -> Rect {
             preview.y = preview.height.mul_add(0.5, preview.y);
             preview.height *= 0.5;
         }
-        DropZone::Center => unreachable!(),
+        DropZone::Center => return rect.inset(6.0),
     }
     preview.inset(4.0)
 }
@@ -1484,6 +1551,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::unreachable,
+        reason = "the test dock contains only the two listed titles"
+    )]
     fn tab_handles_follow_measured_title_width_without_a_cap() {
         let mut dock =
             DockState::from_spec(DockLayoutSpec::Stack(vec!["Short".into(), "Long".into()]));

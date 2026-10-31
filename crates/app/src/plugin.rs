@@ -10,8 +10,8 @@ use serde::Deserialize;
 
 use crate::{
     effects::{
-        Binding, DynamicImageInputs, EffectNode, GpuValue, ImageBinding, LOCAL_TRANSFORM_NODE_ID,
-        NodeExecution, PipelineInstance,
+        Binding, BindingOverrides, DynamicImageInputs, EffectNode, GpuValue, ImageBinding,
+        LOCAL_TRANSFORM_NODE_ID, NodeExecution, PipelineInstance,
     },
     embedded_vfs, messages,
     project::{GeneratorSource, HostBinding, HostValue},
@@ -32,7 +32,7 @@ pub enum EffectKind {
 }
 
 impl EffectKind {
-    pub fn execution(self) -> NodeExecution {
+    pub const fn execution(self) -> NodeExecution {
         match self {
             Self::Pointwise => NodeExecution::PointwiseGpu,
             Self::Standalone => NodeExecution::SpatialGpu,
@@ -84,13 +84,16 @@ impl InputType {
             Self::Bool => format!("effect_params.data[{slot}u].x >= 0.5"),
             Self::Vec2 => format!("effect_params.data[{slot}u].xy"),
             Self::Vec2i => format!("vec2<i32>(round(effect_params.data[{slot}u].xy))"),
-            Self::Vec2Array | Self::F32List => return None,
+            Self::Vec2Array | Self::F32List | Self::Text => return None,
             Self::Vec3 => format!("effect_params.data[{slot}u].xyz"),
             Self::Vec4 | Self::Color => format!("effect_params.data[{slot}u]"),
-            Self::Text => return None,
         })
     }
 
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "unsigned defaults are clamped to zero before the saturating float cast"
+    )]
     pub fn default_gpu(self, value: &toml::Value) -> Result<GpuValue> {
         fn number(value: &toml::Value) -> Result<f32> {
             let value = value
@@ -112,8 +115,8 @@ impl InputType {
                 );
             }
             let mut output = [0.0; N];
-            for (index, value) in values.iter().enumerate() {
-                output[index] = number(value)?;
+            for (slot, value) in output.iter_mut().zip(values) {
+                *slot = number(value)?;
             }
             Ok(output)
         }
@@ -164,7 +167,13 @@ impl InputType {
                         .or_else(|| value.as_integer().map(|value| value as f32))
                         .context("expected numeric vec2 array component")
                 };
-                points.push([number(&pair[0])?, number(&pair[1])?]);
+                let [x, y] = pair.as_slice() else {
+                    bail!(
+                        "expected 2 values in vec2 array point default, got {}",
+                        pair.len()
+                    );
+                };
+                points.push([number(x)?, number(y)?]);
             }
             return Ok(HostBinding::Constant(HostValue::Vec2Array(points)));
         }
@@ -442,7 +451,7 @@ pub struct EffectDefinition {
 }
 
 impl EffectDefinition {
-    pub fn is_stack_insertable(&self) -> bool {
+    pub const fn is_stack_insertable(&self) -> bool {
         !self.image_inputs.is_empty()
     }
 
@@ -859,7 +868,7 @@ impl PluginRegistry {
                 output: "image".into(),
             }),
             pipeline: None,
-            overrides: Default::default(),
+            overrides: BindingOverrides::default(),
         })
     }
 
@@ -1316,10 +1325,10 @@ struct RawDynamicImageInputs {
     max: usize,
 }
 
-fn default_dynamic_min() -> usize {
+const fn default_dynamic_min() -> usize {
     1
 }
-fn default_dynamic_max() -> usize {
+const fn default_dynamic_max() -> usize {
     64
 }
 
@@ -1389,7 +1398,7 @@ struct RawImageInput {
     required: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -1498,7 +1507,7 @@ pub fn shader_ident(value: &str) -> String {
             output.push('_');
         }
     }
-    if output.is_empty() || output.as_bytes()[0].is_ascii_digit() {
+    if output.is_empty() || output.as_bytes().first().is_some_and(u8::is_ascii_digit) {
         output.insert(0, '_');
     }
     output

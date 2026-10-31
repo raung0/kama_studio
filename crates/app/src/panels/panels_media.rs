@@ -1,8 +1,7 @@
 use super::{
-    AppIcon, CompositionId, ContextMenuClick, ContextMenuItem, EnumControlsExt, Hash, HashMap,
-    HashSet, Icons, Key, KeyEvent, KnobControlsExt, MEDIA_ITEM_GAP, MEDIA_ROW_H, MEDIA_TRACK_H,
-    MediaId, MediaKind, ModifiersState, NamedKey, NumberControlsExt, Project, Rect,
-    SliderControlsExt, build_context_menu, context_menu_click, context_menu_rect,
+    AppIcon, CompositionId, ContextMenuClick, ContextMenuItem, Hash, HashMap, HashSet, Icons, Key,
+    KeyEvent, MEDIA_ITEM_GAP, MEDIA_ROW_H, MEDIA_TRACK_H, MediaId, MediaKind, ModifiersState,
+    NamedKey, Project, Rect, build_context_menu, context_menu_click, context_menu_rect,
     draw_composition_row, draw_media_row, draw_media_stream_row, media_disclosure_rect,
     media_list_top, media_streams, theme,
 };
@@ -135,7 +134,7 @@ fn visit_media_rows<'a, B>(
         let open_amount = composition_expansion
             .get(&composition.id)
             .copied()
-            .unwrap_or(f32::from(u8::from(expanded)));
+            .unwrap_or_else(|| f32::from(u8::from(expanded)));
         pending.push(Pending {
             entry: MediaListEntry::Composition {
                 composition,
@@ -170,7 +169,7 @@ fn visit_media_rows<'a, B>(
         let open_amount = media_expansion
             .get(&asset.id)
             .copied()
-            .unwrap_or(f32::from(u8::from(expanded)));
+            .unwrap_or_else(|| f32::from(u8::from(expanded)));
         pending.push(Pending {
             entry: MediaListEntry::Media {
                 asset,
@@ -211,6 +210,10 @@ fn visit_media_rows<'a, B>(
         Some(kama_ui::ScrollState { offset: scroll_y }),
     );
     for (item, slot) in pending.into_iter().zip(slots) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the item column contains two fixed rows"
+        )]
         let row = kama_ui::layout::column(
             slot,
             &[
@@ -222,6 +225,10 @@ fn visit_media_rows<'a, B>(
             kama_ui::Align::Start,
             None,
         )[0];
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the inset row contains two fixed items"
+        )]
         let row = if item.child_inset > 0.0 {
             kama_ui::layout::row(
                 row,
@@ -243,7 +250,7 @@ fn visit_media_rows<'a, B>(
     None
 }
 
-fn media_kind_sort_key(kind: MediaKind) -> u8 {
+const fn media_kind_sort_key(kind: MediaKind) -> u8 {
     match kind {
         MediaKind::Image { .. } => 0,
         MediaKind::Video => 1,
@@ -355,10 +362,23 @@ impl MediaPanelState {
             .or_else(|| self.primary.map(MediaKeyboardSelection::Media));
         let index = current
             .and_then(|selection| rows.iter().position(|row| *row == selection))
-            .map_or(if direction < 0 { rows.len() - 1 } else { 0 }, |index| {
-                (index as isize + direction).clamp(0, rows.len() as isize - 1) as usize
-            });
-        let selection = rows[index];
+            .map_or_else(
+                || {
+                    if direction < 0 {
+                        rows.len().saturating_sub(1)
+                    } else {
+                        0
+                    }
+                },
+                |index| {
+                    index
+                        .saturating_add_signed(direction)
+                        .min(rows.len().saturating_sub(1))
+                },
+            );
+        let Some(&selection) = rows.get(index) else {
+            return true;
+        };
         self.selected.clear();
         self.primary = None;
         self.selected_composition = None;
@@ -425,7 +445,7 @@ impl MediaPanelState {
         }
     }
 
-    pub fn close_context_menu(&mut self) {
+    pub const fn close_context_menu(&mut self) {
         self.context_menu = None;
     }
 
@@ -496,7 +516,7 @@ impl MediaPanelState {
         })
     }
 
-    pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, project: &Project, icons: Icons) {
+    pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, project: &Project, icons: &Icons) {
         let rect = Rect::new(0.0, 0.0, rect.width, rect.height);
         kama_ui::ui!(ctx, {
             Rect("media-bg", rect) {
@@ -686,7 +706,7 @@ impl MediaPanelState {
         ctx: &mut kama_ui::BuildCtx,
         panel: Rect,
         project: &Project,
-        icons: Icons,
+        icons: &Icons,
     ) {
         let Some(menu) = self.context_menu else {
             return;
@@ -779,7 +799,7 @@ impl MediaPanelState {
                     let was_expanded = self.expanded_compositions.contains(&selection.composition);
                     self.composition_expansion
                         .entry(selection.composition)
-                        .or_insert(f32::from(u8::from(was_expanded)));
+                        .or_insert_with(|| f32::from(u8::from(was_expanded)));
                     if !self.expanded_compositions.remove(&selection.composition) {
                         self.expanded_compositions.insert(selection.composition);
                     }
@@ -793,7 +813,7 @@ impl MediaPanelState {
                     let was_expanded = self.expanded.contains(&selection.media);
                     self.media_expansion
                         .entry(selection.media)
-                        .or_insert(f32::from(u8::from(was_expanded)));
+                        .or_insert_with(|| f32::from(u8::from(was_expanded)));
                     if !self.expanded.remove(&selection.media) {
                         self.expanded.insert(selection.media);
                     }
@@ -864,7 +884,13 @@ impl MediaPanelState {
                 } else {
                     (target, anchor)
                 };
-                self.selected.extend(visible[start..=end].iter().copied());
+                self.selected.extend(
+                    visible
+                        .iter()
+                        .skip(start)
+                        .take(end.saturating_sub(start).saturating_add(1))
+                        .copied(),
+                );
             } else {
                 self.selected.clear();
                 self.selected.insert(selection);

@@ -200,10 +200,9 @@ pub fn fused_graph_stages(
         if !eligible(node) {
             continue;
         }
-        if consumers
-            .get(&node.id)
-            .is_some_and(|next| next.len() == 1 && graph.node(next[0]).is_some_and(eligible))
-        {
+        if consumers.get(&node.id).is_some_and(
+            |next| matches!(next.as_slice(), [id] if graph.node(*id).is_some_and(eligible)),
+        ) {
             continue;
         }
         let mut run = vec![node];

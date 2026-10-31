@@ -42,6 +42,26 @@ use super::{
     preload::{VIDEO_CLIP_PRELOAD_LIMIT, upcoming_video_preloads},
 };
 
+const fn nonnegative_f32_to_u32(value: f32) -> u32 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as u32
+    }
+}
+
+const fn nonnegative_f64_to_u64(value: f64) -> u64 {
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "max clamps negative and NaN values to zero"
+    )]
+    {
+        value.max(0.0) as u64
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RenderCachePreview {
     pub path: PathBuf,
@@ -60,7 +80,7 @@ pub struct GraphGeneratorVariants<T> {
 impl<T> Default for GraphGeneratorVariants<T> {
     fn default() -> Self {
         Self {
-            variants: Default::default(),
+            variants: crate::app_shared::BoundedCache::default(),
         }
     }
 }
@@ -94,7 +114,7 @@ pub struct PreviewOutput<'a> {
 }
 
 impl SourceGeometry {
-    pub(crate) fn canvas(width: u32, height: u32) -> Self {
+    pub(crate) const fn canvas(width: u32, height: u32) -> Self {
         Self {
             size: (width, height),
             position_offset: [0.0, 0.0],
@@ -128,6 +148,7 @@ enum GeneratorWorkerKind {
     },
 }
 
+#[derive(Clone, Copy)]
 struct WasmGeneratorRender<'a> {
     module: &'a Path,
     entry: &'a str,
@@ -181,7 +202,7 @@ impl GeneratorWorker {
         let (response_tx, responses) = mpsc::channel();
         if thread::Builder::new()
             .name("kama-generator-worker".into())
-            .spawn(move || generator_worker_loop(device, queue, worker_shared, response_tx))
+            .spawn(move || generator_worker_loop(&device, &queue, &worker_shared, &response_tx))
             .is_err()
         {
             return None;
@@ -211,20 +232,14 @@ impl GeneratorWorker {
 
     fn drain(&mut self) -> Vec<GeneratorWorkerResult> {
         let mut completed = Vec::new();
-        loop {
-            match self.responses.try_recv() {
-                Ok(result) => {
-                    if result.epoch != self.shared.epoch.load(Ordering::Acquire) {
-                        continue;
-                    }
-                    if self.pending.get(&result.slot) == Some(&result.key) {
-                        self.pending.remove(&result.slot);
-                    }
-                    completed.push(result);
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => break,
+        while let Ok(result) = self.responses.try_recv() {
+            if result.epoch != self.shared.epoch.load(Ordering::Acquire) {
+                continue;
             }
+            if self.pending.get(&result.slot) == Some(&result.key) {
+                self.pending.remove(&result.slot);
+            }
+            completed.push(result);
         }
         completed
     }
@@ -253,12 +268,12 @@ impl Drop for GeneratorWorker {
 }
 
 fn generator_worker_loop(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    shared: Arc<GeneratorWorkerShared>,
-    responses: Sender<GeneratorWorkerResult>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    shared: &GeneratorWorkerShared,
+    responses: &Sender<GeneratorWorkerResult>,
 ) {
-    let mut gpu = VideoGpuRuntime::new(device.as_ref());
+    let mut gpu = VideoGpuRuntime::new(device);
     let mut wasm = WasmRuntime::new().ok();
     loop {
         let job = {
@@ -278,7 +293,11 @@ fn generator_worker_loop(
             let Some(slot) = jobs.keys().next().copied() else {
                 continue;
             };
-            jobs.remove(&slot).expect("generator worker job exists")
+            let Some(job) = jobs.remove(&slot) else {
+                continue;
+            };
+            drop(jobs);
+            job
         };
 
         let result = (|| -> Result<GpuFrame> {
@@ -299,8 +318,8 @@ fn generator_worker_loop(
                             });
                         gpu.begin_submission();
                         let frame = gpu.render_generator(GeneratorRenderArgs {
-                            device: device.as_ref(),
-                            queue: queue.as_ref(),
+                            device,
+                            queue,
                             encoder: &mut encoder,
                             generator: definition,
                             parameters,
@@ -331,7 +350,7 @@ fn generator_worker_loop(
                                 local_time: *local_time,
                             },
                         )?;
-                        Ok(gpu.upload(device.as_ref(), queue.as_ref(), cpu.as_ref()))
+                        Ok(VideoGpuRuntime::upload(device, queue, cpu.as_ref()))
                     }
                 },
                 GeneratorWorkerKind::Wasm {
@@ -358,7 +377,7 @@ fn generator_worker_loop(
                             local_time: *local_time,
                         },
                     )?;
-                    Ok(gpu.upload(device.as_ref(), queue.as_ref(), cpu.as_ref()))
+                    Ok(VideoGpuRuntime::upload(device, queue, cpu.as_ref()))
                 }
             }
         })();
@@ -423,8 +442,8 @@ impl RenderContext<'_> {
             .solid(self.device, self.queue, self.encoder, width, height, color)
     }
 
-    fn upload(&mut self, frame: &CpuFrame) -> GpuFrame {
-        self.gpu.upload(self.device, self.queue, frame)
+    fn upload(&self, frame: &CpuFrame) -> GpuFrame {
+        VideoGpuRuntime::upload(self.device, self.queue, frame)
     }
 
     fn video_surface(&self, frame: &VideoFrame) -> VideoUploadSurface {
@@ -579,6 +598,7 @@ impl RenderContext<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct TimelineRender<'a> {
     tracks: &'a [crate::timeline::Track],
     clips: &'a [Clip],
@@ -697,14 +717,14 @@ impl FrameRenderer {
         Self::new_with_device(device, effects, plugins)
     }
 
-    pub(crate) fn preview_output(&self) -> PreviewOutput<'_> {
+    pub(crate) const fn preview_output(&self) -> PreviewOutput<'_> {
         PreviewOutput {
             texture: self.texture,
             source_geometry: &self.source_geometry,
         }
     }
 
-    pub(crate) fn is_waiting_for_video(&self) -> bool {
+    pub(crate) const fn is_waiting_for_video(&self) -> bool {
         self.waiting_for_video
     }
 
@@ -842,25 +862,32 @@ impl FrameRenderer {
         &mut self,
         args: ExportRgba16Args<'_>,
     ) -> Result<Vec<u8>> {
-        self.with_export_rgba16_mapped_on(args, |mapped, row_bytes, padded_row_bytes, height| {
-            let output_len = row_bytes * height;
-            let mut output = vec![0u8; output_len];
-            if row_bytes == padded_row_bytes {
-                output.copy_from_slice(&mapped[..output_len]);
-            } else {
-                for y in 0..height {
-                    let source = &mapped[y * padded_row_bytes..y * padded_row_bytes + row_bytes];
-                    let target = &mut output[y * row_bytes..(y + 1) * row_bytes];
-                    target.copy_from_slice(source);
-                }
+        self.with_export_rgba16_mapped_on(&args, |mapped, row_bytes, padded_row_bytes, height| {
+            let output_len = row_bytes
+                .checked_mul(height)
+                .context("export output size overflow")?;
+            anyhow::ensure!(
+                padded_row_bytes >= row_bytes && padded_row_bytes > 0,
+                "invalid export row stride"
+            );
+            let mut output = Vec::with_capacity(output_len);
+            for row in mapped.chunks(padded_row_bytes).take(height) {
+                output.extend_from_slice(
+                    row.get(..row_bytes)
+                        .context("mapped export row is too short")?,
+                );
             }
-            output
-        })
+            anyhow::ensure!(
+                output.len() == output_len,
+                "mapped export buffer is too short"
+            );
+            Ok(output)
+        })?
     }
 
     fn with_export_rgba16_mapped_on<R>(
         &mut self,
-        args: ExportRgba16Args<'_>,
+        args: &ExportRgba16Args<'_>,
         consume: impl FnOnce(&[u8], usize, usize, usize) -> R,
     ) -> Result<R> {
         let ExportRgba16Args {
@@ -870,14 +897,14 @@ impl FrameRenderer {
             timeline,
             runtime,
             timeline_time,
-        } = args;
+        } = *args;
         let (effects, plugins) = runtime;
         let width = project.active_settings().canvas_size[0].max(1);
         let height = project.active_settings().canvas_size[1].max(1);
         if self.gpu.is_none() {
             self.gpu = Some(VideoGpuRuntime::new(device));
         }
-        let mut gpu = self.gpu.take().expect("export GPU initialized");
+        let mut gpu = self.gpu.take().context("export GPU not initialized")?;
         let result = (|| -> Result<R> {
             self.export_readbacks.ensure_rgba(device, width, height);
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1002,7 +1029,7 @@ impl FrameRenderer {
         if self.gpu.is_none() {
             self.gpu = Some(VideoGpuRuntime::new(device));
         }
-        let mut gpu = self.gpu.take().expect("export GPU initialized");
+        let mut gpu = self.gpu.take().context("export GPU not initialized")?;
         let result = (|| -> Result<(Option<Error>, usize)> {
             let mut receivers = Vec::with_capacity(timeline_times.len());
             for (index, &timeline_time) in timeline_times.iter().enumerate() {
@@ -1276,8 +1303,9 @@ impl FrameRenderer {
                 render.solid(preview_width, preview_height, color)
             }
         };
-        let frame_index =
-            (f64::from(timeline_time.max(0.0)) * settings.frame_rate.max(1.0)).floor() as u64;
+        let frame_index = nonnegative_f64_to_u64(
+            (f64::from(timeline_time.max(0.0)) * settings.frame_rate.max(1.0)).floor(),
+        );
         let has_video_solo = tracks
             .iter()
             .any(|track| track.kind != TrackKind::Audio && track.solo);
@@ -1297,8 +1325,7 @@ impl FrameRenderer {
             }
             let active_clips = active_clips_by_track
                 .get(&track.id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
 
             if track.kind == TrackKind::Effect {
                 for &clip in active_clips {
@@ -1431,8 +1458,8 @@ impl FrameRenderer {
                         source_step_seconds: f64::from(clip.speed.max(0.01))
                             / settings.frame_rate.max(1.0),
                     },
-                    [source_dimensions.0, source_dimensions.1],
-                    depth + 1,
+                    source_dimensions.into(),
+                    depth.saturating_add(1),
                 )?;
                 let processed = self.evaluate_pipeline(
                     render,
@@ -1528,12 +1555,9 @@ impl FrameRenderer {
                 MediaKind::Video => asset.video_width.zip(asset.video_height),
                 _ => None,
             }),
-            VisualSource::Composition(id) => project.composition(*id).map(|composition| {
-                (
-                    composition.settings.canvas_size[0],
-                    composition.settings.canvas_size[1],
-                )
-            }),
+            VisualSource::Composition(id) => project
+                .composition(*id)
+                .map(|composition| composition.settings.canvas_size.into()),
             VisualSource::Generator(GeneratorSource::Plugin {
                 generator_type,
                 parameters,
@@ -1544,9 +1568,9 @@ impl FrameRenderer {
                 let font_size =
                     generator_f32(parameters, "font_size", keyframe_time).unwrap_or(72.0);
                 self.wasm.as_mut().map(|runtime| {
-                    let [width, height] =
-                        runtime.measure_text(&text, family.as_deref(), font_size, 1.0);
-                    (width, height)
+                    runtime
+                        .measure_text(&text, family.as_deref(), font_size, 1.0)
+                        .into()
                 })
             }
             VisualSource::Generator(GeneratorSource::Plugin {
@@ -1556,13 +1580,17 @@ impl FrameRenderer {
                 if generator_u32(parameters, "shape_type", keyframe_time).unwrap_or(0) == 1 {
                     generator_vec2(parameters, "radius", keyframe_time).map(|value| {
                         (
-                            (value[0] * 2.0).max(1.0) as u32,
-                            (value[1] * 2.0).max(1.0) as u32,
+                            nonnegative_f32_to_u32((value[0] * 2.0).max(1.0)),
+                            nonnegative_f32_to_u32((value[1] * 2.0).max(1.0)),
                         )
                     })
                 } else {
-                    generator_vec2(parameters, "size", keyframe_time)
-                        .map(|value| (value[0].max(1.0) as u32, value[1].max(1.0) as u32))
+                    generator_vec2(parameters, "size", keyframe_time).map(|value| {
+                        (
+                            nonnegative_f32_to_u32(value[0].max(1.0)),
+                            nonnegative_f32_to_u32(value[1].max(1.0)),
+                        )
+                    })
                 }
             }
             _ => None,
@@ -1716,19 +1744,23 @@ impl FrameRenderer {
                         if let Some(cached) = self.image_gpu_cache.get(&asset.path) {
                             return Ok(cached.clone());
                         }
-                        let decoded = if let Some(cached) = self.image_cache.get(&asset.path) {
-                            Arc::clone(cached)
-                        } else {
-                            let decoded = Arc::new(match image::open(&asset.path) {
-                                Ok(image) => frame_from_image(image, preview_width, preview_height),
-                                Err(_) => {
-                                    placeholder_frame(&asset.name, preview_width, preview_height)
-                                }
-                            });
-                            self.image_cache
-                                .insert(asset.path.clone(), Arc::clone(&decoded));
-                            decoded
-                        };
+                        let decoded =
+                            Arc::clone(self.image_cache.entry(asset.path.clone()).or_insert_with(
+                                || {
+                                    Arc::new(image::open(&asset.path).map_or_else(
+                                        |_| {
+                                            placeholder_frame(
+                                                &asset.name,
+                                                preview_width,
+                                                preview_height,
+                                            )
+                                        },
+                                        |image| {
+                                            frame_from_image(&image, preview_width, preview_height)
+                                        },
+                                    ))
+                                },
+                            ));
                         let uploaded = render.upload(decoded.as_ref());
                         self.image_gpu_cache
                             .insert(asset.path.clone(), uploaded.clone());
@@ -1751,7 +1783,7 @@ impl FrameRenderer {
                         let runtime = self.model_gpu.get_or_insert_with(|| {
                             crate::model3d::ModelGpuRuntime::new(render.device)
                         });
-                        return match runtime.render(
+                        let result = runtime.render(
                             render.device,
                             render.queue,
                             render.encoder,
@@ -1763,14 +1795,14 @@ impl FrameRenderer {
                             rotation,
                             position,
                             model3d.shading,
-                        ) {
-                            Ok(frame) => Ok(frame),
-                            Err(_) => Ok(render.upload(&placeholder_frame(
+                        );
+                        return Ok(result.unwrap_or_else(|_| {
+                            render.upload(&placeholder_frame(
                                 &asset.name,
                                 preview_width,
                                 preview_height,
-                            ))),
-                        };
+                            ))
+                        }));
                     }
                     _ => placeholder_frame(&asset.name, preview_width, preview_height),
                 }
@@ -2444,7 +2476,14 @@ impl FrameRenderer {
             .flat_map(|stage| stage.node_ids.iter().rev().skip(1).copied())
             .collect();
         for node_index in local_node_evaluation_order(instance) {
-            let node = &instance.local_nodes[node_index];
+            #[expect(
+                clippy::expect_used,
+                reason = "evaluation order is constructed from indices in local_nodes"
+            )]
+            let node = instance
+                .local_nodes
+                .get(node_index)
+                .expect("local node index exists");
             if fused_intermediates.contains(&node.id) {
                 continue;
             }
@@ -2499,7 +2538,11 @@ impl FrameRenderer {
                 render.transparent(width, height)
             }
             crate::effects::ImageBinding::PipelineInput if local_output_size.is_some() => {
-                let [width, height] = local_output_size.unwrap();
+                #[expect(
+                    clippy::expect_used,
+                    reason = "the match guard requires a local output size"
+                )]
+                let [width, height] = local_output_size.expect("local output size exists");
                 if width == local_width && height == local_height {
                     local_input.clone()
                 } else if let Some(transform) = instance.transform() {
@@ -2649,7 +2692,7 @@ impl FrameRenderer {
             self.presentation = Some(presentation);
         }
 
-        let mut gpu = self.gpu.take().expect("preview GPU initialized");
+        let mut gpu = self.gpu.take().context("preview GPU not initialized")?;
         let result = (|| -> Result<()> {
             let device = renderer.device();
             let queue = renderer.queue();
@@ -2697,7 +2740,7 @@ impl FrameRenderer {
             let presentation = self
                 .presentation
                 .as_ref()
-                .expect("preview presentation initialized");
+                .context("preview presentation not initialized")?;
             gpu.present(PresentationArgs {
                 device,
                 encoder: &mut encoder,
@@ -2752,14 +2795,14 @@ impl FrameRenderer {
                     target.width,
                     target.height,
                 );
-            warmed += 1;
+            warmed = warmed.saturating_add(1);
             if warmed >= VIDEO_CLIP_PRELOAD_LIMIT {
                 break;
             }
         }
     }
 
-    pub(crate) fn invalidate(&mut self) {
+    pub(crate) const fn invalidate(&mut self) {
         self.last_signature = None;
     }
 
@@ -3073,8 +3116,8 @@ pub(super) fn scaled_source_geometry(
         .min(preview_height as f32 / height as f32);
     SourceGeometry {
         size: (
-            (width as f32 * scale).round().max(1.0) as u32,
-            (height as f32 * scale).round().max(1.0) as u32,
+            nonnegative_f32_to_u32((width as f32 * scale).round().max(1.0)),
+            nonnegative_f32_to_u32((height as f32 * scale).round().max(1.0)),
         ),
         position_offset,
     }
@@ -3148,8 +3191,8 @@ pub fn generator_content_bounds(
     }
     let min_x = min_x - padding;
     let min_y = min_y - padding;
-    let width = (max_x - min_x + padding).ceil().max(1.0) as u32;
-    let height = (max_y - min_y + padding).ceil().max(1.0) as u32;
+    let width = nonnegative_f32_to_u32((max_x - min_x + padding).ceil().max(1.0));
+    let height = nonnegative_f32_to_u32((max_y - min_y + padding).ceil().max(1.0));
     Some((min_x, min_y, width, height))
 }
 
@@ -3243,8 +3286,10 @@ fn collect_nested_cache_clip_ids(
         if !active_path.insert(composition.id) {
             continue;
         }
-        let parent_clip_key =
-            scope.map_or(u64::from(clip.id), |scope| scoped_clip_id(scope, clip.id));
+        let parent_clip_key = scope.map_or_else(
+            || u64::from(clip.id),
+            |scope| scoped_clip_id(scope, clip.id),
+        );
         let child_scope = nested_cache_scope(parent_clip_key, composition.id);
         for child in &composition.timeline.clips {
             ids.insert(scoped_clip_id(child_scope, child.id));
@@ -3253,7 +3298,7 @@ fn collect_nested_cache_clip_ids(
             project,
             &composition.timeline.clips,
             Some(child_scope),
-            depth + 1,
+            depth.saturating_add(1),
             active_path,
             ids,
         );
@@ -3262,7 +3307,7 @@ fn collect_nested_cache_clip_ids(
 }
 
 fn frame_from_image(
-    image: image::DynamicImage,
+    image: &image::DynamicImage,
     preview_width: u32,
     preview_height: u32,
 ) -> CpuFrame {
@@ -3293,7 +3338,7 @@ fn frame_from_image(
 fn placeholder_frame(label: &str, preview_width: u32, preview_height: u32) -> CpuFrame {
     let mut frame = CpuFrame::transparent(preview_width, preview_height);
     let hash = label.bytes().fold(0u32, |hash, byte| {
-        hash.wrapping_mul(16777619) ^ u32::from(byte)
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
     });
     let tint = [
         ((hash & 0xff) as f32 / 255.0).mul_add(0.10, 0.08),
@@ -3303,7 +3348,7 @@ fn placeholder_frame(label: &str, preview_width: u32, preview_height: u32) -> Cp
     ];
     for y in 0..preview_height {
         for x in 0..preview_width {
-            let checker = ((x / 32 + y / 32) & 1) as f32 * 0.035;
+            let checker = ((x / 32).wrapping_add(y / 32) & 1) as f32 * 0.035;
             frame.set_rgba(
                 x,
                 y,

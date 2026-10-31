@@ -39,7 +39,7 @@ impl EditorSession {
     }
 
     pub(crate) fn capture(&self) -> HistorySnapshot {
-        self.history.capture(&self.project, &self.timeline)
+        HistorySnapshot::capture(&self.project, &self.timeline)
     }
 
     pub(crate) fn begin_gesture(&mut self, label: impl Into<String>) {
@@ -58,13 +58,13 @@ impl EditorSession {
         let Some((before, label)) = self.history_gesture.take() else {
             return false;
         };
-        self.record_after(label, before, false)
+        self.record_after(label, &before, false)
     }
 
     pub(crate) fn record_after(
         &mut self,
         label: impl Into<String>,
-        before: HistorySnapshot,
+        before: &HistorySnapshot,
         coalesce: bool,
     ) -> bool {
         self.history
@@ -111,7 +111,7 @@ impl EditorSession {
         );
     }
 
-    pub(crate) fn is_unsaved(&self) -> bool {
+    pub(crate) const fn is_unsaved(&self) -> bool {
         self.status.is_unsaved()
     }
 

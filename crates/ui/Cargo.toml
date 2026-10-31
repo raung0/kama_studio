@@ -12,8 +12,7 @@ kama-ui-macros = { path = "../ui-macros" }
 num-traits = "0.2"
 cosmic-text = "0.19"
 serde = { version = "1", features = ["derive"] }
-winit = "0.30"
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 
 [lints]
 workspace = true
-

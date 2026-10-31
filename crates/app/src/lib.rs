@@ -7,7 +7,7 @@ macro_rules! labeled_enum {
 
         impl $name {
             pub const ALL: [Self; labeled_enum!(@count $($variant),+)] = [$(Self::$variant),+];
-            pub fn label(self) -> &'static str {
+            pub const fn label(self) -> &'static str {
                 match self { $(Self::$variant => $label),+ }
             }
         }
@@ -169,6 +169,14 @@ use winit::platform::macos::EventLoopBuilderExtMacOS;
 
 const MEDIA_PRESENCE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+fn next_media_check(now: Instant) -> Instant {
+    now.checked_add(MEDIA_PRESENCE_CHECK_INTERVAL)
+        .unwrap_or_else(|| {
+            eprintln!("media presence check deadline overflowed; checking immediately");
+            now
+        })
+}
+
 const POPUP_FADE_DURATION: Duration = Duration::from_millis(110);
 const DOCK_EDGE: f32 = 32.0;
 const FOCUS_FADE_SPEED: f32 = 18.0;
@@ -208,9 +216,8 @@ struct PanelInfo {
 macro_rules! panel_info {
     ($($variant:ident => ($layout_title:expr, $title_key:expr, $description_key:expr, $icon:expr)),+ $(,)?) => {
         impl PanelKind {
-            const INFO: &'static [PanelInfo] = &[$(PanelInfo { layout_title: $layout_title, title_key: $title_key, description_key: $description_key, icon: $icon }),+];
-            fn info(self) -> PanelInfo { Self::INFO[self as usize] }
-            fn layout_title(self) -> &'static str { self.info().layout_title }
+            const fn info(self) -> PanelInfo { match self { $(Self::$variant => PanelInfo { layout_title: $layout_title, title_key: $title_key, description_key: $description_key, icon: $icon }),+ } }
+            const fn layout_title(self) -> &'static str { self.info().layout_title }
             fn display_title(self) -> String { i18n::text(self.info().title_key) }
             fn display_description(self) -> String { i18n::text(self.info().description_key) }
             fn from_title(title: &str) -> Option<Self> {
@@ -309,7 +316,7 @@ enum PaletteKind {
 }
 
 impl PaletteKind {
-    fn is_add_menu(self) -> bool {
+    const fn is_add_menu(self) -> bool {
         matches!(
             self,
             Self::TimelineAdd { .. }
@@ -446,7 +453,7 @@ struct MediaInsertionCursor {
 }
 
 impl MediaInsertionCursor {
-    fn new(_timeline: &mut TimelineState, anchor_track: u32, time: f32) -> Self {
+    const fn new(_timeline: &mut TimelineState, anchor_track: u32, time: f32) -> Self {
         Self {
             anchor_track,
             video_tracks: Vec::new(),
@@ -468,8 +475,8 @@ impl MediaInsertionCursor {
             self.audio_tracks = timeline.media_tracks_near(self.anchor_track, true, audio);
         }
         (
-            self.video_tracks[..video].to_vec(),
-            self.audio_tracks[..audio].to_vec(),
+            self.video_tracks.iter().take(video).copied().collect(),
+            self.audio_tracks.iter().take(audio).copied().collect(),
         )
     }
 
@@ -512,7 +519,7 @@ impl NewCompositionDialog {
         }
     }
 
-    fn title(&self) -> &'static str {
+    const fn title(&self) -> &'static str {
         match self.mode {
             NewCompositionMode::Blank => "New Composition",
             NewCompositionMode::FromSelection => "Add to new Composition",
@@ -597,7 +604,7 @@ impl PaletteEntry {
             .join(" ▶ ")
     }
 
-    fn is_submenu(&self) -> bool {
+    const fn is_submenu(&self) -> bool {
         matches!(&self.target, PaletteTarget::Submenu(_))
     }
 
@@ -616,7 +623,7 @@ struct DragMotion {
 }
 
 impl DragMotion {
-    fn new(point: [f32; 2]) -> Self {
+    const fn new(point: [f32; 2]) -> Self {
         Self {
             start: point,
             current: point,
@@ -704,11 +711,11 @@ impl MissingMediaDialog {
         &self.missing
     }
 
-    fn is_project_load(&self) -> bool {
+    const fn is_project_load(&self) -> bool {
         self.pending.is_some()
     }
 
-    fn take(&mut self) -> Option<PendingProjectLoad> {
+    const fn take(&mut self) -> Option<PendingProjectLoad> {
         self.pending.take()
     }
 }
@@ -801,13 +808,10 @@ impl UpdateDialog {
     }
 
     fn finish(&mut self, error: Option<String>) {
-        self.state = match error {
-            Some(error) => UpdateDialogState::Failed(error),
-            None => UpdateDialogState::Installed,
-        };
+        self.state = error.map_or(UpdateDialogState::Installed, UpdateDialogState::Failed);
     }
 
-    fn installing(&self) -> bool {
+    const fn installing(&self) -> bool {
         matches!(self.state, UpdateDialogState::Installing)
     }
 
@@ -825,7 +829,7 @@ impl UpdateDialog {
         self.animation.finished(now)
     }
 
-    fn is_closing(&self) -> bool {
+    const fn is_closing(&self) -> bool {
         self.animation.is_closing()
     }
 
@@ -923,6 +927,13 @@ fn make_razor_cursor(event_loop: &ActiveEventLoop) -> Result<CustomCursor> {
     Ok(event_loop.create_custom_cursor(source))
 }
 
+#[derive(Default)]
+struct CursorFlags {
+    external_drag_uses_window_cursor: bool,
+    razor_cursor_active: bool,
+    value_drag_cursor_locked: bool,
+}
+
 struct EditorWindowState {
     window: Arc<Window>,
     renderer: Renderer,
@@ -938,7 +949,7 @@ struct EditorWindowState {
     snapshot: LayoutSnapshot,
     drag: Option<DragState>,
     external_drag_items: Vec<ExternalDragItem>,
-    external_drag_uses_window_cursor: bool,
+    cursor_flags: CursorFlags,
     animated_drop_preview: Option<Rect>,
     focus_levels: HashMap<StackId, f32>,
     focus_frame: Instant,
@@ -951,9 +962,7 @@ struct EditorWindowState {
     waveform_textures: waveform::WaveformTextures,
     playback: FrameRenderer,
     monitor: MonitorState,
-    razor_cursor_active: bool,
     touch_gesture_cursor: Option<CursorIcon>,
-    value_drag_cursor_locked: bool,
     value_drag_cursor_anchor: Option<[f64; 2]>,
     ime_sync: ImeSyncState,
 }
@@ -1011,7 +1020,7 @@ impl EditorWindowState {
             snapshot: LayoutSnapshot::default(),
             drag: None,
             external_drag_items: Vec::new(),
-            external_drag_uses_window_cursor: false,
+            cursor_flags: CursorFlags::default(),
             animated_drop_preview: None,
             focus_levels: HashMap::new(),
             focus_frame: Instant::now(),
@@ -1024,9 +1033,7 @@ impl EditorWindowState {
             waveform_textures,
             playback,
             monitor,
-            razor_cursor_active: false,
             touch_gesture_cursor: None,
-            value_drag_cursor_locked: false,
             value_drag_cursor_anchor: None,
             ime_sync: ImeSyncState::default(),
         })
@@ -1077,7 +1084,7 @@ struct EditorApp {
     snapshot: LayoutSnapshot,
     drag: Option<DragState>,
     external_drag_items: Vec<ExternalDragItem>,
-    external_drag_uses_window_cursor: bool,
+    cursor_flags: CursorFlags,
     ignored_external_drops: HashSet<PathBuf>,
     animated_drop_preview: Option<Rect>,
     focus_levels: HashMap<StackId, f32>,
@@ -1110,9 +1117,7 @@ struct EditorApp {
     meters: MetersState,
     messages: MessagesState,
     razor_cursor: CustomCursor,
-    razor_cursor_active: bool,
     touch_gesture_cursor: Option<CursorIcon>,
-    value_drag_cursor_locked: bool,
     value_drag_cursor_anchor: Option<[f64; 2]>,
     ime_sync: ImeSyncState,
     secondary_windows: HashMap<WindowId, EditorWindowState>,
@@ -1136,7 +1141,7 @@ impl EditorApp {
         let mut command_registry = CommandRegistry::editor_defaults();
         preferences::load(&mut command_registry);
         #[cfg(target_os = "macos")]
-        let native_menu = NativeMenu::install(&command_registry);
+        let native_menu = NativeMenu::install(&command_registry)?;
 
         let plugin_paths = preferences::load_plugin_paths();
         let mut plugins =
@@ -1187,7 +1192,7 @@ impl EditorApp {
             snapshot: LayoutSnapshot::default(),
             drag: None,
             external_drag_items: Vec::new(),
-            external_drag_uses_window_cursor: false,
+            cursor_flags: CursorFlags::default(),
             ignored_external_drops: HashSet::new(),
             animated_drop_preview: None,
             focus_levels: HashMap::new(),
@@ -1202,7 +1207,7 @@ impl EditorApp {
             #[cfg(target_os = "macos")]
             native_menu,
             editor,
-            next_media_presence_check: Instant::now() + MEDIA_PRESENCE_CHECK_INTERVAL,
+            next_media_presence_check: next_media_check(Instant::now()),
             prompted_missing_media: HashSet::new(),
             plugins,
             effects,
@@ -1220,9 +1225,7 @@ impl EditorApp {
             meters: MetersState::default(),
             messages: MessagesState::default(),
             razor_cursor,
-            razor_cursor_active: false,
             touch_gesture_cursor: None,
-            value_drag_cursor_locked: false,
             value_drag_cursor_anchor: None,
             ime_sync: ImeSyncState::default(),
             secondary_windows: HashMap::new(),
@@ -1239,7 +1242,7 @@ impl EditorApp {
         Ok(editor_app)
     }
 
-    fn swap_window_state(&mut self, state: &mut EditorWindowState) {
+    const fn swap_window_state(&mut self, state: &mut EditorWindowState) {
         std::mem::swap(&mut self.window, &mut state.window);
         std::mem::swap(&mut self.renderer, &mut state.renderer);
         std::mem::swap(&mut self.icons, &mut state.icons);
@@ -1257,10 +1260,7 @@ impl EditorApp {
             &mut self.external_drag_items,
             &mut state.external_drag_items,
         );
-        std::mem::swap(
-            &mut self.external_drag_uses_window_cursor,
-            &mut state.external_drag_uses_window_cursor,
-        );
+        std::mem::swap(&mut self.cursor_flags, &mut state.cursor_flags);
         std::mem::swap(
             &mut self.animated_drop_preview,
             &mut state.animated_drop_preview,
@@ -1277,16 +1277,8 @@ impl EditorApp {
         std::mem::swap(&mut self.playback, &mut state.playback);
         std::mem::swap(&mut self.monitor, &mut state.monitor);
         std::mem::swap(
-            &mut self.razor_cursor_active,
-            &mut state.razor_cursor_active,
-        );
-        std::mem::swap(
             &mut self.touch_gesture_cursor,
             &mut state.touch_gesture_cursor,
-        );
-        std::mem::swap(
-            &mut self.value_drag_cursor_locked,
-            &mut state.value_drag_cursor_locked,
         );
         std::mem::swap(
             &mut self.value_drag_cursor_anchor,
@@ -1309,7 +1301,7 @@ impl EditorApp {
     }
 
     fn window_count(&self) -> usize {
-        1 + self.secondary_windows.len()
+        self.secondary_windows.len().saturating_add(1)
     }
 
     fn request_redraw_all(&self) {
@@ -1329,10 +1321,9 @@ impl EditorApp {
         let Some(next_id) = self.secondary_windows.keys().next().copied() else {
             return false;
         };
-        let mut next = self
-            .secondary_windows
-            .remove(&next_id)
-            .expect("selected detached window must exist");
+        let Some(mut next) = self.secondary_windows.remove(&next_id) else {
+            return false;
+        };
         self.swap_window_state(&mut next);
 
         drop(next);
@@ -1525,7 +1516,7 @@ impl EditorApp {
     fn sync_cursor(&mut self) {
         if let Some(cursor) = self.touch_gesture_cursor {
             self.window.set_cursor(cursor);
-            self.razor_cursor_active = false;
+            self.cursor_flags.razor_cursor_active = false;
             return;
         }
         let razor_cursor_active = self.modal.is_none()
@@ -1536,7 +1527,7 @@ impl EditorApp {
                 .timeline
                 .razor_cursor_at(&self.snapshot, self.cursor);
         if razor_cursor_active {
-            if !self.razor_cursor_active {
+            if !self.cursor_flags.razor_cursor_active {
                 self.window.set_cursor(self.razor_cursor.clone());
             }
         } else {
@@ -1554,9 +1545,13 @@ impl EditorApp {
             };
             self.window.set_cursor(cursor);
         }
-        self.razor_cursor_active = razor_cursor_active;
+        self.cursor_flags.razor_cursor_active = razor_cursor_active;
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "layout returns one rectangle for each of the two supplied items"
+    )]
     fn workspace_rect(&self) -> Rect {
         let width = self.renderer.logical_width();
         let height = self.renderer.logical_height();
@@ -1793,10 +1788,10 @@ impl EditorApp {
                         let title = match stream {
                             MediaStream::All => asset.name.clone(),
                             MediaStream::Video(index) => {
-                                format!("{} - Video track {}", asset.name, index + 1)
+                                format!("{} - Video track {}", asset.name, index.saturating_add(1))
                             }
                             MediaStream::Audio(index) => {
-                                format!("{} - Audio track {}", asset.name, index + 1)
+                                format!("{} - Audio track {}", asset.name, index.saturating_add(1))
                             }
                         };
                         (title, asset.duration)
@@ -1948,9 +1943,8 @@ impl EditorApp {
             let preview = (!specs.is_empty())
                 .then(|| timeline.media_drop_previews(snapshot, cursor, &specs))
                 .flatten();
-            let title = if external_drag_items.len() == 1 {
-                external_drag_items[0]
-                    .path
+            let title = if let [item] = external_drag_items.as_slice() {
+                item.path
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("Media")
@@ -1975,7 +1969,7 @@ impl EditorApp {
                         build_stack(
                             ctx,
                             stack,
-                            StackBuildContext {
+                            &StackBuildContext {
                                 snapshot,
                                 cursor,
                                 dragged_tab,
@@ -2054,7 +2048,7 @@ impl EditorApp {
                         .iter()
                         .flat_map(|stack| stack.stack.tabs.iter())
                         .find(|candidate| candidate.id == *tab)
-                        .map_or("Tab".to_string(), |candidate| candidate.title.clone());
+                        .map_or_else(|| "Tab".to_string(), |candidate| candidate.title.clone());
                     Some((title, "dragged-tab-ghost"))
                 }
                 DockDrag::Tab { .. } => None,
@@ -2148,7 +2142,7 @@ impl EditorApp {
         }
 
         if let Some(entries) = palette_entries.as_deref() {
-            build_palette(&mut ctx, width, height, &mut self.palette, entries, icons);
+            build_palette(&mut ctx, width, height, &mut self.palette, entries, &icons);
         }
         if let Some(modal) = modal.as_mut() {
             build_active_modal(
@@ -2159,7 +2153,7 @@ impl EditorApp {
                 command_registry,
                 render_panel.phase(),
                 about_logos,
-                icons,
+                &icons,
             );
         }
 
@@ -2264,7 +2258,7 @@ impl EditorApp {
         self.focus_stack(stack).map(|panel| (stack, panel))
     }
 
-    fn history_label(panel: Option<PanelKind>) -> &'static str {
+    const fn history_label(panel: Option<PanelKind>) -> &'static str {
         match panel {
             Some(PanelKind::Media) => "Edit media",
             Some(PanelKind::Monitor) => "Transform in preview",
@@ -2324,7 +2318,12 @@ impl EditorApp {
         Self::history_label(self.focused_kind())
     }
 
-    fn record_key_history(&mut self, before: HistorySnapshot, label: &'static str, coalesce: bool) {
+    fn record_key_history(
+        &mut self,
+        before: &HistorySnapshot,
+        label: &'static str,
+        coalesce: bool,
+    ) {
         self.editor.record_after(label, before, coalesce);
     }
 
@@ -2527,7 +2526,9 @@ impl EditorApp {
 
     fn refresh_layout_menu(&mut self) {
         #[cfg(target_os = "macos")]
-        self.native_menu.refresh_layouts();
+        if let Err(error) = self.native_menu.refresh_layouts() {
+            crate::messages::warning("Refresh native menu", format!("{error:#}"));
+        }
     }
 
     fn save_layout_named(&mut self, name: &str) {
@@ -2598,10 +2599,10 @@ impl EditorApp {
                 if !dialog.is_closing() {
                     let rect = LAYOUT_SAVE_MODAL.rect(width, height);
                     if !rect.contains(point)
-                        || LAYOUT_SAVE_MODAL.button(rect, false).contains(point)
+                        || app_ui_helpers::TextModalSpec::button(rect, false).contains(point)
                     {
                         dialog.close();
-                    } else if LAYOUT_SAVE_MODAL.button(rect, true).contains(point) {
+                    } else if app_ui_helpers::TextModalSpec::button(rect, true).contains(point) {
                         let name = dialog.editor.text().to_string();
                         dialog.close();
                         self.handle_layout_command(LayoutCommand::SaveNamed(name));
@@ -2694,12 +2695,13 @@ impl EditorApp {
             }
             Modal::Settings(dialog) => {
                 dialog.pointer_pressed(width, height, point, self.modifiers);
-                self.plugin_paths = dialog.plugin_paths().to_owned();
+                self.plugin_paths.clear();
+                self.plugin_paths.push_str(dialog.plugin_paths());
                 preferences::save(&self.command_registry, &self.plugin_paths);
                 keep = !dialog.is_closed();
             }
             Modal::Keybinds(dialog) => {
-                dialog.pointer_pressed(width, height, point, &mut self.command_registry);
+                dialog.pointer_pressed(width, height, point, &self.command_registry);
                 preferences::save(&self.command_registry, &self.plugin_paths);
                 keep = !dialog.is_closed();
             }
@@ -2707,10 +2709,10 @@ impl EditorApp {
                 if !dialog.is_closing() {
                     let rect = NEW_COMPOSITION_MODAL.rect(width, height);
                     if !rect.contains(point)
-                        || NEW_COMPOSITION_MODAL.button(rect, false).contains(point)
+                        || app_ui_helpers::TextModalSpec::button(rect, false).contains(point)
                     {
                         dialog.close();
-                    } else if NEW_COMPOSITION_MODAL.button(rect, true).contains(point) {
+                    } else if app_ui_helpers::TextModalSpec::button(rect, true).contains(point) {
                         self.confirm_new_composition_dialog(dialog);
                         dialog.close();
                     } else {
@@ -2726,10 +2728,10 @@ impl EditorApp {
                 if !dialog.is_closing() {
                     let rect = SPEED_DURATION_MODAL.rect(width, height);
                     if !rect.contains(point)
-                        || SPEED_DURATION_MODAL.button(rect, false).contains(point)
+                        || app_ui_helpers::TextModalSpec::button(rect, false).contains(point)
                     {
                         dialog.close();
-                    } else if SPEED_DURATION_MODAL.button(rect, true).contains(point) {
+                    } else if app_ui_helpers::TextModalSpec::button(rect, true).contains(point) {
                         self.confirm_speed_duration_dialog(dialog);
                         dialog.close();
                     } else if let Some(mode) = [
@@ -2738,12 +2740,8 @@ impl EditorApp {
                         SpeedDurationMode::TotalDuration,
                     ]
                     .into_iter()
-                    .enumerate()
-                    .find_map(|(index, mode)| {
-                        speed_duration_mode_rect(rect, index)
-                            .contains(point)
-                            .then_some(mode)
-                    }) {
+                    .find(|&mode| speed_duration_mode_rect(rect, mode).contains(point))
+                    {
                         dialog.set_mode(mode, &self.editor.timeline, &self.editor.project);
                     } else {
                         dialog.editor.pointer_pressed(
@@ -2775,7 +2773,7 @@ impl EditorApp {
 
     fn sync_value_drag_cursor(&mut self, event_loop: &ActiveEventLoop) {
         if self.value_drag_active() {
-            if self.value_drag_cursor_locked {
+            if self.cursor_flags.value_drag_cursor_locked {
                 return;
             }
             let anchor = self.cursor_physical;
@@ -2786,7 +2784,7 @@ impl EditorApp {
                 .is_ok()
             {
                 self.value_drag_cursor_anchor = Some(anchor);
-                self.value_drag_cursor_locked = true;
+                self.cursor_flags.value_drag_cursor_locked = true;
                 self.window.set_cursor_visible(false);
             }
             return;
@@ -2795,7 +2793,7 @@ impl EditorApp {
     }
 
     fn release_value_drag_cursor(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.value_drag_cursor_locked {
+        if !self.cursor_flags.value_drag_cursor_locked {
             return;
         }
         if let Some(anchor) = self.value_drag_cursor_anchor.take() {
@@ -2809,14 +2807,14 @@ impl EditorApp {
         }
         let _ = self.window.set_cursor_grab(CursorGrabMode::None);
         self.window.set_cursor_visible(true);
-        self.value_drag_cursor_locked = false;
+        self.cursor_flags.value_drag_cursor_locked = false;
         if self.external_drag_items.is_empty() {
             event_loop.listen_device_events(DeviceEvents::WhenFocused);
         }
     }
 
     fn move_value_drag_cursor_warped(&mut self, position: PhysicalPosition<f64>) {
-        if !self.value_drag_cursor_locked {
+        if !self.cursor_flags.value_drag_cursor_locked {
             return;
         }
         let Some(anchor) = self.value_drag_cursor_anchor else {
@@ -3184,7 +3182,7 @@ impl EditorApp {
                     let handled = self.inspector.pointer_middle_pressed(
                         content,
                         self.cursor,
-                        InspectorPointerContext {
+                        &mut InspectorPointerContext {
                             modifiers: self.modifiers,
                             project: &mut self.editor.project,
                             timeline: &mut self.editor.timeline,
@@ -3230,7 +3228,8 @@ impl EditorApp {
                         self.renderer.logical_height(),
                         self.cursor,
                     ) {
-                        self.plugin_paths = dialog.plugin_paths().to_owned();
+                        self.plugin_paths.clear();
+                        self.plugin_paths.push_str(dialog.plugin_paths());
                         preferences::save(&self.command_registry, &self.plugin_paths);
                     }
                 }
@@ -3435,7 +3434,7 @@ impl EditorApp {
         let (item, motion) = match drag {
             DragState::Dock { item, motion } => (item, motion),
             DragState::Splitter { .. } => return true,
-            other => {
+            other @ DragState::Media { .. } => {
                 self.drag = Some(other);
                 return false;
             }
@@ -3662,7 +3661,8 @@ impl EditorApp {
             }
             Modal::Settings(dialog) => {
                 dialog.handle_key(event, self.modifiers);
-                self.plugin_paths = dialog.plugin_paths().to_owned();
+                self.plugin_paths.clear();
+                self.plugin_paths.push_str(dialog.plugin_paths());
                 preferences::save(&self.command_registry, &self.plugin_paths);
                 keep = !dialog.is_closed();
             }
@@ -3681,7 +3681,6 @@ impl EditorApp {
                     dialog.editor.handle_key(event, self.modifiers);
                 }
             },
-            Modal::Composition(_) => {}
             Modal::SpeedDuration(dialog) if !dialog.is_closing() => match event.logical_key {
                 Key::Named(NamedKey::Escape) => dialog.close(),
                 Key::Named(NamedKey::Enter) => {
@@ -3692,7 +3691,6 @@ impl EditorApp {
                     dialog.editor.handle_key(event, self.modifiers);
                 }
             },
-            Modal::SpeedDuration(_) => {}
             Modal::Busy(dialog) => {
                 if !dialog.is_closing() {
                     match event.logical_key {
@@ -3727,7 +3725,6 @@ impl EditorApp {
                 }
                 _ => {}
             },
-            Modal::MissingMedia(_) => {}
             Modal::Update(dialog) if !dialog.is_closing() && !dialog.installing() => {
                 match event.logical_key {
                     Key::Named(NamedKey::Escape) => dialog.close(),
@@ -3743,7 +3740,10 @@ impl EditorApp {
                     _ => {}
                 }
             }
-            Modal::Update(_) => {}
+            Modal::Composition(_)
+            | Modal::SpeedDuration(_)
+            | Modal::MissingMedia(_)
+            | Modal::Update(_) => {}
             Modal::LayoutSave(dialog) => {
                 if !dialog.is_closing() {
                     match event.logical_key {
@@ -3859,9 +3859,10 @@ impl EditorApp {
                         || text.as_str().eq_ignore_ascii_case("n")
             );
         let before = (!skip_history).then(|| {
-            self.editor
-                .history
-                .capture(&self.editor.project, &self.editor.timeline)
+            crate::history::HistorySnapshot::capture(
+                &self.editor.project,
+                &self.editor.timeline.document(),
+            )
         });
         let history_label = self.key_history_label();
         let coalesce = event
@@ -3870,7 +3871,7 @@ impl EditorApp {
             .is_some_and(|text| !text.chars().all(char::is_control));
         self.handle_key_inner(event);
         if let Some(before) = before {
-            self.record_key_history(before, history_label, coalesce);
+            self.record_key_history(&before, history_label, coalesce);
         }
     }
 
@@ -4033,13 +4034,25 @@ impl EditorApp {
                             id
                         } else if self.editor.timeline.can_assign_pipeline() {
                             let kind = self.editor.timeline.selected_pipeline_kind();
-                            let id = self.editor.project.create_pipeline_kind(kind);
+                            let Some(id) = self.editor.project.create_pipeline_kind(kind) else {
+                                messages::warning(
+                                    "Create pipeline",
+                                    "Pipeline ID space is exhausted",
+                                );
+                                return;
+                            };
                             self.editor.timeline.set_selected_pipeline(Some(id));
                             self.pipeline_graph.follow_selection();
                             graph_changed = true;
                             id
                         } else {
-                            let id = self.editor.project.create_pipeline();
+                            let Some(id) = self.editor.project.create_pipeline() else {
+                                messages::warning(
+                                    "Create pipeline",
+                                    "Pipeline ID space is exhausted",
+                                );
+                                return;
+                            };
                             self.pipeline_graph.open_pipeline(id);
                             graph_changed = true;
                             id
@@ -4104,13 +4117,13 @@ impl EditorApp {
     }
 
     fn handle_ime(&mut self, event: &Ime) {
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
         let history_label = self.key_history_label();
         self.handle_ime_inner(event);
-        self.record_key_history(before, history_label, true);
+        self.record_key_history(&before, history_label, true);
     }
 
     fn handle_ime_inner(&mut self, event: &Ime) {
@@ -4118,7 +4131,8 @@ impl EditorApp {
             match modal {
                 Modal::Settings(dialog) => {
                     if dialog.handle_ime(event) {
-                        self.plugin_paths = dialog.plugin_paths().to_owned();
+                        self.plugin_paths.clear();
+                        self.plugin_paths.push_str(dialog.plugin_paths());
                         preferences::save(&self.command_registry, &self.plugin_paths);
                     }
                 }
@@ -4464,7 +4478,7 @@ impl EditorApp {
         image::DynamicImage::ImageRgba8(pixels)
             .save(&path)
             .with_context(|| format!("save {}", path.display()))?;
-        self.import_path(path)
+        self.import_path(&path)
     }
 
     fn handle_monitor_action(&mut self, action: MonitorAction) {
@@ -4492,10 +4506,10 @@ impl EditorApp {
                 self.monitor.set_captured_frame(size, pixels);
             }
             MonitorAction::CaptureFrame => {
-                let before = self
-                    .editor
-                    .history
-                    .capture(&self.editor.project, &self.editor.timeline);
+                let before = crate::history::HistorySnapshot::capture(
+                    &self.editor.project,
+                    &self.editor.timeline.document(),
+                );
                 let result = (|| -> Result<PathBuf> {
                     let root = self
                         .editor
@@ -4503,16 +4517,20 @@ impl EditorApp {
                         .as_ref()
                         .and_then(|path| path.parent())
                         .map_or(std::env::current_dir()?, Path::to_path_buf);
-                    let captures = root.join("Captures");
-                    std::fs::create_dir_all(&captures)?;
+                    let output_dir = root.join("Captures");
+                    std::fs::create_dir_all(&output_dir)?;
                     let fps = self.editor.project.active_settings().frame_rate.max(1.0);
+                    #[expect(
+                        clippy::cast_sign_loss,
+                        reason = "playhead is clamped to zero and fps is positive"
+                    )]
                     let frame = (f64::from(playhead.max(0.0)) * fps).round() as u64;
                     let stem = sanitize_file_name(&self.editor.project.active_composition().name);
                     let base = format!("{stem}-frame-{frame:06}");
-                    let mut path = captures.join(format!("{base}.png"));
+                    let mut path = output_dir.join(format!("{base}.png"));
                     let mut suffix = 2u32;
                     while path.exists() {
-                        path = captures.join(format!("{base}-{suffix}.png"));
+                        path = output_dir.join(format!("{base}-{suffix}.png"));
                         suffix = suffix.saturating_add(1);
                     }
                     let samples = pixels
@@ -4530,7 +4548,7 @@ impl EditorApp {
                     image::DynamicImage::ImageRgba16(image)
                         .save(&path)
                         .with_context(|| format!("save {}", path.display()))?;
-                    self.import_path(path.clone())?;
+                    self.import_path(&path)?;
                     Ok(path)
                 })();
                 match result {
@@ -4538,9 +4556,9 @@ impl EditorApp {
                         self.monitor.set_captured_frame(size, pixels);
                         self.editor.history.record_after(
                             "Capture frame",
-                            before,
+                            &before,
                             &self.editor.project,
-                            &self.editor.timeline,
+                            &self.editor.timeline.document(),
                             false,
                         );
                     }
@@ -4579,12 +4597,12 @@ impl EditorApp {
         }
     }
 
-    fn import_media_path(&mut self, path: PathBuf) -> Result<MediaId> {
+    fn import_media_path(&mut self, path: &Path) -> Result<MediaId> {
         let is_wasm = path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"));
-        let media = project_io::import_media(&mut self.editor.project, path.clone())?;
+        let media = project_io::import_media(&mut self.editor.project, path)?;
         if let Some(project_path) = self.editor.project_path.as_deref() {
             let base = project_path.parent().unwrap_or_else(|| Path::new("."));
             self.editor.project.update_media_path_references(base);
@@ -4595,18 +4613,18 @@ impl EditorApp {
         }
         self.playback.clear_media_caches();
         if is_wasm {
-            self.playback.precompile_wasm(&path)?;
+            self.playback.precompile_wasm(path)?;
         }
         Ok(media)
     }
 
-    fn import_path(&mut self, path: PathBuf) -> Result<()> {
+    fn import_path(&mut self, path: &Path) -> Result<()> {
         if path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("kama"))
         {
-            self.load_project(&path);
+            self.load_project(path);
             return Ok(());
         }
         self.import_media_path(path).map(|_| ())
@@ -4621,7 +4639,7 @@ impl EditorApp {
             return;
         }
         if self.external_drag_items.is_empty() {
-            self.external_drag_uses_window_cursor = false;
+            self.cursor_flags.external_drag_uses_window_cursor = false;
         }
         self.ignored_external_drops.remove(&path);
         self.external_drag_items.push(ExternalDragItem {
@@ -4631,7 +4649,8 @@ impl EditorApp {
     }
 
     fn move_external_drag_cursor_raw(&mut self, delta: (f64, f64)) {
-        if self.external_drag_items.is_empty() || self.external_drag_uses_window_cursor {
+        if self.external_drag_items.is_empty() || self.cursor_flags.external_drag_uses_window_cursor
+        {
             return;
         }
         let size = self.window.inner_size();
@@ -4649,9 +4668,9 @@ impl EditorApp {
         self.window.request_redraw();
     }
 
-    fn drop_external_file(&mut self, path: PathBuf) {
-        self.external_drag_uses_window_cursor = false;
-        if self.ignored_external_drops.remove(&path) {
+    fn drop_external_file(&mut self, path: &Path) {
+        self.cursor_flags.external_drag_uses_window_cursor = false;
+        if self.ignored_external_drops.remove(path) {
             return;
         }
         let mut paths = if self
@@ -4664,13 +4683,13 @@ impl EditorApp {
                 .map(|item| item.path)
                 .collect::<Vec<_>>()
         } else {
-            vec![path.clone()]
+            vec![path.to_path_buf()]
         };
-        if !paths.iter().any(|candidate| candidate == &path) {
-            paths.insert(0, path.clone());
+        if !paths.iter().any(|candidate| candidate == path) {
+            paths.insert(0, path.to_path_buf());
         }
         for candidate in &paths {
-            if candidate != &path {
+            if candidate != path {
                 self.ignored_external_drops.insert(candidate.clone());
             }
         }
@@ -4678,16 +4697,16 @@ impl EditorApp {
     }
 
     fn handle_external_drop(&mut self, paths: Vec<PathBuf>) {
-        if paths.len() == 1
-            && paths[0].is_file()
-            && paths[0]
+        if let [path] = paths.as_slice()
+            && path.is_file()
+            && path
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("kama"))
         {
             self.command_queue
                 .push(EditorCommand::Action(PaletteAction::OpenRecentProject(
-                    paths[0].clone(),
+                    path.clone(),
                 )));
             return;
         }
@@ -4696,10 +4715,10 @@ impl EditorApp {
             .editor
             .timeline
             .media_drop_anchor(&self.snapshot, self.cursor);
-        let before = self
-            .editor
-            .history
-            .capture(&self.editor.project, &self.editor.timeline);
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
         let mut items = Vec::new();
         for path in paths {
             if !path.is_file() {
@@ -4723,7 +4742,7 @@ impl EditorApp {
                 );
                 continue;
             }
-            match self.import_media_path(path.clone()) {
+            match self.import_media_path(&path) {
                 Ok(media) => items.push(MediaDragItem::Media {
                     media,
                     stream: MediaStream::All,
@@ -4749,9 +4768,9 @@ impl EditorApp {
             } else {
                 "Import media"
             },
-            before,
+            &before,
             &self.editor.project,
-            &self.editor.timeline,
+            &self.editor.timeline.document(),
             false,
         );
     }
@@ -4782,7 +4801,7 @@ impl EditorApp {
         self.editor.mark_saved();
     }
 
-    fn reset_palette_page(&mut self) {
+    const fn reset_palette_page(&mut self) {
         self.palette.selected = 0;
         self.palette.scroll.offset = 0.0;
         self.palette.hovered = None;
@@ -4794,7 +4813,7 @@ impl EditorApp {
             self.reset_palette_page();
             return;
         }
-        self.palette.selected = self.palette.selected.min(entries - 1);
+        self.palette.selected = self.palette.selected.min(entries.saturating_sub(1));
         let popup = palette_rect(
             self.renderer.logical_width(),
             self.renderer.logical_height(),
@@ -4802,7 +4821,12 @@ impl EditorApp {
             visible,
         );
         let viewport_extent = palette_body_rect(popup, &self.palette, visible).height;
-        let row = palette_unscrolled_rows(&self.palette, entries)[self.palette.selected];
+        let Some(row) = palette_unscrolled_rows(&self.palette, entries)
+            .get(self.palette.selected)
+            .copied()
+        else {
+            return;
+        };
         let top = row.y;
         let bottom = row.bottom();
         let max_scroll = palette_max_scroll(&self.palette, entries, visible);
@@ -4823,9 +4847,25 @@ impl EditorApp {
             &self.plugins,
             &self.command_registry,
         );
-        let len = entries.len() as i32;
+        let len = entries.len();
         if len > 0 {
-            self.palette.selected = (self.palette.selected as i32 + delta).rem_euclid(len) as usize;
+            let Some(selected) = self.palette.selected.checked_rem(len) else {
+                return;
+            };
+            let Some(amount) = (delta.unsigned_abs() as usize).checked_rem(len) else {
+                return;
+            };
+            self.palette.selected = if delta < 0 {
+                if selected >= amount {
+                    selected.saturating_sub(amount)
+                } else {
+                    len.saturating_sub(amount.saturating_sub(selected))
+                }
+            } else if amount >= len.saturating_sub(selected) {
+                amount.saturating_sub(len.saturating_sub(selected))
+            } else {
+                selected.saturating_add(amount)
+            };
             self.keep_palette_selection_visible(entries.len());
         }
     }
@@ -4967,51 +5007,54 @@ impl EditorApp {
         match command {
             EditCommand::Timeline(action) => {
                 let before = self.editor.history_gesture.is_none().then(|| {
-                    self.editor
-                        .history
-                        .capture(&self.editor.project, &self.editor.timeline)
+                    crate::history::HistorySnapshot::capture(
+                        &self.editor.project,
+                        &self.editor.timeline.document(),
+                    )
                 });
                 self.execute_timeline_action(action);
                 if let Some(before) = before {
                     self.editor.history.record_after(
                         action.history_label(),
-                        before,
+                        &before,
                         &self.editor.project,
-                        &self.editor.timeline,
+                        &self.editor.timeline.document(),
                         false,
                     );
                 }
             }
             EditCommand::Inspector(action) => {
                 let before = self.editor.history_gesture.is_none().then(|| {
-                    self.editor
-                        .history
-                        .capture(&self.editor.project, &self.editor.timeline)
+                    crate::history::HistorySnapshot::capture(
+                        &self.editor.project,
+                        &self.editor.timeline.document(),
+                    )
                 });
-                self.execute_inspector_action(action);
+                self.execute_inspector_action(&action);
                 if let Some(before) = before {
                     self.editor.history.record_after(
                         "Inspector command",
-                        before,
+                        &before,
                         &self.editor.project,
-                        &self.editor.timeline,
+                        &self.editor.timeline.document(),
                         false,
                     );
                 }
             }
             EditCommand::PipelineGraph(action) => {
                 let before = self.editor.history_gesture.is_none().then(|| {
-                    self.editor
-                        .history
-                        .capture(&self.editor.project, &self.editor.timeline)
+                    crate::history::HistorySnapshot::capture(
+                        &self.editor.project,
+                        &self.editor.timeline.document(),
+                    )
                 });
                 self.execute_pipeline_graph_action(action);
                 if let Some(before) = before {
                     self.editor.history.record_after(
                         "Graph command",
-                        before,
+                        &before,
                         &self.editor.project,
-                        &self.editor.timeline,
+                        &self.editor.timeline.document(),
                         false,
                     );
                 }
@@ -5071,9 +5114,10 @@ impl EditorApp {
                 | PaletteAction::AddPanel(_, _)
         );
         let before = records_history.then(|| {
-            self.editor
-                .history
-                .capture(&self.editor.project, &self.editor.timeline)
+            crate::history::HistorySnapshot::capture(
+                &self.editor.project,
+                &self.editor.timeline.document(),
+            )
         });
         self.editor.history_gesture = None;
         let mut graph_changed = false;
@@ -5180,7 +5224,7 @@ impl EditorApp {
                     self.editor
                         .timeline
                         .replace_selected_media_source(media, true, &audio_name);
-                if replaced_video + replaced_audio == 0 {
+                if replaced_video == 0 && replaced_audio == 0 {
                     return;
                 }
                 self.audio.clear();
@@ -5189,14 +5233,20 @@ impl EditorApp {
                 self.editor.timeline.set_selected_pipeline(pipeline);
             }
             PaletteAction::CreateAndAssignPipeline(kind) => {
-                let pipeline = self.editor.project.create_pipeline_kind(kind);
-                self.editor.timeline.set_selected_pipeline(Some(pipeline));
-                graph_changed = true;
+                if let Some(pipeline) = self.editor.project.create_pipeline_kind(kind) {
+                    self.editor.timeline.set_selected_pipeline(Some(pipeline));
+                    graph_changed = true;
+                } else {
+                    messages::warning("Create pipeline", "Pipeline ID space is exhausted");
+                }
             }
             PaletteAction::CreatePipeline(kind) => {
-                let pipeline = self.editor.project.create_pipeline_kind(kind);
-                self.pipeline_graph.open_pipeline(pipeline);
-                graph_changed = true;
+                if let Some(pipeline) = self.editor.project.create_pipeline_kind(kind) {
+                    self.pipeline_graph.open_pipeline(pipeline);
+                    graph_changed = true;
+                } else {
+                    messages::warning("Create pipeline", "Pipeline ID space is exhausted");
+                }
             }
             PaletteAction::AddEffect(node_type) => {
                 if let Some(pipeline) = self.selected_or_create_pipeline(PipelineKind::Video) {
@@ -5306,15 +5356,18 @@ impl EditorApp {
                 }
             }
             PaletteAction::InsertEffectClipWithNewPipeline { track, time } => {
-                let pipeline = self.editor.project.create_pipeline();
-                if self
-                    .editor
-                    .timeline
-                    .insert_effect_clip_at(track, time, Some(pipeline))
-                {
-                    self.media.clear_selection();
+                if let Some(pipeline) = self.editor.project.create_pipeline() {
+                    if self
+                        .editor
+                        .timeline
+                        .insert_effect_clip_at(track, time, Some(pipeline))
+                    {
+                        self.media.clear_selection();
+                    }
+                    graph_changed = true;
+                } else {
+                    messages::warning("Create pipeline", "Pipeline ID space is exhausted");
                 }
-                graph_changed = true;
             }
             PaletteAction::SetFontFamily(family) => {
                 self.editor.timeline.set_selected_font_family(family);
@@ -5327,9 +5380,9 @@ impl EditorApp {
         if let Some(before) = before {
             self.editor.history.record_after(
                 history_label,
-                before,
+                &before,
                 &self.editor.project,
-                &self.editor.timeline,
+                &self.editor.timeline.document(),
                 false,
             );
         }
@@ -5370,7 +5423,7 @@ struct StackBuildState<'a> {
 fn build_stack(
     ctx: &mut ui::BuildCtx,
     layout: &StackLayout,
-    view: StackBuildContext<'_>,
+    view: &StackBuildContext<'_>,
     state: StackBuildState<'_>,
 ) {
     let StackBuildState {
@@ -5400,7 +5453,7 @@ fn build_stack(
         focus,
         window_bounds,
         icons,
-    } = view;
+    } = *view;
     let stack = &layout.stack;
     let active_tab = stack.active_tab().map(|tab| tab.id);
     let popup_bounds = Rect::new(
@@ -5591,11 +5644,11 @@ fn build_stack(
                         .and_then(|tab| PanelKind::from_title(&tab.title))
                     {
                         match panel {
-                            PanelKind::Media => media.build(ctx, layout.content, project, icons),
+                            PanelKind::Media => media.build(ctx, layout.content, project, &icons),
                             PanelKind::Monitor => monitor.build(
                                 ctx,
                                 layout.content,
-                                MonitorBuildContext {
+                                &MonitorBuildContext {
                                     project,
                                     timeline,
                                     plugins,
@@ -5619,7 +5672,7 @@ fn build_stack(
                                     inspector.build(
                                         ctx,
                                         layout.content,
-                                        InspectorBuildContext {
+                                        &InspectorBuildContext {
                                             project,
                                             timeline,
                                             media_selection: media.selected_with_stream(),
@@ -5639,20 +5692,20 @@ fn build_stack(
                                 popup_bounds,
                             ),
                             PanelKind::History => history_panel.build(history, ctx, layout.content),
-                            PanelKind::Pipeline => pipeline_graph.build(ctx, layout.content, project, timeline, plugins, icons, popup_bounds),
-                            PanelKind::Render => render_panel.build(ctx, layout.content, project, timeline, icons, popup_bounds),
+                            PanelKind::Pipeline => pipeline_graph.build(ctx, layout.content, project, timeline, plugins, (&icons, popup_bounds)),
+                            PanelKind::Render => render_panel.build(ctx, layout.content, project, timeline, &icons, popup_bounds),
                             PanelKind::Timeline => {
                                 timeline.build(
                                     ctx,
                                     stack.id,
                                     layout.content,
-                                    icons,
+                                    &icons,
                                     project,
                                     waveform_textures,
                                 );
                             }
                             PanelKind::Widgets => {
-                                widgets.build(ctx, stack.id, layout.content, icons, popup_bounds);
+                                widgets.build(ctx, stack.id, layout.content, &icons, popup_bounds);
                             }
                             PanelKind::Meters => meters.build(ctx, layout.content),
                             PanelKind::Messages => messages.build(ctx, layout.content),
@@ -5666,7 +5719,7 @@ fn build_stack(
 
 #[allow(clippy::too_many_arguments)]
 struct App {
-    editor_app: Option<EditorApp>,
+    editor: Option<EditorApp>,
     event_proxy: EventLoopProxy<AppEvent>,
     update_check_started: bool,
     focused_window: Option<WindowId>,
@@ -5677,9 +5730,9 @@ struct App {
 }
 
 impl App {
-    fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
+    const fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
         Self {
-            editor_app: None,
+            editor: None,
             event_proxy,
             update_check_started: false,
             focused_window: None,
@@ -5704,7 +5757,7 @@ impl App {
     }
 
     fn finish_dock_drag_release(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let Some(editor_app) = self.editor_app.as_mut() else {
+        let Some(editor_app) = self.editor.as_mut() else {
             self.dock_drag_owner = None;
             self.dock_drag_target = None;
             self.dock_drag_outside_owner = false;
@@ -5793,16 +5846,17 @@ impl App {
 
 impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.editor_app.is_none() {
+        if self.editor.is_none() {
             match EditorApp::new(event_loop, self.event_proxy.clone()) {
                 Ok(editor_app) => {
                     let window_id = editor_app.window.id();
                     editor_app.window.request_redraw();
                     self.focused_window = Some(window_id);
-                    self.editor_app = Some(editor_app);
+                    self.editor = Some(editor_app);
                     self.start_update_check();
                 }
-                Err(_) => {
+                Err(error) => {
+                    eprintln!("failed to initialize editor: {error:#}");
                     event_loop.exit();
                 }
             }
@@ -5810,7 +5864,7 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(editor_app) = self.editor_app.as_ref() else {
+        let Some(editor_app) = self.editor.as_ref() else {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         };
@@ -5832,7 +5886,7 @@ impl ApplicationHandler<AppEvent> for App {
         let propagate_redraw = !matches!(&event, WindowEvent::RedrawRequested);
         if let WindowEvent::CursorMoved { position, .. } = &event {
             self.last_pointer_screen = self
-                .editor_app
+                .editor
                 .as_ref()
                 .and_then(|app| app.screen_point_for_window(window_id, *position));
         }
@@ -5855,18 +5909,18 @@ impl ApplicationHandler<AppEvent> for App {
         {
             if let WindowEvent::CursorMoved { position, .. } = &event {
                 self.dock_drag_target = self
-                    .editor_app
+                    .editor
                     .as_ref()
                     .and_then(|app| app.logical_point_for_window(window_id, *position))
                     .map(|point| (window_id, point));
                 if let (Some(editor_app), Some(screen)) =
-                    (self.editor_app.as_mut(), self.last_pointer_screen)
+                    (self.editor.as_mut(), self.last_pointer_screen)
                     && editor_app.activate_window(owner)
                 {
                     editor_app.set_active_cursor_from_screen(screen);
                     editor_app.window.request_redraw();
                 }
-                if let Some(editor_app) = self.editor_app.as_ref()
+                if let Some(editor_app) = self.editor.as_ref()
                     && let Some(state) = editor_app.secondary_windows.get(&window_id)
                 {
                     state.window.request_redraw();
@@ -5881,14 +5935,14 @@ impl ApplicationHandler<AppEvent> for App {
                     ..
                 }
             ) {
-                if let Some(editor_app) = self.editor_app.as_mut()
+                if let Some(editor_app) = self.editor.as_mut()
                     && editor_app.activate_window(owner)
                     && let Some(screen) = self.last_pointer_screen
                 {
                     editor_app.set_active_cursor_from_screen(screen);
                 }
                 self.finish_dock_drag_release(event_loop);
-                if let Some(editor_app) = self.editor_app.as_mut() {
+                if let Some(editor_app) = self.editor.as_mut() {
                     editor_app.drain_commands();
                     editor_app.sync_ime();
                 }
@@ -5905,11 +5959,11 @@ impl ApplicationHandler<AppEvent> for App {
             }
         ) && self.dock_drag_owner == Some(window_id)
         {
-            if let Some(editor_app) = self.editor_app.as_mut() {
+            if let Some(editor_app) = self.editor.as_mut() {
                 let _ = editor_app.activate_window(window_id);
             }
             self.finish_dock_drag_release(event_loop);
-            if let Some(editor_app) = self.editor_app.as_mut() {
+            if let Some(editor_app) = self.editor.as_mut() {
                 editor_app.drain_commands();
                 if editor_app.take_exit_request() {
                     event_loop.exit();
@@ -5920,7 +5974,7 @@ impl ApplicationHandler<AppEvent> for App {
             return;
         }
 
-        let Some(editor_app) = self.editor_app.as_mut() else {
+        let Some(editor_app) = self.editor.as_mut() else {
             return;
         };
         if !editor_app.activate_window(window_id) {
@@ -5978,11 +6032,11 @@ impl ApplicationHandler<AppEvent> for App {
                 editor_app.window.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if editor_app.value_drag_cursor_locked {
+                if editor_app.cursor_flags.value_drag_cursor_locked {
                     editor_app.move_value_drag_cursor_warped(position);
                 } else {
                     if !editor_app.external_drag_items.is_empty() {
-                        editor_app.external_drag_uses_window_cursor = true;
+                        editor_app.cursor_flags.external_drag_uses_window_cursor = true;
                     }
                     editor_app.cursor_physical = [position.x, position.y];
                     let scale = f64::from(editor_app.renderer.scale_factor());
@@ -6000,12 +6054,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::HoveredFileCancelled => {
                 editor_app.external_drag_items.clear();
-                editor_app.external_drag_uses_window_cursor = false;
+                editor_app.cursor_flags.external_drag_uses_window_cursor = false;
                 event_loop.listen_device_events(DeviceEvents::WhenFocused);
                 editor_app.window.request_redraw();
             }
             WindowEvent::DroppedFile(path) => {
-                editor_app.drop_external_file(path);
+                editor_app.drop_external_file(&path);
                 event_loop.listen_device_events(DeviceEvents::WhenFocused);
                 editor_app.window.request_redraw();
             }
@@ -6312,7 +6366,7 @@ impl ApplicationHandler<AppEvent> for App {
                     (MouseButton::Middle, ElementState::Pressed) if editor_app.modal.is_none() => {
                         editor_app.pointer_middle_pressed();
                     }
-                    (MouseButton::Middle, ElementState::Released) => {
+                    (MouseButton::Middle | MouseButton::Right, ElementState::Released) => {
                         editor_app.pointer_released(button);
                     }
                     (MouseButton::Right, ElementState::Pressed)
@@ -6386,15 +6440,11 @@ impl ApplicationHandler<AppEvent> for App {
                             _ => {}
                         }
                     }
-                    (MouseButton::Right, ElementState::Released) => {
-                        editor_app.pointer_released(button);
-                    }
                     _ => {}
                 }
                 editor_app.window.request_redraw();
             }
             WindowEvent::RedrawRequested if editor_app.draw().is_err() => event_loop.exit(),
-            WindowEvent::RedrawRequested => {}
             _ => {}
         }
         if propagate_redraw {
@@ -6415,27 +6465,26 @@ impl ApplicationHandler<AppEvent> for App {
         event: DeviceEvent,
     ) {
         let target = self.dock_drag_owner.or(self.focused_window);
-        let Some(editor_app) = self.editor_app.as_mut() else {
+        let Some(editor_app) = self.editor.as_mut() else {
             return;
         };
         if let Some(target) = target {
             let _ = editor_app.activate_window(target);
         }
         if let DeviceEvent::MouseMotion { delta } = event
-            && !editor_app.value_drag_cursor_locked
+            && !editor_app.cursor_flags.value_drag_cursor_locked
         {
             editor_app.move_external_drag_cursor_raw(delta);
         }
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        if let (Some(editor_app), Some(window_id)) = (self.editor_app.as_mut(), self.focused_window)
-        {
+        if let (Some(editor_app), Some(window_id)) = (self.editor.as_mut(), self.focused_window) {
             let _ = editor_app.activate_window(window_id);
         }
         match event {
             AppEvent::Interrupt => {
-                let Some(editor_app) = self.editor_app.as_mut() else {
+                let Some(editor_app) = self.editor.as_mut() else {
                     event_loop.exit();
                     return;
                 };
@@ -6443,7 +6492,7 @@ impl ApplicationHandler<AppEvent> for App {
                 editor_app.window.request_redraw();
             }
             AppEvent::UpdateAvailable(update) => {
-                let Some(editor_app) = self.editor_app.as_mut() else {
+                let Some(editor_app) = self.editor.as_mut() else {
                     return;
                 };
                 editor_app.open_modal(Modal::Update(UpdateDialog::new(update.version)));
@@ -6454,7 +6503,7 @@ impl ApplicationHandler<AppEvent> for App {
                 version,
                 error,
             } => {
-                let Some(editor_app) = self.editor_app.as_mut() else {
+                let Some(editor_app) = self.editor.as_mut() else {
                     return;
                 };
                 if !editor_app.activate_window(window_id) {
@@ -6470,7 +6519,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             #[cfg(target_os = "macos")]
             AppEvent::Menu(event) => {
-                let Some(editor_app) = self.editor_app.as_mut() else {
+                let Some(editor_app) = self.editor.as_mut() else {
                     return;
                 };
                 if editor_app.native_menu.about_requested(&event) {
@@ -6511,7 +6560,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
         }
-        let Some(editor_app) = self.editor_app.as_mut() else {
+        let Some(editor_app) = self.editor.as_mut() else {
             return;
         };
         editor_app.drain_commands();
@@ -6522,6 +6571,10 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
+/// Starts the application event loop.
+///
+/// # Errors
+/// Returns an error if the event loop cannot be created or run.
 pub fn run() -> Result<()> {
     let mut builder = EventLoop::<AppEvent>::with_user_event();
     #[cfg(target_os = "macos")]

@@ -144,8 +144,11 @@ impl NumberInput {
         if double {
             self.drag = None;
             self.editing = true;
-            self.edit
-                .reset(format!("{:.*}", self.precision + 2, self.value));
+            self.edit.reset(format!(
+                "{:.*}",
+                self.precision.saturating_add(2),
+                self.value
+            ));
             self.edit.set_focused(true);
             self.edit.pointer_pressed(rect, point, modifiers);
         } else {
@@ -265,45 +268,37 @@ impl NumberInput {
 
     fn commit_text(&mut self) -> Option<f64> {
         let value = self.preview_text()?;
-        self.edit.reset(format!("{:.*}", self.precision + 2, value));
+        self.edit
+            .reset(format!("{:.*}", self.precision.saturating_add(2), value));
         Some(value)
     }
 }
 
 fn numeric_edit_text_is_valid(text: &str) -> bool {
-    if text.is_empty() {
-        return true;
+    let mut bytes = text.bytes().peekable();
+    if matches!(bytes.peek(), Some(b'+' | b'-')) {
+        bytes.next();
     }
-    let bytes = text.as_bytes();
-    let mut index = 0usize;
-    if matches!(bytes.first(), Some(b'+' | b'-')) {
-        index += 1;
+    let mut has_digit = false;
+    while bytes.peek().is_some_and(u8::is_ascii_digit) {
+        has_digit = true;
+        bytes.next();
     }
-
-    let mut mantissa_digits = 0usize;
-    while index < bytes.len() && bytes[index].is_ascii_digit() {
-        index += 1;
-        mantissa_digits += 1;
-    }
-    if index < bytes.len() && bytes[index] == b'.' {
-        index += 1;
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-            mantissa_digits += 1;
+    if bytes.peek() == Some(&b'.') {
+        bytes.next();
+        while bytes.peek().is_some_and(u8::is_ascii_digit) {
+            has_digit = true;
+            bytes.next();
         }
     }
-    if index == bytes.len() {
+    if bytes.peek().is_none() {
         return true;
     }
-    if mantissa_digits == 0 || !matches!(bytes[index], b'e' | b'E') {
+    if !has_digit || !matches!(bytes.next(), Some(b'e' | b'E')) {
         return false;
     }
-    index += 1;
-    if index < bytes.len() && matches!(bytes[index], b'+' | b'-') {
-        index += 1;
+    if matches!(bytes.peek(), Some(b'+' | b'-')) {
+        bytes.next();
     }
-    while index < bytes.len() && bytes[index].is_ascii_digit() {
-        index += 1;
-    }
-    index == bytes.len()
+    bytes.all(|byte| byte.is_ascii_digit())
 }

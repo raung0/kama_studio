@@ -105,6 +105,10 @@ impl VerticalSlider {
         });
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the track block is created in this measured layout"
+    )]
     fn track(rect: Rect) -> Rect {
         let height = (rect.height - THUMB_H).max(0.0);
         let (track, measured) = crate::measure_layout(rect, |ctx| {

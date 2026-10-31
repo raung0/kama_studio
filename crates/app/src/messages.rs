@@ -18,14 +18,14 @@ pub enum MessageSeverity {
 }
 
 impl MessageSeverity {
-    fn label_key(self) -> &'static str {
+    const fn label_key(self) -> &'static str {
         match self {
             Self::Warning => "severity-warning",
             Self::Error => "severity-error",
         }
     }
 
-    fn color(self) -> Color {
+    const fn color(self) -> Color {
         match self {
             Self::Warning => Color::rgb8(0xf0, 0xa2, 0x15),
             Self::Error => Color::rgb8(0xe5, 0x5b, 0x5b),

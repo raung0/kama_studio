@@ -1,7 +1,4 @@
-use super::{
-    AppIcon, Color, EnumControlsExt, Icons, KnobControlsExt, MediaKind, MediaStream,
-    NumberControlsExt, RADIUS_SM, Rect, Size, SliderControlsExt, theme,
-};
+use super::{AppIcon, Color, Icons, MediaKind, MediaStream, RADIUS_SM, Rect, Size, theme};
 
 pub(super) const MEDIA_ROW_H: f32 = 30.0;
 pub(super) const MEDIA_TRACK_H: f32 = 25.0;
@@ -10,6 +7,10 @@ pub(super) fn media_list_top(rect: Rect) -> f32 {
     kama_ui::layout::inset(rect, 4.0).y
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the disclosure row has three fixed items"
+)]
 pub(super) fn media_disclosure_rect(row: Rect) -> Rect {
     kama_ui::layout::row(
         row,
@@ -24,6 +25,10 @@ pub(super) fn media_disclosure_rect(row: Rect) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the composition row has nine fixed items"
+)]
 pub(super) fn composition_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     let parts = kama_ui::layout::row(
         row,
@@ -45,6 +50,10 @@ pub(super) fn composition_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     (parts[1], parts[3], parts[5], parts[7])
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the media row has nine fixed items"
+)]
 pub(super) fn media_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     let parts = kama_ui::layout::row(
         row,
@@ -66,6 +75,10 @@ pub(super) fn media_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     (parts[1], parts[3], parts[5], parts[7])
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the stream row has five fixed items"
+)]
 pub(super) fn media_stream_row_parts(row: Rect) -> (Rect, Rect) {
     let parts = kama_ui::layout::row(
         row,
@@ -90,7 +103,7 @@ pub(super) fn draw_composition_row(
     selected: bool,
     active: bool,
     open_amount: f32,
-    icons: Icons,
+    icons: &Icons,
 ) {
     let [width, height] = composition.settings.canvas_size;
     let (symbol, name, details, disclosure) = composition_row_parts(row);
@@ -149,7 +162,7 @@ pub(super) fn draw_media_row(
     asset: &crate::project::MediaAsset,
     selected: bool,
     open_amount: f32,
-    icons: Icons,
+    icons: &Icons,
 ) {
     let (symbol, name, duration, disclosure) = media_row_parts(row);
     let icon = media_kind_icon(asset.kind);
@@ -214,12 +227,12 @@ pub(super) fn media_streams(asset: &crate::project::MediaAsset) -> Vec<MediaStre
             .map(|track| match track.kind {
                 crate::project::MediaTrackKind::Video => {
                     let stream = MediaStream::Video(video);
-                    video += 1;
+                    video = video.saturating_add(1);
                     stream
                 }
                 crate::project::MediaTrackKind::Audio => {
                     let stream = MediaStream::Audio(audio);
-                    audio += 1;
+                    audio = audio.saturating_add(1);
                     stream
                 }
             })
@@ -249,27 +262,27 @@ pub(super) fn draw_media_stream_row(
     selected: bool,
     track_label: bool,
     open_amount: f32,
-    icons: Icons,
+    icons: &Icons,
 ) {
     let (icon, label, color) = match (stream, track_label) {
         (MediaStream::Video(index), false) => (
             AppIcon::Video,
-            format!("Video {}", index + 1),
+            format!("Video {}", index.saturating_add(1)),
             Color::rgb8(0x79, 0xb8, 0xdc),
         ),
         (MediaStream::Video(index), true) => (
             AppIcon::Video,
-            format!("Video track {}", index + 1),
+            format!("Video track {}", index.saturating_add(1)),
             Color::rgb8(0x79, 0xb8, 0xdc),
         ),
         (MediaStream::Audio(index), false) => (
             AppIcon::Audio,
-            format!("Audio {}", index + 1),
+            format!("Audio {}", index.saturating_add(1)),
             Color::rgb8(0x8e, 0xd0, 0xa5),
         ),
         (MediaStream::Audio(index), true) => (
             AppIcon::Audio,
-            format!("Audio track {}", index + 1),
+            format!("Audio track {}", index.saturating_add(1)),
             Color::rgb8(0x8e, 0xd0, 0xa5),
         ),
         (MediaStream::All, _) => return,
@@ -307,18 +320,17 @@ pub(super) fn draw_media_stream_row(
     });
 }
 
-pub(super) fn media_kind_icon(kind: MediaKind) -> AppIcon {
+pub(super) const fn media_kind_icon(kind: MediaKind) -> AppIcon {
     match kind {
         MediaKind::Image { .. } => AppIcon::Image,
         MediaKind::Video => AppIcon::Video,
         MediaKind::Audio => AppIcon::Audio,
-        MediaKind::Model3d => AppIcon::Node,
-        MediaKind::WasmPlugin => AppIcon::Node,
+        MediaKind::Model3d | MediaKind::WasmPlugin => AppIcon::Node,
         MediaKind::Unknown => AppIcon::Media,
     }
 }
 
-pub(super) fn media_kind_label(kind: MediaKind) -> &'static str {
+pub(super) const fn media_kind_label(kind: MediaKind) -> &'static str {
     match kind {
         MediaKind::Image { .. } => "Image",
         MediaKind::Video => "Video",
@@ -329,6 +341,10 @@ pub(super) fn media_kind_label(kind: MediaKind) -> &'static str {
     }
 }
 
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "seconds is clamped to zero before conversion, including NaN via f64::max"
+)]
 pub(super) fn format_duration(seconds: f64) -> String {
     let total_millis = (seconds.max(0.0) * 1000.0).round() as u64;
     let minutes = total_millis / 60_000;

@@ -64,7 +64,7 @@ impl UniformUploadArena {
         }
     }
 
-    fn begin_submission(&mut self) {
+    const fn begin_submission(&mut self) {
         self.chunk_index = 0;
         self.offset = 0;
     }
@@ -76,8 +76,10 @@ impl UniformUploadArena {
         label: &str,
         bytes: &[u8],
     ) -> UniformAllocation {
-        debug_assert!(matches!(bytes, [_, ..]));
+        assert!(matches!(bytes, [_, ..]), "uniform uploads are non-empty");
         let size = bytes.len() as u64;
+        // SAFETY: The assertion above guarantees that the upload size is nonzero.
+        let binding_size = unsafe { NonZeroU64::new_unchecked(size) };
         loop {
             if self.chunk_index == self.chunks.len() {
                 let required = align_up(size, self.alignment);
@@ -95,26 +97,27 @@ impl UniformUploadArena {
             }
 
             let offset = align_up(self.offset, self.alignment);
-            let chunk = &self.chunks[self.chunk_index];
-            if offset.saturating_add(size) <= chunk.capacity {
+            if let Some(chunk) = self.chunks.get(self.chunk_index)
+                && offset.saturating_add(size) <= chunk.capacity
+            {
                 queue.write_buffer(chunk.buffer.as_ref(), offset, bytes);
-                self.offset = offset + size;
+                self.offset = offset.saturating_add(size);
                 return UniformAllocation {
                     buffer: Arc::clone(&chunk.buffer),
                     chunk_index: self.chunk_index,
                     offset,
-                    size: NonZeroU64::new(size).expect("uniform uploads are non-empty"),
+                    size: binding_size,
                 };
             }
 
-            self.chunk_index += 1;
+            self.chunk_index = self.chunk_index.saturating_add(1);
             self.offset = 0;
         }
     }
 }
 
-fn align_up(value: u64, alignment: u64) -> u64 {
-    value.div_ceil(alignment) * alignment
+const fn align_up(value: u64, alignment: u64) -> u64 {
+    value.div_ceil(alignment).saturating_mul(alignment)
 }
 
 #[derive(Clone)]
@@ -126,7 +129,12 @@ pub struct CpuFrame {
 
 impl CpuFrame {
     pub fn from_pixels(width: u32, height: u32, pixels: Vec<f32>) -> Self {
-        debug_assert_eq!(pixels.len(), width as usize * height as usize * 4);
+        debug_assert_eq!(
+            pixels.len(),
+            (width as usize)
+                .saturating_mul(height as usize)
+                .saturating_mul(4)
+        );
         Self {
             width,
             height,
@@ -138,23 +146,49 @@ impl CpuFrame {
         Self {
             width,
             height,
-            pixels: vec![0.0; width as usize * height as usize * 4],
+            pixels: vec![
+                0.0;
+                (width as usize)
+                    .saturating_mul(height as usize)
+                    .saturating_mul(4)
+            ],
         }
     }
 
     pub fn rgba(&self, x: u32, y: u32) -> [f32; 4] {
-        let index = ((y * self.width + x) * 4) as usize;
-        [
-            self.pixels[index],
-            self.pixels[index + 1],
-            self.pixels[index + 2],
-            self.pixels[index + 3],
-        ]
+        let index = (y as usize)
+            .saturating_mul(self.width as usize)
+            .saturating_add(x as usize)
+            .saturating_mul(4);
+        let end = index.saturating_add(4);
+        assert!(end <= self.pixels.len());
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the assertion verifies the complete pixel range"
+        )]
+        let pixel = &self.pixels[index..end];
+        #[expect(
+            clippy::unreachable,
+            reason = "the asserted slice spans exactly four elements"
+        )]
+        let [red, green, blue, alpha] = pixel else {
+            unreachable!()
+        };
+        [*red, *green, *blue, *alpha]
     }
 
     pub fn set_rgba(&mut self, x: u32, y: u32, value: [f32; 4]) {
-        let index = ((y * self.width + x) * 4) as usize;
-        self.pixels[index..index + 4].copy_from_slice(&value);
+        let index = (y as usize)
+            .saturating_mul(self.width as usize)
+            .saturating_add(x as usize)
+            .saturating_mul(4);
+        let end = index.saturating_add(4);
+        assert!(end <= self.pixels.len());
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the assertion verifies the complete pixel range"
+        )]
+        self.pixels[index..end].copy_from_slice(&value);
     }
 }
 
@@ -173,7 +207,7 @@ pub enum NativeVideoLayout {
 }
 
 impl NativeVideoLayout {
-    pub(crate) fn chroma_width(self, width: u32) -> u32 {
+    pub(crate) const fn chroma_width(self, width: u32) -> u32 {
         match self {
             Self::Yuv420p | Self::Nv12 | Self::P010 | Self::Yuv422p | Self::P210 => {
                 width.div_ceil(2)
@@ -182,14 +216,14 @@ impl NativeVideoLayout {
         }
     }
 
-    pub(crate) fn chroma_height(self, height: u32) -> u32 {
+    pub(crate) const fn chroma_height(self, height: u32) -> u32 {
         match self {
             Self::Yuv420p | Self::Nv12 | Self::P010 => height.div_ceil(2),
             Self::Yuv422p | Self::P210 | Self::Yuv444p | Self::Ayuv => height,
         }
     }
 
-    fn interleaved_uv(self) -> bool {
+    const fn interleaved_uv(self) -> bool {
         matches!(self, Self::Nv12 | Self::P010 | Self::P210)
     }
 
@@ -238,7 +272,12 @@ impl VideoFrame {
         transfer: u32,
         bt2020_primaries: bool,
     ) -> Self {
-        debug_assert_eq!(pixels.len(), fit_width as usize * fit_height as usize * 8);
+        debug_assert_eq!(
+            pixels.len(),
+            (fit_width as usize)
+                .saturating_mul(fit_height as usize)
+                .saturating_mul(8)
+        );
         Self {
             width,
             height,
@@ -255,7 +294,7 @@ impl VideoFrame {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn from_native_yuv(
+    pub const fn from_native_yuv(
         width: u32,
         height: u32,
         source_width: u32,
@@ -303,21 +342,21 @@ impl VideoFrame {
         }
     }
 
-    pub fn native_layout(&self) -> Option<NativeVideoLayout> {
+    pub const fn native_layout(&self) -> Option<NativeVideoLayout> {
         match &self.pixels {
             VideoFramePixels::NativeYuv { layout, .. } => Some(*layout),
             VideoFramePixels::Rgba16(_) => None,
         }
     }
 
-    fn native_bit_depth(&self) -> Option<u32> {
+    const fn native_bit_depth(&self) -> Option<u32> {
         match &self.pixels {
             VideoFramePixels::NativeYuv { bit_depth, .. } => Some(*bit_depth),
             VideoFramePixels::Rgba16(_) => None,
         }
     }
 
-    fn has_alpha(&self) -> bool {
+    const fn has_alpha(&self) -> bool {
         matches!(
             &self.pixels,
             VideoFramePixels::NativeYuv {
@@ -507,7 +546,7 @@ impl PresentationTexture {
         }
     }
 
-    fn storage_view(&self) -> &wgpu::TextureView {
+    const fn storage_view(&self) -> &wgpu::TextureView {
         &self.storage_view
     }
 
@@ -557,11 +596,11 @@ pub struct EffectEvalContext {
 }
 
 impl EffectEvalContext {
-    pub fn keyframe_time(self) -> f64 {
+    pub const fn keyframe_time(self) -> f64 {
         self.timeline_time
     }
 
-    pub(crate) fn value_context(self) -> ValueEvalContext {
+    pub(crate) const fn value_context(self) -> ValueEvalContext {
         ValueEvalContext {
             timeline_time: self.timeline_time,
             local_time: self.local_time,
@@ -581,7 +620,7 @@ pub struct EffectInputs<'graph, 'values> {
 }
 
 impl<'graph, 'values> EffectInputs<'graph, 'values> {
-    pub fn new(
+    pub const fn new(
         instance: Option<&'graph PipelineInstance>,
         plugins: &'graph PluginRegistry,
         context: EffectEvalContext,
@@ -836,7 +875,7 @@ impl VideoGpuRuntime {
         }
     }
 
-    pub fn begin_submission(&mut self) {
+    pub const fn begin_submission(&mut self) {
         self.uniform_uploads.begin_submission();
     }
 
@@ -863,9 +902,11 @@ impl VideoGpuRuntime {
             && let Some(frame) = bucket.pop()
         {
             self.frame_pool_len = self.frame_pool_len.saturating_sub(1);
-            self.frame_pool_bytes = self
-                .frame_pool_bytes
-                .saturating_sub(u64::from(width) * u64::from(height) * 8);
+            self.frame_pool_bytes = self.frame_pool_bytes.saturating_sub(
+                u64::from(width)
+                    .saturating_mul(u64::from(height))
+                    .saturating_mul(8),
+            );
             return frame;
         }
         GpuFrame::new(device, width, height, label)
@@ -876,7 +917,9 @@ impl VideoGpuRuntime {
             return;
         }
 
-        let frame_bytes = u64::from(frame.width) * u64::from(frame.height) * 8;
+        let frame_bytes = u64::from(frame.width)
+            .saturating_mul(u64::from(frame.height))
+            .saturating_mul(8);
         if Arc::strong_count(&frame.texture) == 1
             && self.frame_pool_len < GPU_FRAME_POOL_CAPACITY
             && self.frame_pool_bytes.saturating_add(frame_bytes) <= GPU_FRAME_POOL_MAX_BYTES
@@ -885,8 +928,8 @@ impl VideoGpuRuntime {
                 .entry((frame.width, frame.height))
                 .or_default()
                 .push(frame);
-            self.frame_pool_len += 1;
-            self.frame_pool_bytes += frame_bytes;
+            self.frame_pool_len = self.frame_pool_len.saturating_add(1);
+            self.frame_pool_bytes = self.frame_pool_bytes.saturating_add(frame_bytes);
         }
     }
 
@@ -901,7 +944,10 @@ impl VideoGpuRuntime {
             .frame_pool
             .iter()
             .map(|(&(width, height), frames)| {
-                u64::from(width) * u64::from(height) * 8 * frames.len() as u64
+                u64::from(width)
+                    .saturating_mul(u64::from(height))
+                    .saturating_mul(8)
+                    .saturating_mul(frames.len() as u64)
             })
             .sum();
     }
@@ -1001,12 +1047,7 @@ impl VideoGpuRuntime {
         output
     }
 
-    pub fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        frame: &CpuFrame,
-    ) -> GpuFrame {
+    pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, frame: &CpuFrame) -> GpuFrame {
         let output = GpuFrame::new_with_format(
             device,
             frame.width,
@@ -1014,17 +1055,20 @@ impl VideoGpuRuntime {
             "kama uploaded RGBA32F CPU source",
             wgpu::TextureFormat::Rgba32Float,
         );
-        self.upload_into(queue, &output, frame);
+        Self::upload_into(queue, &output, frame);
         output
     }
 
-    pub fn upload_into(&self, queue: &wgpu::Queue, output: &GpuFrame, frame: &CpuFrame) -> bool {
+    pub fn upload_into(queue: &wgpu::Queue, output: &GpuFrame, frame: &CpuFrame) -> bool {
         if output.width != frame.width
             || output.height != frame.height
             || output.format != wgpu::TextureFormat::Rgba32Float
         {
             return false;
         }
+        let Some(bytes_per_row) = frame.width.checked_mul(16) else {
+            return false;
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &output.texture,
@@ -1035,7 +1079,7 @@ impl VideoGpuRuntime {
             bytemuck::cast_slice(&frame.pixels),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(frame.width * 16),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(frame.height),
             },
             wgpu::Extent3d {
@@ -1052,148 +1096,162 @@ impl VideoGpuRuntime {
         device: &wgpu::Device,
         frame: &VideoFrame,
     ) -> VideoUploadSurface {
-        if let Some(layout) = frame.native_layout() {
-            let bit_depth = frame.native_bit_depth().unwrap_or(8);
-            let chroma_width = if layout.packed_ayuv() {
-                1
-            } else {
-                layout.chroma_width(frame.source_width.max(1))
-            };
-            let chroma_height = if layout.packed_ayuv() {
-                1
-            } else {
-                layout.chroma_height(frame.source_height.max(1))
-            };
-            let planar_format = if bit_depth > 8 {
-                wgpu::TextureFormat::R16Unorm
-            } else {
-                wgpu::TextureFormat::R8Unorm
-            };
-            let y = video_staging_texture(
-                device,
-                "kama native video Y plane",
-                frame.source_width,
-                frame.source_height,
-                if layout.packed_ayuv() {
-                    if bit_depth > 8 {
-                        wgpu::TextureFormat::Rgba16Unorm
-                    } else {
-                        wgpu::TextureFormat::Rgba8Unorm
-                    }
-                } else {
-                    planar_format
-                },
-            );
-            let u_or_uv = video_staging_texture(
-                device,
-                "kama native video U/UV plane",
-                chroma_width,
-                chroma_height,
-                if layout.interleaved_uv() {
-                    if bit_depth > 8 {
-                        wgpu::TextureFormat::Rg16Unorm
-                    } else {
-                        wgpu::TextureFormat::Rg8Unorm
-                    }
-                } else {
-                    planar_format
-                },
-            );
-            let v = video_staging_texture(
-                device,
-                "kama native video V plane",
-                chroma_width,
-                chroma_height,
-                planar_format,
-            );
-            let alpha = video_staging_texture(
-                device,
-                "kama native video alpha plane",
-                frame.source_width,
-                frame.source_height,
-                planar_format,
-            );
-            let output = GpuFrame::new(
-                device,
-                frame.width,
-                frame.height,
-                "kama native decoded video RGBA16F",
-            );
-            let color_uniform =
-                video_color_buffer(device, frame, "kama native video color metadata");
-            let layout_desc = self.upload_yuv_video.get_bind_group_layout(0);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("kama native YUV upload bind group"),
-                layout: &layout_desc,
-                entries: &[
-                    texture_entry(0, &y.create_view(&wgpu::TextureViewDescriptor::default())),
-                    texture_entry(
-                        1,
-                        &u_or_uv.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                    texture_entry(2, &v.create_view(&wgpu::TextureViewDescriptor::default())),
-                    texture_entry(
-                        3,
-                        &alpha.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                    storage_entry(4, output.view()),
-                    buffer_entry(5, &color_uniform),
-                ],
-            });
-            VideoUploadSurface {
-                inner: VideoUploadSurfaceInner::NativeYuv(Box::new(NativeVideoUploadSurface {
-                    layout,
-                    bit_depth,
-                    source_width: frame.source_width,
-                    source_height: frame.source_height,
-                    y,
-                    u_or_uv,
-                    v,
-                    alpha,
-                    output,
-                    color_uniform,
-                    bind_group,
-                })),
-            }
+        frame.native_layout().map_or_else(
+            || self.packed_video_upload_surface(device, frame),
+            |layout| self.native_video_upload_surface(device, frame, layout),
+        )
+    }
+
+    fn native_video_upload_surface(
+        &self,
+        device: &wgpu::Device,
+        frame: &VideoFrame,
+        layout: NativeVideoLayout,
+    ) -> VideoUploadSurface {
+        let bit_depth = frame.native_bit_depth().unwrap_or(8);
+        let chroma_width = if layout.packed_ayuv() {
+            1
         } else {
-            let source = video_staging_texture(
-                device,
-                "kama packed RGBA16 video staging",
-                frame.source_width,
-                frame.source_height,
-                wgpu::TextureFormat::Rgba16Uint,
-            );
-            let output = GpuFrame::new(
-                device,
-                frame.width.max(1),
-                frame.height.max(1),
-                "kama decoded video RGBA16F",
-            );
-            let color_uniform =
-                video_color_buffer(device, frame, "kama decoded video color metadata");
-            let layout = self.upload_video.get_bind_group_layout(0);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("kama packed video upload bind group"),
-                layout: &layout,
-                entries: &[
-                    texture_entry(
-                        0,
-                        &source.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                    storage_entry(1, output.view()),
-                    buffer_entry(2, &color_uniform),
-                ],
-            });
-            VideoUploadSurface {
-                inner: VideoUploadSurfaceInner::Packed(Box::new(PackedVideoUploadSurface {
-                    source_width: frame.source_width,
-                    source_height: frame.source_height,
-                    source,
-                    output,
-                    color_uniform,
-                    bind_group,
-                })),
-            }
+            layout.chroma_width(frame.source_width.max(1))
+        };
+        let chroma_height = if layout.packed_ayuv() {
+            1
+        } else {
+            layout.chroma_height(frame.source_height.max(1))
+        };
+        let planar_format = if bit_depth > 8 {
+            wgpu::TextureFormat::R16Unorm
+        } else {
+            wgpu::TextureFormat::R8Unorm
+        };
+        let y = video_staging_texture(
+            device,
+            "kama native video Y plane",
+            frame.source_width,
+            frame.source_height,
+            if layout.packed_ayuv() {
+                if bit_depth > 8 {
+                    wgpu::TextureFormat::Rgba16Unorm
+                } else {
+                    wgpu::TextureFormat::Rgba8Unorm
+                }
+            } else {
+                planar_format
+            },
+        );
+        let u_or_uv = video_staging_texture(
+            device,
+            "kama native video U/UV plane",
+            chroma_width,
+            chroma_height,
+            if layout.interleaved_uv() {
+                if bit_depth > 8 {
+                    wgpu::TextureFormat::Rg16Unorm
+                } else {
+                    wgpu::TextureFormat::Rg8Unorm
+                }
+            } else {
+                planar_format
+            },
+        );
+        let v = video_staging_texture(
+            device,
+            "kama native video V plane",
+            chroma_width,
+            chroma_height,
+            planar_format,
+        );
+        let alpha = video_staging_texture(
+            device,
+            "kama native video alpha plane",
+            frame.source_width,
+            frame.source_height,
+            planar_format,
+        );
+        let output = GpuFrame::new(
+            device,
+            frame.width,
+            frame.height,
+            "kama native decoded video RGBA16F",
+        );
+        let color_uniform = video_color_buffer(device, frame, "kama native video color metadata");
+        let layout_desc = self.upload_yuv_video.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kama native YUV upload bind group"),
+            layout: &layout_desc,
+            entries: &[
+                texture_entry(0, &y.create_view(&wgpu::TextureViewDescriptor::default())),
+                texture_entry(
+                    1,
+                    &u_or_uv.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+                texture_entry(2, &v.create_view(&wgpu::TextureViewDescriptor::default())),
+                texture_entry(
+                    3,
+                    &alpha.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+                storage_entry(4, output.view()),
+                buffer_entry(5, &color_uniform),
+            ],
+        });
+        VideoUploadSurface {
+            inner: VideoUploadSurfaceInner::NativeYuv(Box::new(NativeVideoUploadSurface {
+                layout,
+                bit_depth,
+                source_width: frame.source_width,
+                source_height: frame.source_height,
+                y,
+                u_or_uv,
+                v,
+                alpha,
+                output,
+                color_uniform,
+                bind_group,
+            })),
+        }
+    }
+
+    fn packed_video_upload_surface(
+        &self,
+        device: &wgpu::Device,
+        frame: &VideoFrame,
+    ) -> VideoUploadSurface {
+        let source = video_staging_texture(
+            device,
+            "kama packed RGBA16 video staging",
+            frame.source_width,
+            frame.source_height,
+            wgpu::TextureFormat::Rgba16Uint,
+        );
+        let output = GpuFrame::new(
+            device,
+            frame.width.max(1),
+            frame.height.max(1),
+            "kama decoded video RGBA16F",
+        );
+        let color_uniform = video_color_buffer(device, frame, "kama decoded video color metadata");
+        let layout = self.upload_video.get_bind_group_layout(0);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kama packed video upload bind group"),
+            layout: &layout,
+            entries: &[
+                texture_entry(
+                    0,
+                    &source.create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
+                storage_entry(1, output.view()),
+                buffer_entry(2, &color_uniform),
+            ],
+        });
+        VideoUploadSurface {
+            inner: VideoUploadSurfaceInner::Packed(Box::new(PackedVideoUploadSurface {
+                source_width: frame.source_width,
+                source_height: frame.source_height,
+                source,
+                output,
+                color_uniform,
+                bind_group,
+            })),
         }
     }
 
@@ -1209,6 +1267,9 @@ impl VideoGpuRuntime {
         }
         match (&surface.inner, &frame.pixels) {
             (VideoUploadSurfaceInner::Packed(surface), VideoFramePixels::Rgba16(pixels)) => {
+                let Some(bytes_per_row) = frame.source_width.checked_mul(8) else {
+                    return false;
+                };
                 queue.write_buffer(
                     &surface.color_uniform,
                     0,
@@ -1224,7 +1285,7 @@ impl VideoGpuRuntime {
                     pixels,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(frame.source_width * 8),
+                        bytes_per_row: Some(bytes_per_row),
                         rows_per_image: Some(frame.source_height),
                     },
                     wgpu::Extent3d {
@@ -1264,7 +1325,11 @@ impl VideoGpuRuntime {
                     0,
                     frame.source_width,
                     frame.source_height,
-                    bytes_per_sample * if layout.packed_ayuv() { 4 } else { 1 },
+                    if layout.packed_ayuv() {
+                        if *bit_depth > 8 { 8 } else { 4 }
+                    } else {
+                        bytes_per_sample
+                    },
                 );
                 if layout.packed_ayuv() {
                     dispatch(
@@ -1285,7 +1350,11 @@ impl VideoGpuRuntime {
                     1,
                     chroma_width,
                     chroma_height,
-                    bytes_per_sample * if layout.interleaved_uv() { 2 } else { 1 },
+                    if layout.interleaved_uv() {
+                        if *bit_depth > 8 { 4 } else { 2 }
+                    } else {
+                        bytes_per_sample
+                    },
                 );
                 if !layout.interleaved_uv() {
                     write_av_plane(
@@ -1599,16 +1668,16 @@ impl VideoGpuRuntime {
         if stage.fragment.execution == NodeExecution::CpuWasm {
             return input;
         }
-        if output_size == [input.width, input.height] && nodes.len() == 1 {
-            match nodes[0].node_type.as_str() {
+        if output_size == [input.width, input.height]
+            && let [node] = nodes
+        {
+            match node.node_type.as_str() {
                 "builtin.blur" => {
-                    return self.apply_builtin_gaussian_blur(
-                        device, queue, encoder, input, nodes[0], effect,
-                    );
+                    return self
+                        .apply_builtin_gaussian_blur(device, queue, encoder, input, node, effect);
                 }
                 "builtin.bloom" => {
-                    return self
-                        .apply_builtin_bloom(device, queue, encoder, input, nodes[0], effect);
+                    return self.apply_builtin_bloom(device, queue, encoder, input, node, effect);
                 }
                 _ => {}
             }
@@ -1820,8 +1889,7 @@ impl VideoGpuRuntime {
         };
         let (source, cache_miss) = match clip_graph_cache::load_text("effect-wgsl", disk_key) {
             Some(cached) if cached_shader_matches_working_format(&cached) => (cached, false),
-            Some(_) => (build_source()?, true),
-            None => (build_source()?, true),
+            Some(_) | None => (build_source()?, true),
         };
         let image_inputs = stage
             .fragment
@@ -1833,7 +1901,7 @@ impl VideoGpuRuntime {
             0 => ComputeLayout::SourceRgba32WithParamsAndRuntime,
             1 => ComputeLayout::UnaryRgba32WithParamsAndRuntime,
             2 => ComputeLayout::BinaryRgba32WithParamsAndRuntime,
-            _ => unreachable!("validated plugin image input count"),
+            _ => bail!("unsupported plugin image input count {image_inputs}"),
         };
         let pipeline = self.cached_pipeline(
             device,
@@ -1859,8 +1927,7 @@ impl VideoGpuRuntime {
         let disk_key = persistent_generator_shader_key(generator);
         let (source, cache_miss) = match clip_graph_cache::load_text("generator-wgsl", disk_key) {
             Some(cached) if cached_shader_matches_working_format(&cached) => (cached, false),
-            Some(_) => (build_generator_shader(generator)?, true),
-            None => (build_generator_shader(generator)?, true),
+            Some(_) | None => (build_generator_shader(generator)?, true),
         };
         let pipeline = self.cached_pipeline(
             device,
@@ -2031,26 +2098,29 @@ impl VideoGpuRuntime {
     }
 
     fn export_to_buffer(
-        &self,
-        args: ExportPassArgs<'_>,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &GpuFrame,
         output: &wgpu::Buffer,
         pipeline: &wgpu::ComputePipeline,
         label: &str,
         size: [u32; 2],
     ) {
         let layout = pipeline.get_bind_group_layout(0);
-        let bind_group = args.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &layout,
-            entries: &[texture_entry(0, args.input.view()), buffer_entry(1, output)],
+            entries: &[texture_entry(0, input.view()), buffer_entry(1, output)],
         });
-        dispatch(args.encoder, pipeline, &bind_group, size[0], size[1]);
+        dispatch(encoder, pipeline, &bind_group, size[0], size[1]);
     }
 
-    pub fn export_nv12_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
+    pub fn export_nv12_to_buffer(&self, args: &mut ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(4), args.input.height.div_ceil(2)];
-        self.export_to_buffer(
-            args,
+        Self::export_to_buffer(
+            args.device,
+            args.encoder,
+            args.input,
             output,
             &self.export_nv12_buffer,
             "kama export NV12 direct-buffer bind group",
@@ -2058,10 +2128,12 @@ impl VideoGpuRuntime {
         );
     }
 
-    pub fn export_p010_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
+    pub fn export_p010_to_buffer(&self, args: &mut ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(2), args.input.height.div_ceil(2)];
-        self.export_to_buffer(
-            args,
+        Self::export_to_buffer(
+            args.device,
+            args.encoder,
+            args.input,
             output,
             &self.export_p010_buffer,
             "kama export P010 direct-buffer bind group",
@@ -2069,10 +2141,12 @@ impl VideoGpuRuntime {
         );
     }
 
-    pub fn export_p210_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
+    pub fn export_p210_to_buffer(&self, args: &mut ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(2), args.input.height];
-        self.export_to_buffer(
-            args,
+        Self::export_to_buffer(
+            args.device,
+            args.encoder,
+            args.input,
             output,
             &self.export_p210_buffer,
             "kama export P210 direct-buffer bind group",
@@ -2080,10 +2154,12 @@ impl VideoGpuRuntime {
         );
     }
 
-    pub fn export_ayuv64_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
+    pub fn export_ayuv64_to_buffer(&self, args: &mut ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width, args.input.height];
-        self.export_to_buffer(
-            args,
+        Self::export_to_buffer(
+            args.device,
+            args.encoder,
+            args.input,
             output,
             &self.export_ayuv64_buffer,
             "kama export AYUV64 direct-buffer bind group",
@@ -2091,10 +2167,12 @@ impl VideoGpuRuntime {
         );
     }
 
-    pub fn export_yuva10_to_buffer(&self, args: ExportPassArgs<'_>, output: &wgpu::Buffer) {
+    pub fn export_yuva10_to_buffer(&self, args: &mut ExportPassArgs<'_>, output: &wgpu::Buffer) {
         let size = [args.input.width.div_ceil(2), args.input.height];
-        self.export_to_buffer(
-            args,
+        Self::export_to_buffer(
+            args.device,
+            args.encoder,
+            args.input,
             output,
             &self.export_yuva10_buffer,
             "kama export YUVA444P10 direct-buffer bind group",
@@ -2414,7 +2492,7 @@ fn generator_parameters(
     }
 }
 
-fn pack_gpu_value(value: GpuValue) -> [f32; 4] {
+const fn pack_gpu_value(value: GpuValue) -> [f32; 4] {
     match value {
         GpuValue::F32(value) => [value, 0.0, 0.0, 0.0],
         GpuValue::I32(value) => [value as f32, 0.0, 0.0, 0.0],
@@ -2447,7 +2525,15 @@ fn padding_output_size(
     let thickness = node_value(node, effect, "thickness")
         .and_then(GpuValue::vec2)
         .unwrap_or([0.0, 0.0]);
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "thickness is clamped to nonnegative values"
+    )]
     let horizontal = thickness[0].round().max(0.0) as u32;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "thickness is clamped to nonnegative values"
+    )]
     let vertical = thickness[1].round().max(0.0) as u32;
     let (left, top, right, bottom) = match edges {
         1 => (horizontal, 0, horizontal, 0),
@@ -2483,7 +2569,7 @@ fn node_value(node: &EffectNode, effect: &EffectInputs<'_, '_>, input: &str) -> 
                 .find(|candidate| candidate.id == input)
         })
         .is_some_and(|definition| definition.suffix.trim() == "px");
-    if !pixel_input || effect.render_scale == 1.0 {
+    if !pixel_input || effect.render_scale.to_bits() == 1.0_f32.to_bits() {
         return Some(value);
     }
     Some(scale_pixel_value(value, effect.render_scale))
@@ -2911,7 +2997,7 @@ fn compute_pipeline(
             storage_texture_layout_entry(1, wgpu::TextureFormat::Rgba16Float),
             dynamic_uniform_layout_entry(2),
         ],
-        ComputeLayout::BinaryRgba32WithUniform => vec![
+        ComputeLayout::BinaryRgba32WithUniform | ComputeLayout::CompositeRgba32 => vec![
             sampled_texture_layout_entry(0),
             sampled_texture_layout_entry(1),
             storage_texture_layout_entry(2, wgpu::TextureFormat::Rgba16Float),
@@ -2938,12 +3024,6 @@ fn compute_pipeline(
         ComputeLayout::GeneratorRgba32WithParams => vec![
             storage_texture_layout_entry(0, wgpu::TextureFormat::Rgba16Float),
             dynamic_uniform_layout_entry(1),
-        ],
-        ComputeLayout::CompositeRgba32 => vec![
-            sampled_texture_layout_entry(0),
-            sampled_texture_layout_entry(1),
-            storage_texture_layout_entry(2, wgpu::TextureFormat::Rgba16Float),
-            dynamic_uniform_layout_entry(3),
         ],
         ComputeLayout::PresentRgba16 => vec![
             sampled_texture_layout_entry(0),
@@ -2989,7 +3069,7 @@ fn compute_pipeline(
     })
 }
 
-fn sampled_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn sampled_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -3002,7 +3082,7 @@ fn sampled_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn uint_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn uint_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -3015,7 +3095,7 @@ fn uint_texture_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn storage_texture_layout_entry(
+const fn storage_texture_layout_entry(
     binding: u32,
     format: wgpu::TextureFormat,
 ) -> wgpu::BindGroupLayoutEntry {
@@ -3031,7 +3111,7 @@ fn storage_texture_layout_entry(
     }
 }
 
-fn storage_buffer_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn storage_buffer_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -3044,7 +3124,7 @@ fn storage_buffer_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn dynamic_uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn dynamic_uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     let mut entry = uniform_layout_entry(binding);
     if let wgpu::BindingType::Buffer {
         has_dynamic_offset, ..
@@ -3055,7 +3135,7 @@ fn dynamic_uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     entry
 }
 
-fn uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+const fn uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -3068,14 +3148,14 @@ fn uniform_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+const fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
     wgpu::BindGroupEntry {
         binding,
         resource: wgpu::BindingResource::TextureView(view),
     }
 }
 
-fn storage_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+const fn storage_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
     texture_entry(binding, view)
 }
 
@@ -3098,15 +3178,18 @@ fn dynamic_uniform_entry(binding: u32, allocation: &UniformAllocation) -> wgpu::
 }
 
 fn dynamic_offset(allocation: &UniformAllocation) -> wgpu::DynamicOffset {
-    u32::try_from(allocation.offset)
-        .expect("uniform upload offset exceeds WebGPU dynamic offset range")
+    assert!(
+        u32::try_from(allocation.offset).is_ok(),
+        "uniform upload offset exceeds WebGPU dynamic offset range"
+    );
+    allocation.offset as u32
 }
 
 fn pipeline_identity(pipeline: &wgpu::ComputePipeline) -> usize {
     std::ptr::from_ref::<wgpu::ComputePipeline>(pipeline) as usize
 }
 
-fn blend_mode_index(mode: BlendMode) -> u32 {
+const fn blend_mode_index(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Normal => 0,
         BlendMode::Add => 1,
@@ -3127,7 +3210,7 @@ fn blend_mode_index(mode: BlendMode) -> u32 {
     }
 }
 
-fn alpha_blend_mode_index(mode: AlphaBlendMode) -> u32 {
+const fn alpha_blend_mode_index(mode: AlphaBlendMode) -> u32 {
     match mode {
         AlphaBlendMode::SourceOver => 0,
         AlphaBlendMode::PreserveDestination => 1,
@@ -3421,9 +3504,9 @@ fn export_shaders_are_valid_wgsl() {
         export_buffer_shader(EXPORT_AYUV64_BUFFER_WGSL, ""),
         export_buffer_shader(EXPORT_YUVA10_BUFFER_WGSL, EXPORT_10BIT_YUVA_ENCODER_WGSL),
     ];
-    shaders.iter().for_each(|shader| {
+    for shader in &shaders {
         naga::front::wgsl::parse_str(shader).expect("export shader should parse");
-    });
+    }
 }
 
 const VIDEO_COLOR_INFO_WGSL: &str = r"

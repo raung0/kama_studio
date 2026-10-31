@@ -154,7 +154,8 @@ impl RenderJob {
 
     fn rebuild_chunks(&mut self, project: &Project, timeline: &TimelineState) {
         self.invalidate_if_edited(project, timeline);
-        let chunk_frames = (self.fps * cache_chunk_seconds()).round().max(1.0) as u64;
+        let chunk_frames =
+            super::nonnegative_frame((self.fps * cache_chunk_seconds()).round().max(1.0));
         let mut chunks = Vec::new();
         let mut start = self.settings.begin_frame;
         loop {
@@ -173,8 +174,16 @@ impl RenderJob {
                 chunk.end = chunk.end.min(self.settings.end_frame);
                 chunks.push(chunk);
             } else {
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "chunk_frames is converted from a duration clamped to at least one frame"
+                )]
                 let mut end = start
-                    .saturating_add(chunk_frames - 1 - start % chunk_frames)
+                    .saturating_add(
+                        chunk_frames
+                            .saturating_sub(1)
+                            .saturating_sub(start % chunk_frames),
+                    )
                     .min(self.settings.end_frame);
                 if let Some(next) = self
                     .cached_chunks
@@ -183,7 +192,7 @@ impl RenderJob {
                     .map(|chunk| chunk.start)
                     .min()
                 {
-                    end = end.min(next - 1);
+                    end = end.min(next.saturating_sub(1));
                 }
                 chunks.push(CacheChunk {
                     start,
@@ -200,7 +209,7 @@ impl RenderJob {
             if end >= self.settings.end_frame {
                 break;
             }
-            start = end + 1;
+            start = end.saturating_add(1);
         }
         self.cache_encoder_failures = vec![0; chunks.len()];
         self.chunks = chunks;
@@ -282,7 +291,10 @@ impl RenderJob {
         project: &Project,
         timeline: &TimelineState,
     ) -> Result<()> {
-        let chunk = &self.chunks[index];
+        let chunk = self
+            .chunks
+            .get_mut(index)
+            .context("cache chunk disappeared")?;
         let start_frame = chunk.start;
         let end_frame = chunk.end;
         let temp_path = chunk.path.with_extension("partial.mov");
@@ -294,7 +306,7 @@ impl RenderJob {
             render_encoder_threads(self.settings.background),
         )?;
         let signature = range_signature(project, timeline, start_frame, end_frame, self.fps);
-        self.chunks[index].state = ChunkState::Rendering;
+        chunk.state = ChunkState::Rendering;
         self.active = Some(ActiveChunk {
             index,
             start_frame,
@@ -320,7 +332,7 @@ impl RenderJob {
             return self.schedule_cache_retry(
                 active.index,
                 &active.temp_path,
-                format!("ProRes cache encoder failed: {error:#}"),
+                &format!("ProRes cache encoder failed: {error:#}"),
             );
         }
 
@@ -333,18 +345,25 @@ impl RenderJob {
         ) != active.signature_at_start
         {
             let _ = fs::remove_file(&active.temp_path);
-            self.chunks[active.index].state = ChunkState::Dirty;
+            self.chunks
+                .get_mut(active.index)
+                .context("active cache chunk disappeared")?
+                .state = ChunkState::Dirty;
             return Ok(());
         }
 
-        let expected_frames = active.end_frame.saturating_sub(active.start_frame) + 1;
+        let expected_frames = active
+            .end_frame
+            .checked_sub(active.start_frame)
+            .and_then(|count| count.checked_add(1))
+            .context("invalid cache frame range")?;
         if let Err(error) =
             validate_cache_chunk(&active.temp_path, self.canvas_size, expected_frames)
         {
             return self.schedule_cache_retry(
                 active.index,
                 &active.temp_path,
-                format!("completed ProRes chunk validation failed: {error:#}"),
+                &format!("completed ProRes chunk validation failed: {error:#}"),
             );
         }
 
@@ -356,7 +375,10 @@ impl RenderJob {
         replace_file(&active.temp_path, &committed_path)
             .with_context(|| format!("commit ProRes cache chunk {}", committed_path.display()))?;
 
-        let chunk = &mut self.chunks[active.index];
+        let chunk = self
+            .chunks
+            .get_mut(active.index)
+            .context("active cache chunk disappeared")?;
         chunk.path = committed_path;
         chunk.source_start = chunk.start;
         chunk.source_end = chunk.end;
@@ -369,7 +391,10 @@ impl RenderJob {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone_from(&self.cached_chunks);
-        self.cache_encoder_failures[active.index] = 0;
+        *self
+            .cache_encoder_failures
+            .get_mut(active.index)
+            .context("cache failure counter disappeared")? = 0;
         Ok(())
     }
 
@@ -383,7 +408,7 @@ impl RenderJob {
         self.schedule_cache_retry(
             index,
             &temp_path,
-            format!("cache encoder write failed: {write_error}"),
+            &format!("cache encoder write failed: {write_error}"),
         )
     }
 
@@ -391,7 +416,7 @@ impl RenderJob {
         &mut self,
         index: usize,
         temp_path: &std::path::Path,
-        reason: String,
+        reason: &str,
     ) -> Result<()> {
         let _ = fs::remove_file(temp_path);
         let chunk = self
@@ -405,7 +430,10 @@ impl RenderJob {
             ChunkState::Pending
         };
 
-        let failures = &mut self.cache_encoder_failures[index];
+        let failures = self
+            .cache_encoder_failures
+            .get_mut(index)
+            .context("cache failure counter disappeared")?;
         *failures = failures.saturating_add(1);
         if *failures <= 3 {
             return Ok(());
@@ -446,7 +474,7 @@ impl RenderJob {
             let timeline = timeline.document();
             let plugins = plugins.clone();
             let start = self.settings.begin_frame as f64 / self.fps;
-            let end = (self.settings.end_frame + 1) as f64 / self.fps;
+            let end = self.settings.end_frame.saturating_add(1) as f64 / self.fps;
             let sample_rate = self.settings.preset.sample_rate;
             let audio_path = self.audio_path.clone();
             let _ = fs::remove_file(&audio_path);
@@ -476,12 +504,21 @@ impl RenderJob {
         let chunks = self
             .chunks
             .iter()
-            .map(|chunk| super::transcoder::CacheSegment {
-                path: chunk.path.clone(),
-                skip_frames: chunk.start - chunk.source_start,
-                frame_count: chunk.end - chunk.start + 1,
+            .map(|chunk| {
+                Ok(super::transcoder::CacheSegment {
+                    path: chunk.path.clone(),
+                    skip_frames: chunk
+                        .start
+                        .checked_sub(chunk.source_start)
+                        .context("invalid cache source range")?,
+                    frame_count: chunk
+                        .end
+                        .checked_sub(chunk.start)
+                        .and_then(|count| count.checked_add(1))
+                        .context("invalid cache frame range")?,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let audio = self
             .settings
             .preset
@@ -515,7 +552,7 @@ impl RenderJob {
             let task = self
                 .audio_mix
                 .take()
-                .expect("finished audio task disappeared");
+                .context("finished audio task disappeared")?;
             task.join()
                 .map_err(|_| anyhow::anyhow!("offline audio render thread panicked"))??;
             self.spawn_final_transcode()?;
@@ -585,7 +622,7 @@ impl RenderJob {
         let mut ranges = Vec::new();
         for (index, chunk) in self.chunks.iter().enumerate() {
             let start = chunk.start as f32 / self.fps as f32;
-            let end = (chunk.end + 1) as f32 / self.fps as f32;
+            let end = chunk.end.saturating_add(1) as f32 / self.fps as f32;
             match chunk.state {
                 ChunkState::Rendered => push_merged(
                     &mut ranges,
@@ -794,17 +831,17 @@ impl RenderTask {
                     edit_revision,
                     editing,
                     interactive,
-                    device,
-                    queue,
+                    &device,
+                    &queue,
                     &mut worker_project,
                     &mut worker_timeline,
                     &mut effects,
                     &worker_plugins,
-                    command_rx,
-                    status_tx,
+                    &command_rx,
+                    &status_tx,
                     &mut frame_renderer,
                     composition,
-                    worker_live_end_frame,
+                    &worker_live_end_frame,
                 );
             })
             .context("start render worker thread")?;
@@ -970,7 +1007,7 @@ impl RenderTask {
         self.live_end_frame.store(end_frame, Ordering::Release);
     }
 
-    fn cancel(&mut self) {
+    fn cancel(&self) {
         let _ = self.command_tx.send(RenderWorkerCommand::Cancel);
     }
 
@@ -996,21 +1033,21 @@ fn run_render_worker(
     mut update_revision: u64,
     mut editing: bool,
     mut interactive: bool,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: &Arc<wgpu::Device>,
+    queue: &Arc<wgpu::Queue>,
     project: &mut Project,
     timeline: &mut TimelineState,
     effects: &mut EffectRuntime,
     plugins: &PluginRegistry,
-    command_rx: Receiver<RenderWorkerCommand>,
-    status_tx: SyncSender<RenderWorkerStatus>,
+    command_rx: &Receiver<RenderWorkerCommand>,
+    status_tx: &SyncSender<RenderWorkerStatus>,
     frame_renderer: &mut FrameRenderer,
     target_composition: CompositionId,
-    live_end_frame: Arc<AtomicU64>,
+    live_end_frame: &Arc<AtomicU64>,
 ) {
     let mut last_status_at = Instant::now()
         .checked_sub(Duration::from_millis(100))
-        .unwrap();
+        .unwrap_or_else(Instant::now);
     let mut last_status_phase = job.phase;
 
     let _ = status_tx.try_send(RenderWorkerStatus::from_job(&job, update_revision));
@@ -1124,14 +1161,14 @@ fn run_render_worker(
                     .as_mut()
                     .context("ProRes cache encoder closed")?;
                 frame_renderer.render_export_yuv_batch_to_writer_on(ExportYuvBatchArgs {
-                    device: &device,
-                    queue: &queue,
+                    device,
+                    queue,
                     project,
                     timeline,
                     runtime: (effects, plugins),
                     timeline_times: &timeline_times,
                     first_frame: frame,
-                    live_end_frame: &live_end_frame,
+                    live_end_frame,
                     format: input_format,
                     writer: encoder,
                 })?
@@ -1183,12 +1220,12 @@ fn run_render_worker(
             RenderPhase::Rendering if job.settings.background && interactive => {
                 thread::yield_now();
             }
-            _ => {}
+            RenderPhase::Rendering => {}
         }
     }
 }
 
-fn cache_chunk_seconds() -> f64 {
+const fn cache_chunk_seconds() -> f64 {
     DEFAULT_CACHE_CHUNK_SECONDS
 }
 
@@ -1230,14 +1267,14 @@ fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u
         expected_size[1].max(1)
     );
     anyhow::ensure!(
-        frame_count >= 0 && frame_count as u64 == expected_frames,
+        u64::try_from(frame_count).ok() == Some(expected_frames),
         "completed cache chunk has {frame_count} frames, expected {expected_frames}"
     );
     Ok(())
 }
 
 fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
-    let pixels = u64::from(canvas_size[0].max(1)) * u64::from(canvas_size[1].max(1));
+    let pixels = u64::from(canvas_size[0].max(1)).saturating_mul(u64::from(canvas_size[1].max(1)));
 
     if pixels >= 3_840u64 * 2_160 {
         3
@@ -1260,10 +1297,10 @@ fn render_encoder_threads(background: bool) -> usize {
 fn render_content_signature(project: &Project, timeline: &TimelineDocument) -> u64 {
     let mut document = timeline.clone();
 
-    document.view = Default::default();
+    document.view = TimelineViewState::default();
     let mut snapshot = render_worker_project_snapshot(project, document);
     for composition in &mut snapshot.compositions {
-        composition.timeline.view = Default::default();
+        composition.timeline.view = TimelineViewState::default();
     }
     let mut hasher = DefaultHasher::new();
     hash_json(&snapshot, &mut hasher);
@@ -1283,9 +1320,9 @@ fn video_content_signature(project: &Project, timeline: &TimelineDocument) -> u6
     for composition in &mut snapshot.compositions {
         composition.name.clear();
         let document = &mut composition.timeline;
-        document.view = Default::default();
+        document.view = TimelineViewState::default();
         document.end_time = None;
-        document.end_behavior = Default::default();
+        document.end_behavior = EndBehavior::default();
         document.next_group = 0;
         document.next_track = 0;
         document.next_clip = 0;
@@ -1384,7 +1421,7 @@ fn range_signature(
     fps: f64,
 ) -> u64 {
     let start = start_frame as f32 / fps as f32;
-    let end = (end_frame + 1) as f32 / fps as f32;
+    let end = end_frame.saturating_add(1) as f32 / fps as f32;
     let sample_times = (start_frame..=end_frame)
         .map(|frame| frame as f64 / fps.max(1.0))
         .collect::<Vec<_>>();
@@ -1583,7 +1620,7 @@ fn hash_visual_source(
         VisualSource::Composition(id) => {
             6u8.hash(h);
             id.hash(h);
-            hash_composition_source(project, *id, times, h, depth + 1);
+            hash_composition_source(project, *id, times, h, depth.saturating_add(1));
         }
     }
 }
@@ -1793,7 +1830,7 @@ impl Default for RenderSession {
 
 impl Drop for RenderSession {
     fn drop(&mut self) {
-        if let Some(mut task) = self.task.take() {
+        if let Some(task) = self.task.take() {
             task.cancel();
             drop(task);
         }
@@ -1807,8 +1844,9 @@ impl RenderSession {
     fn cache_for(&mut self, project: &Project) -> Arc<Mutex<Vec<CacheChunk>>> {
         let settings = project.active_settings();
         let fps = settings.frame_rate.max(1.0);
+        let composition = project.active_composition;
         if let Some(cache) = self.caches.iter().find(|cache| {
-            cache.composition == project.active_composition
+            cache.composition == composition
                 && cache.canvas_size == settings.canvas_size
                 && (cache.fps - fps).abs() <= f64::EPSILON
         }) {
@@ -2020,7 +2058,8 @@ impl RenderSession {
         fps: f64,
         active_composition: CompositionId,
     ) -> Option<RenderCachePreview> {
-        let frame = (f64::from(timeline_time.max(0.0)) * fps.max(1.0)).floor() as u64;
+        let frame =
+            super::nonnegative_frame((f64::from(timeline_time.max(0.0)) * fps.max(1.0)).floor());
         let task = self.task.as_ref()?;
         if task.composition != active_composition || task.has_pending_video_update() {
             return None;
@@ -2032,7 +2071,7 @@ impl RenderSession {
             .find(|range| frame >= range.start_frame && frame <= range.end_frame)?;
         Some(RenderCachePreview {
             path: range.path.clone(),
-            local_time: (frame - range.source_start_frame) as f64 / fps.max(1.0),
+            local_time: frame.saturating_sub(range.source_start_frame) as f64 / fps.max(1.0),
             generation: range.generation,
             frame,
         })
@@ -2066,7 +2105,10 @@ use crate::{
     plugin::PluginRegistry,
     project::{CompositionId, GeneratorSource, HostBinding, LayerComposite, Project, VisualSource},
     runtime::media::prioritize_offline_export,
-    timeline::{RenderCacheRange, RenderCacheState, TimelineDocument, TimelineState, TrackKind},
+    timeline::{
+        EndBehavior, RenderCacheRange, RenderCacheState, TimelineDocument, TimelineState,
+        TimelineViewState, TrackKind,
+    },
 };
 
 #[cfg(test)]
@@ -2113,7 +2155,7 @@ mod tests {
                 let (start, duration) = match id {
                     9 => (8.0, 8.0),
                     10 => (16.0, 8.0),
-                    _ => ((id - 1) as f32, 1.0),
+                    _ => (id.saturating_sub(1) as f32, 1.0),
                 };
                 assert!(timeline.insert_media_clip_at(
                     (track, start),
@@ -2158,7 +2200,7 @@ mod tests {
             for _ in active.start_frame..=active.end_frame {
                 active.encoder.as_mut().unwrap().write_all(&pixels).unwrap();
             }
-            active.next_frame = active.end_frame + 1;
+            active.next_frame = active.end_frame.saturating_add(1);
             self.job
                 .finish_active(&self.project, &self.timeline)
                 .unwrap();
@@ -2220,7 +2262,7 @@ mod tests {
         document
             .clips
             .iter_mut()
-            .find(|clip| clip.start == 8.0)
+            .find(|clip| clip.start.to_bits() == 8.0f32.to_bits())
             .unwrap()
             .opacity = 0.35;
         fixture.timeline = TimelineState::from_document(document);
@@ -2254,7 +2296,7 @@ mod tests {
         document
             .clips
             .iter_mut()
-            .find(|clip| clip.start == 8.0)
+            .find(|clip| clip.start.to_bits() == 8.0f32.to_bits())
             .unwrap()
             .duration = 3.0;
         fixture.timeline = TimelineState::from_document(document);

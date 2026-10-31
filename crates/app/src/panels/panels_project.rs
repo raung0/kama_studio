@@ -1,9 +1,9 @@
 use super::{
-    Color, ColorPicker, ComboBox, CompositionId, EnumControlsExt, FormatKey, Hash, IconId, Ime,
-    KeyEvent, KnobControlsExt, MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, ModifiersState,
-    NumberControls, NumberControlsExt, NumberInput, PANEL_GAP, PANEL_HEADER_H, Project,
-    ProjectBackground, ROW_H, Rect, Renderer, Result, Size, SliderControlsExt, ToggleButton,
-    offset_rect, panel_title, project_row_hit, property_label, property_row_frame, theme,
+    Color, ColorPicker, ComboBox, CompositionId, FormatKey, Hash, IconId, Ime, KeyEvent,
+    MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, ModifiersState, NumberControls, NumberControlsExt,
+    NumberInput, PANEL_GAP, PANEL_HEADER_H, Project, ProjectBackground, ROW_H, Rect, Renderer,
+    Result, Size, ToggleButton, offset_rect, panel_title, project_row_hit, property_label,
+    property_row_frame, theme,
 };
 
 pub(super) fn project_background(
@@ -16,6 +16,10 @@ pub(super) fn project_background(
         .unwrap_or_default()
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the project options column contains eight fixed items"
+)]
 pub(super) fn project_option_rows(rect: Rect) -> [Rect; 5] {
     let slots = kama_ui::layout::column(
         rect,
@@ -37,6 +41,10 @@ pub(super) fn project_option_rows(rect: Rect) -> [Rect; 5] {
     [slots[2], slots[3], slots[4], slots[6], slots[7]]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the project option row contains three fixed items"
+)]
 pub(super) fn project_option_control_rect(rect: Rect, y: f32) -> Rect {
     let row = project_row_hit(rect, y);
     kama_ui::layout::row(
@@ -55,6 +63,10 @@ pub(super) fn project_option_control_rect(rect: Rect, y: f32) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "all five callers use constant indices zero through four"
+)]
 pub(super) fn project_option_y(index: usize) -> f32 {
     project_option_rows(Rect::new(0.0, 0.0, 1.0, 256.0))[index].y
 }
@@ -71,6 +83,10 @@ pub(super) fn project_frame_rate_y() -> f32 {
     project_option_y(2)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the resolution row contains three fixed items"
+)]
 pub(super) fn project_resolution_rects(rect: Rect, y: f32) -> ([Rect; 2], Rect) {
     let control = project_option_control_rect(rect, y);
     let parts = kama_ui::layout::row(
@@ -87,6 +103,10 @@ pub(super) fn project_resolution_rects(rect: Rect, y: f32) -> ([Rect; 2], Rect) 
     ([parts[0], parts[2]], parts[1])
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the background row contains five fixed items"
+)]
 pub(super) fn project_background_mode_rects(row: Rect) -> [Rect; 2] {
     let parts = kama_ui::layout::row(
         row,
@@ -151,16 +171,21 @@ impl ProjectNumberField {
         }
     }
 
-    fn apply(self, value: f64, project: &mut Project, composition: CompositionId) {
-        let settings = &mut project
-            .composition_mut(composition)
-            .expect("selected composition disappeared")
-            .settings;
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "resolution is clamped to at least one before conversion"
+    )]
+    fn apply(self, value: f64, project: &mut Project, composition: CompositionId) -> bool {
+        let Some(composition) = project.composition_mut(composition) else {
+            return false;
+        };
+        let settings = &mut composition.settings;
         match self {
             Self::ResolutionX => settings.canvas_size[0] = value.round().max(1.0) as u32,
             Self::ResolutionY => settings.canvas_size[1] = value.round().max(1.0) as u32,
             Self::FrameRate => settings.frame_rate = value.max(1.0),
         }
+        true
     }
 }
 
@@ -190,7 +215,7 @@ impl ResolutionPreset {
         Self::Square,
     ];
 
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Custom => "Custom",
             Self::Hd => "HD: 1280 × 720",
@@ -204,7 +229,7 @@ impl ResolutionPreset {
         }
     }
 
-    fn dimensions(self) -> Option<[u32; 2]> {
+    const fn dimensions(self) -> Option<[u32; 2]> {
         match self {
             Self::Custom => None,
             Self::Hd => Some([1280, 720]),
@@ -487,7 +512,7 @@ impl ProjectOptionsState {
             .option_at(preset_rect, point, preset_count)
         {
             self.resolution_preset.select(index, true);
-            self.apply_resolution_preset(index, project, composition);
+            Self::apply_resolution_preset(index, project, composition);
             return true;
         }
         if self
@@ -557,23 +582,25 @@ impl ProjectOptionsState {
         };
         let local = Rect::new(0.0, 0.0, rect.width, rect.height);
         let local_point = [point[0] - rect.x, point[1] - rect.y];
-        let mut changed = false;
-        if let Some((field, value)) = self.numbers.pointer_moved(point) {
-            field.apply(value, project, composition);
-            changed = true;
-        }
-        if matches!(
+        let numbers_changed = self
+            .numbers
+            .pointer_moved(point)
+            .is_some_and(|(field, value)| {
+                field.apply(value, project, composition);
+                true
+            });
+        let color_changed = matches!(
             project_background(project, composition),
             ProjectBackground::Solid { .. }
         ) && self.background_color.pointer_moved_in(
             project_background_color_rect(local),
             self.popup_bounds,
             local_point,
-        ) {
+        );
+        if color_changed {
             self.apply_background_color(project, composition);
-            changed = true;
         }
-        changed
+        numbers_changed | color_changed
     }
 
     pub fn pointer_released(&mut self) -> bool {
@@ -622,12 +649,7 @@ impl ProjectOptionsState {
         self.numbers.caret_rect(rect)
     }
 
-    fn apply_resolution_preset(
-        &self,
-        index: usize,
-        project: &mut Project,
-        composition: CompositionId,
-    ) {
+    fn apply_resolution_preset(index: usize, project: &mut Project, composition: CompositionId) {
         let Some(size) = ResolutionPreset::ALL
             .get(index)
             .and_then(|preset| preset.dimensions())

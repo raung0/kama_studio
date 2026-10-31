@@ -32,14 +32,14 @@ pub fn set_language(language: Option<&str>) -> Result<()> {
         .context("select embedded application translations")?;
     *language_preference()
         .lock()
-        .expect("language preference lock") = language.map(str::to_owned);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = language.map(str::to_owned);
     Ok(())
 }
 
 pub fn preference() -> Option<String> {
     language_preference()
         .lock()
-        .expect("language preference lock")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 

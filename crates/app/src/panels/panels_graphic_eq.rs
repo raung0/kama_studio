@@ -1,10 +1,9 @@
 use super::{
     ANGLE_ROW_H, Accordion, AppIcon, Color, ColorButton, EFFECT_NODE_CONTENT_PAD,
-    EFFECT_NODE_HEADER_H, EnumControlsExt, FormatKey, GpuValue, Hash, Icons, KeyframeControl, Knob,
-    KnobControlsExt, NumberControlsExt, PluginInput, PluginRegistry, Project, Rect, Size,
-    SliderControls, SliderControlsExt, SpinInput, Style, TimelineState, ToggleButton, icon_button,
-    keyframe_rect, property_chrome, property_control_rect, property_row_parts, row_hit,
-    set_eq_band, theme, toggle_icon_button,
+    EFFECT_NODE_HEADER_H, FormatKey, GpuValue, Hash, Icons, KeyframeControl, Knob, PluginInput,
+    PluginRegistry, Project, Rect, Size, SliderControls, SliderControlsExt, SpinInput, Style,
+    TimelineState, ToggleButton, icon_button, keyframe_rect, property_chrome,
+    property_control_rect, property_row_parts, row_hit, set_eq_band, theme, toggle_icon_button,
 };
 
 pub(super) struct GraphicEqBuild<'a> {
@@ -50,6 +49,10 @@ pub(super) fn graphic_eq_layout(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the slider column has one item and all callers pass an index in 0..layout.count"
+)]
 pub(super) fn graphic_eq_slider_rect(layout: GraphicEqLayout, index: usize) -> Rect {
     let slider_area = crate::ui_layout::fit_column_at(
         layout.viewport,
@@ -82,7 +85,7 @@ pub(super) fn build_graphic_eq_controls<K: Copy + Eq + Hash, S: Hash, Z: Hash>(
     ctx: &mut kama_ui::BuildCtx,
     controls: &mut SliderControls<K>,
     keys: (S, Z),
-    build: GraphicEqBuild<'_>,
+    build: &GraphicEqBuild<'_>,
     mut control_key: impl FnMut(usize) -> K,
     mut control_id: impl FnMut(usize) -> String,
 ) -> GraphicEqLayout {
@@ -97,7 +100,7 @@ pub(super) fn build_graphic_eq_controls<K: Copy + Eq + Hash, S: Hash, Z: Hash>(
         zero_inset,
         enabled,
         style,
-    } = build;
+    } = *build;
     let layout = graphic_eq_layout(viewport, count, scroll, min_slot_width);
     let zero_y = (layout.slider_bottom - layout.slider_top).mul_add(0.5, layout.slider_top);
     kama_ui::ui!(ctx, {
@@ -133,19 +136,19 @@ pub(super) fn eq_frequency_label(index: usize, count: usize) -> String {
     let t = if count <= 1 {
         0.5
     } else {
-        index as f32 / (count - 1) as f32
+        index as f32 / count.saturating_sub(1) as f32
     };
     let hz = low * (high / low).powf(t);
     if hz >= 1000.0 {
         format!("{:.1}k", hz / 1000.0)
     } else {
-        format!("{}", hz.round() as u32)
+        format!("{:.0}", hz.round())
     }
 }
 
 pub(super) fn set_graphic_eq_band(
     project: &mut Project,
-    timeline: &mut TimelineState,
+    timeline: &TimelineState,
     node: u64,
     index: usize,
     normalized: f32,
@@ -272,17 +275,17 @@ pub(super) fn format_gpu_value(value: GpuValue) -> String {
         GpuValue::Enum(value) => format!("#{value}"),
         GpuValue::Vec2(value) => format!("{:.2}, {:.2}", value[0], value[1]),
         GpuValue::Vec3(value) => format!("{:.2}, {:.2}, {:.2}", value[0], value[1], value[2]),
-        GpuValue::Vec4(value) => format!(
-            "{:.2}, {:.2}, {:.2}, {:.2}",
-            value[0], value[1], value[2], value[3]
-        ),
-        GpuValue::Color(value) => format!(
+        GpuValue::Vec4(value) | GpuValue::Color(value) => format!(
             "{:.2}, {:.2}, {:.2}, {:.2}",
             value[0], value[1], value[2], value[3]
         ),
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the header column contains one fixed item"
+)]
 pub(super) fn node_header_rect(rect: Rect, y: f32) -> Rect {
     crate::ui_layout::fit_column_at(
         rect,
@@ -295,6 +298,10 @@ pub(super) fn node_header_rect(rect: Rect, y: f32) -> Rect {
     .1[0]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the property row contains three fixed items"
+)]
 pub(super) fn effect_property_rect(rect: Rect) -> Rect {
     crate::ui_layout::row(
         rect,
@@ -309,6 +316,10 @@ pub(super) fn effect_property_rect(rect: Rect) -> Rect {
     )[1]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the action row contains eleven fixed items"
+)]
 pub(super) fn node_action_rects(rect: Rect, y: f32) -> [Rect; 5] {
     let header = node_header_rect(rect, y);
     let parts = crate::ui_layout::row(
@@ -339,7 +350,7 @@ pub(super) fn draw_effect_header(
     node: &crate::effects::EffectNode,
     section: &Accordion,
     body: Rect,
-    chrome: (Icons, &PluginRegistry),
+    chrome: (&Icons, &PluginRegistry),
     state: (bool, KeyframeControl),
 ) {
     let (rect, y) = position;
@@ -365,15 +376,15 @@ pub(super) fn draw_effect_header(
         style,
     );
     let buttons = node_action_rects(rect, y);
-    for (index, icon, tooltip) in [
-        (0, AppIcon::ArrowUp, "Move effect up"),
-        (1, AppIcon::ArrowDown, "Move effect down"),
-        (4, AppIcon::Delete, "Delete effect"),
+    for (index, button, icon, tooltip) in [
+        (0, buttons[0], AppIcon::ArrowUp, "Move effect up"),
+        (1, buttons[1], AppIcon::ArrowDown, "Move effect down"),
+        (4, buttons[4], AppIcon::Delete, "Delete effect"),
     ] {
         icon_button(
             ctx,
             &format!("inspector-effect-action-{}-{index}", node.id),
-            buttons[index],
+            button,
             icons.get(icon),
             tooltip,
             style,
@@ -423,6 +434,10 @@ pub(super) fn transform_vec2_row_hit(
     true
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the rotation column contains one fixed item"
+)]
 pub(super) fn rotation_row_hit(rect: Rect, y: f32) -> Rect {
     crate::ui_layout::fit_column_at(
         rect,
@@ -435,6 +450,10 @@ pub(super) fn rotation_row_hit(rect: Rect, y: f32) -> Rect {
     .1[0]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the rotation field row contains three fixed items"
+)]
 pub(super) fn transform_rotation_parts(rect: Rect, y: f32) -> (Rect, Rect, Rect, Rect, Rect) {
     let row = rotation_row_hit(rect, y);
     let (label_column, control_column, key_column) = property_row_parts(row);
@@ -510,6 +529,10 @@ pub(super) fn color_property_row(
     );
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the gradient header row contains six fixed items"
+)]
 pub(super) fn gradient_header_parts(rect: Rect, y: f32) -> (Rect, Rect, Rect) {
     let controls = property_control_rect(rect, y);
     let parts = crate::ui_layout::row(
@@ -541,7 +564,7 @@ pub(super) fn gradient_color_header_row(
     y: f32,
     count: usize,
     keyframe: KeyframeControl,
-    icons: Icons,
+    icons: &Icons,
 ) {
     property_chrome(ctx, rect, y, "Colors", "gradient-colors", Some(keyframe));
     let (summary, remove, add) = gradient_header_parts(rect, y);
@@ -582,7 +605,7 @@ pub(super) fn gradient_stop_row(
         ctx,
         rect,
         y,
-        &format!("Stop {}", index + 1),
+        &format!("Stop {}", index.saturating_add(1)),
         "gradient-stop",
         None,
     );

@@ -162,7 +162,7 @@ fn repository() -> Option<(&'static str, &'static str)> {
         .and_then(|value| value.split_once('/'))
 }
 
-fn platform() -> Option<(&'static str, &'static str)> {
+const fn platform() -> Option<(&'static str, &'static str)> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         return Some(("linux-x86_64", "kama"));

@@ -19,7 +19,7 @@ pub fn build_active_modal(
     registry: &CommandRegistry,
     render_phase: RenderPhase,
     about_logos: AboutLogos,
-    icons: Icons,
+    icons: &Icons,
 ) {
     match modal {
         Modal::About(dialog) => build_about_dialog(ctx, width, height, about_logos, dialog),
@@ -43,7 +43,7 @@ pub fn centered_dialog_rect(
 ) -> Rect {
     let viewport = Rect::new(0.0, 0.0, viewport_width, viewport_height);
     let centered = kama_ui::layout::centered(viewport, width, height);
-    kama_ui::layout::fit_column_at(
+    kama_ui::layout::fit_column_array_at(
         viewport,
         [centered.x.max(8.0), centered.y.max(8.0)],
         width,
@@ -55,7 +55,7 @@ pub fn centered_dialog_rect(
 }
 
 fn dialog_content_row(row: Rect) -> Rect {
-    kama_ui::layout::row(
+    kama_ui::layout::row_array(
         row,
         &[
             kama_ui::layout::Item::width(14.0),
@@ -185,6 +185,10 @@ fn build_about_column(
     (content_id, button_id)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "build_about_column always creates both measured blocks"
+)]
 fn about_dialog_rects(viewport: Rect) -> (Rect, Rect) {
     let ((content, button), measured) = ui::measure_layout(viewport, |ctx| {
         build_about_column(ctx, None, ui::Size::Pixels(ABOUT_DIALOG_W), true)
@@ -214,8 +218,7 @@ pub fn build_about_dialog(
     let rect = about_dialog_rect(viewport_width, viewport_height);
     let logo = match theme::effective_theme() {
         theme::ThemePreset::Light => logos.light,
-        theme::ThemePreset::Dark => logos.dark,
-        theme::ThemePreset::System => unreachable!("effective theme is always light or dark"),
+        theme::ThemePreset::Dark | theme::ThemePreset::System => logos.dark,
     };
     build_modal(
         ctx,
@@ -307,7 +310,7 @@ pub fn action_dialog_rect(
     centered_dialog_rect(viewport_width, viewport_height, spec.size[0], spec.size[1])
 }
 pub fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, [Rect; 2]) {
-    let rows = kama_ui::layout::column(
+    let rows = kama_ui::layout::column_array(
         dialog,
         &[
             kama_ui::layout::Item::height(10.0),
@@ -326,7 +329,7 @@ pub fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, 
     let title = dialog_content_row(rows[1]);
     let description = dialog_content_row(rows[3]);
     let gap = (spec.secondary_offset - spec.primary_width - 82.0).max(0.0);
-    let buttons = kama_ui::layout::row(
+    let buttons = kama_ui::layout::row_array(
         rows[5],
         &[
             kama_ui::layout::Item::fill(),
@@ -343,7 +346,8 @@ pub fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, 
 }
 
 pub fn action_button_rect(dialog: Rect, primary: bool, spec: ActionModalSpec) -> Rect {
-    action_dialog_parts(dialog, spec).2[usize::from(primary)]
+    let [secondary, primary_button] = action_dialog_parts(dialog, spec).2;
+    if primary { primary_button } else { secondary }
 }
 pub fn discard_dialog_rect(width: f32, height: f32) -> Rect {
     action_dialog_rect(width, height, DISCARD_MODAL)
@@ -482,7 +486,7 @@ pub fn missing_media_dialog_rect(
 }
 
 pub fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
-    let rows = kama_ui::layout::column(
+    let rows = kama_ui::layout::column_array(
         dialog,
         &[
             kama_ui::layout::Item::height(12.0),
@@ -503,7 +507,7 @@ pub fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2])
     let title = dialog_content_row(rows[1]);
     let message = dialog_content_row(rows[3]);
     let list = dialog_content_row(rows[5]);
-    let buttons = kama_ui::layout::row(
+    let buttons = kama_ui::layout::row_array(
         rows[7],
         &[
             kama_ui::layout::Item::fill(),
@@ -520,7 +524,8 @@ pub fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2])
 }
 
 pub fn missing_media_button_rect(dialog: Rect, confirm: bool) -> Rect {
-    missing_media_dialog_parts(dialog).3[usize::from(confirm)]
+    let [cancel, apply] = missing_media_dialog_parts(dialog).3;
+    if confirm { apply } else { cancel }
 }
 
 pub fn missing_media_max_scroll(dialog: Rect, missing: usize) -> f32 {
@@ -536,7 +541,7 @@ pub fn missing_media_picker_rect(dialog: Rect, index: usize, scroll: f32) -> Rec
         list.width,
         MISSING_MEDIA_ROW_H,
     );
-    kama_ui::layout::row(
+    kama_ui::layout::row_array(
         row,
         &[
             kama_ui::layout::Item::width(MISSING_MEDIA_NAME_W),
@@ -694,7 +699,7 @@ pub fn update_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
 }
 
 fn update_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
-    let rows = kama_ui::layout::column(
+    let rows = kama_ui::layout::column_array(
         dialog,
         &[
             kama_ui::layout::Item::height(12.0),
@@ -715,7 +720,7 @@ fn update_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
     let title = dialog_content_row(rows[1]);
     let body = dialog_content_row(rows[3]);
     let progress = dialog_content_row(rows[5]);
-    let buttons = kama_ui::layout::row(
+    let buttons = kama_ui::layout::row_array(
         rows[7],
         &[
             kama_ui::layout::Item::fill(),
@@ -732,10 +737,11 @@ fn update_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
 }
 
 pub fn update_dialog_button_rect(dialog: Rect, primary: bool) -> Rect {
-    update_dialog_parts(dialog).3[usize::from(primary)]
+    let [secondary, primary_button] = update_dialog_parts(dialog).3;
+    if primary { primary_button } else { secondary }
 }
 
-fn update_dialog_title(dialog: &UpdateDialog) -> &'static str {
+const fn update_dialog_title(dialog: &UpdateDialog) -> &'static str {
     match &dialog.state {
         UpdateDialogState::Available => "Update available",
         UpdateDialogState::Installing => "Updating Kama",
@@ -871,8 +877,8 @@ impl TextModalSpec {
         centered_dialog_rect(width, height, self.size[0], self.size[1])
     }
 
-    fn title(self, dialog: Rect) -> Rect {
-        let rows = kama_ui::layout::column(
+    fn title(dialog: Rect) -> Rect {
+        let rows = kama_ui::layout::column_array(
             dialog,
             &[
                 kama_ui::layout::Item::height(8.0),
@@ -884,7 +890,7 @@ impl TextModalSpec {
             ui::Align::Start,
             None,
         );
-        kama_ui::layout::row(
+        kama_ui::layout::row_array(
             rows[1],
             &[
                 kama_ui::layout::Item::width(12.0),
@@ -898,7 +904,7 @@ impl TextModalSpec {
     }
 
     pub(super) fn input(self, dialog: Rect) -> Rect {
-        let rows = kama_ui::layout::column(
+        let rows = kama_ui::layout::column_array(
             dialog,
             &[
                 kama_ui::layout::Item::height(self.input_y),
@@ -910,7 +916,7 @@ impl TextModalSpec {
             ui::Align::Start,
             None,
         );
-        kama_ui::layout::row(
+        kama_ui::layout::row_array(
             rows[1],
             &[
                 kama_ui::layout::Item::width(12.0),
@@ -923,8 +929,8 @@ impl TextModalSpec {
         )[1]
     }
 
-    pub(super) fn button(self, dialog: Rect, confirm: bool) -> Rect {
-        let rows = kama_ui::layout::column(
+    pub(super) fn button(dialog: Rect, confirm: bool) -> Rect {
+        let rows = kama_ui::layout::column_array(
             dialog,
             &[
                 kama_ui::layout::Item::fill(),
@@ -936,7 +942,7 @@ impl TextModalSpec {
             ui::Align::Start,
             None,
         );
-        let buttons = kama_ui::layout::row(
+        let buttons = kama_ui::layout::row_array(
             rows[1],
             &[
                 kama_ui::layout::Item::fill(),
@@ -949,7 +955,7 @@ impl TextModalSpec {
             0.0,
             ui::Align::Start,
         );
-        buttons[if confirm { 3 } else { 1 }]
+        if confirm { buttons[3] } else { buttons[1] }
     }
 }
 
@@ -997,7 +1003,7 @@ pub fn build_text_modal(
         (Rect::new(0.0, 0.0, width, height), rect),
         opacity,
         |ctx| {
-            build_modal_title(ctx, (spec.id, "title"), spec.title(local), title);
+            build_modal_title(ctx, (spec.id, "title"), TextModalSpec::title(local), title);
             extra(ctx, local);
             dialog.build(
                 ctx,
@@ -1013,7 +1019,7 @@ pub fn build_text_modal(
                 build_modal_button(
                     ctx,
                     (spec.id, "button", confirm),
-                    spec.button(local, confirm),
+                    TextModalSpec::button(local, confirm),
                     &label,
                     if confirm {
                         ModalButtonRole::Primary
@@ -1045,8 +1051,8 @@ pub fn build_new_composition_dialog(
     );
 }
 
-pub fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
-    let rows = kama_ui::layout::column(
+pub fn speed_duration_mode_rect(dialog: Rect, mode: SpeedDurationMode) -> Rect {
+    let rows = kama_ui::layout::column_array(
         dialog,
         &[
             kama_ui::layout::Item::height(36.0),
@@ -1058,7 +1064,7 @@ pub fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
         ui::Align::Start,
         None,
     );
-    kama_ui::layout::row(
+    let columns = kama_ui::layout::row_array(
         rows[1],
         &[
             kama_ui::layout::Item::width(12.0),
@@ -1072,7 +1078,12 @@ pub fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
         0.0,
         0.0,
         ui::Align::Start,
-    )[1 + index * 2]
+    );
+    match mode {
+        SpeedDurationMode::SpeedPercent => columns[1],
+        SpeedDurationMode::PerClipDuration => columns[3],
+        SpeedDurationMode::TotalDuration => columns[5],
+    }
 }
 
 pub fn build_speed_duration_dialog(
@@ -1102,7 +1113,7 @@ pub fn build_speed_duration_dialog(
                 build_modal_button(
                     ctx,
                     ("speed-duration-mode", index),
-                    speed_duration_mode_rect(local, index),
+                    speed_duration_mode_rect(local, candidate),
                     label,
                     if mode == candidate {
                         ModalButtonRole::Primary
@@ -1298,6 +1309,10 @@ pub fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> Vec<Rect
     .1
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the measured root is created with vertical_scroll in this function"
+)]
 pub fn palette_max_scroll(state: &PaletteState, entries: usize, visible_rows: usize) -> f32 {
     if entries <= visible_rows || visible_rows == 0 {
         return 0.0;
@@ -1363,7 +1378,7 @@ pub fn palette_rect(
     if state.kind.is_some_and(PaletteKind::is_add_menu) {
         let anchor = state.anchor.unwrap_or_else(|| {
             let centered = kama_ui::layout::centered(viewport, 1.0, 1.0);
-            kama_ui::layout::fit_column_at(
+            kama_ui::layout::fit_column_array_at(
                 viewport,
                 [centered.x + 0.5, centered.y + 0.5],
                 1.0,
@@ -1386,7 +1401,7 @@ pub fn palette_rect(
     } else {
         centered.y.max(8.0)
     };
-    kama_ui::layout::fit_column_at(
+    kama_ui::layout::fit_column_array_at(
         viewport,
         [centered.x.max(8.0), y],
         width,
@@ -1412,7 +1427,7 @@ pub fn palette_body_rect(popup: Rect, state: &PaletteState, visible_rows: usize)
 pub fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
     let title = palette_rects(popup, state, 0).title?;
     Some(
-        kama_ui::layout::row(
+        kama_ui::layout::row_array(
             title,
             &[
                 kama_ui::layout::Item::fill(),
@@ -1437,7 +1452,7 @@ pub fn palette_footer_close_rect(
     }
     let footer = palette_rects(popup, state, visible_rows).footer?;
     Some(
-        kama_ui::layout::row(
+        kama_ui::layout::row_array(
             footer,
             &[
                 kama_ui::layout::Item::fill(),
@@ -1485,7 +1500,7 @@ fn build_command_palette_dialog(
     viewport_height: f32,
     state: &mut PaletteState,
     entries: &[PaletteEntry],
-    icons: Icons,
+    icons: &Icons,
     rect: Rect,
     opacity: f32,
 ) {
@@ -1521,14 +1536,13 @@ fn build_command_palette_dialog(
                     );
                 }
                 let selected = state.selected.min(entries.len().saturating_sub(1));
-                for (index, entry) in entries.iter().enumerate() {
-                    let row = layout.items[index];
+                for (index, (entry, &row)) in entries.iter().zip(layout.items.iter()).enumerate() {
                     if row.bottom() < layout.rows.y || row.y > layout.rows.bottom() {
                         continue;
                     }
                     let active = index == selected;
                     let inner = kama_ui::layout::inset(row, 5.0);
-                    let parts = kama_ui::layout::row(
+                    let parts = kama_ui::layout::row_array(
                         inner,
                         &[
                             kama_ui::layout::Item::width(18.0),
@@ -1577,7 +1591,7 @@ pub fn build_palette(
     viewport_height: f32,
     state: &mut PaletteState,
     entries: &[PaletteEntry],
-    icons: Icons,
+    icons: &Icons,
 ) {
     let is_commands = matches!(state.kind, Some(PaletteKind::Commands));
     let is_add_menu = state.kind.is_some_and(PaletteKind::is_add_menu);
@@ -1691,7 +1705,7 @@ pub fn build_palette(
                             Some(PaletteKind::AddPanel(_)) => i18n::text("palette-add-panel-search"),
                             Some(PaletteKind::TimelineAdd { kind: TrackKind::Video, .. }) => i18n::text("palette-video-search"),
                             Some(PaletteKind::TimelineAdd { kind: TrackKind::Audio, .. }) => i18n::text("palette-audio-search"),
-                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Effect, .. }) => i18n::text("palette-effect-search"),
+                            Some(PaletteKind::TimelineAdd { kind: TrackKind::Effect, .. } | PaletteKind::EffectClip { .. }) => i18n::text("palette-effect-search"),
                             Some(PaletteKind::VideoClip { .. }) => i18n::text("palette-generators-search"),
                             Some(PaletteKind::PipelineAssignment(PipelineKind::Audio)) => i18n::text("palette-audio-pipeline-search"),
                             Some(PaletteKind::NewPipeline) => i18n::text("palette-pipeline-type-search"),
@@ -1700,7 +1714,6 @@ pub fn build_palette(
                             Some(PaletteKind::AddEffect { audio: false }) => i18n::text("palette-effects-search"),
                             Some(PaletteKind::FontFamily) => i18n::text("palette-fonts-search"),
                             Some(PaletteKind::NodeInsert { .. }) => i18n::text("palette-nodes-search"),
-                            Some(PaletteKind::EffectClip { .. }) => i18n::text("palette-effect-search"),
                             Some(PaletteKind::ReplaceSelectedClips { .. }) => i18n::text("palette-replacement-search"),
                             None => i18n::text("palette-search"),
                         },

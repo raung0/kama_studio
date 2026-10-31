@@ -87,6 +87,7 @@ impl Knob {
         self.circular = true;
         self
     }
+    #[must_use]
     pub fn formatter(
         mut self,
         formatter: impl Fn(f64, usize) -> String + Send + Sync + 'static,
@@ -182,6 +183,12 @@ impl Knob {
         self.drag.take().is_some()
     }
 
+    /// # Panics
+    /// Panics if the layout engine fails to return the measured dial.
+    #[expect(
+        clippy::expect_used,
+        reason = "the dial block is created in this measured layout"
+    )]
     pub fn build(&self, ctx: &mut BuildCtx, id: impl Display, rect: Rect, style: Style) {
         let ui_scale = style.ui_scale.clamp(0.25, 4.0);
         let dial_size = rect.height.min(rect.width * 0.58).max(12.0 * ui_scale);
@@ -249,10 +256,11 @@ fn pointer_angle(center: [f32; 2], point: [f32; 2]) -> f64 {
 }
 
 fn wrap_radians(mut value: f64) -> f64 {
-    while value > std::f64::consts::PI {
+    value %= std::f64::consts::TAU;
+    if value > std::f64::consts::PI {
         value -= std::f64::consts::TAU;
     }
-    while value < -std::f64::consts::PI {
+    if value < -std::f64::consts::PI {
         value += std::f64::consts::TAU;
     }
     value
