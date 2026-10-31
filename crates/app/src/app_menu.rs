@@ -516,12 +516,12 @@ impl NativeMenu {
         let settings = MenuItem::new(
             i18n::text("menu-settings"),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::Comma)),
+            Some(Accelerator::new(Modifiers::META, Code::Comma)),
         );
         let quit = MenuItem::new(
             i18n::text("menu-quit"),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyQ)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyQ)),
         );
         app_menu
             .append_items(&[
@@ -545,31 +545,31 @@ impl NativeMenu {
         let new_project = MenuItem::new(
             i18n::text(FILE_NEW_PROJECT.label_key),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyN)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyN)),
         );
         let save = MenuItem::new(
             i18n::text(FILE_SAVE.label_key),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyS)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyS)),
         );
         let save_as = MenuItem::new(
             i18n::text(FILE_SAVE_AS.label_key),
             true,
             Some(Accelerator::new(
-                Some(Modifiers::META | Modifiers::SHIFT),
+                Modifiers::META | Modifiers::SHIFT,
                 Code::KeyS,
             )),
         );
         let load = MenuItem::new(
             i18n::text(FILE_OPEN_PROJECT.label_key),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyO)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyO)),
         );
         let recent_menu = Submenu::new(i18n::text(OPEN_RECENT_PROJECT_KEY), false);
         let import_media = MenuItem::new(
             i18n::text(FILE_IMPORT_MEDIA.label_key),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyI)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyI)),
         );
         let exit = MenuItem::new(i18n::text(FILE_EXIT.label_key), true, None);
         file_menu
@@ -591,17 +591,15 @@ impl NativeMenu {
         let mut edit_items = Vec::with_capacity(EDIT_MENU_COMMANDS.len());
         for &command in EDIT_MENU_COMMANDS {
             let accelerator = match command {
-                "edit.undo" => Some(Accelerator::new(Some(Modifiers::META), Code::KeyZ)),
+                "edit.undo" => Some(Accelerator::new(Modifiers::META, Code::KeyZ)),
                 "edit.redo" => Some(Accelerator::new(
-                    Some(Modifiers::META | Modifiers::SHIFT),
+                    Modifiers::META | Modifiers::SHIFT,
                     Code::KeyZ,
                 )),
-                "edit.copy" => Some(Accelerator::new(Some(Modifiers::META), Code::KeyC)),
-                "edit.cut" => Some(Accelerator::new(Some(Modifiers::META), Code::KeyX)),
-                "edit.paste" => Some(Accelerator::new(Some(Modifiers::META), Code::KeyV)),
-                "timeline.cut-at-playhead" => {
-                    Some(Accelerator::new(Some(Modifiers::META), Code::KeyK))
-                }
+                "edit.copy" => Some(Accelerator::new(Modifiers::META, Code::KeyC)),
+                "edit.cut" => Some(Accelerator::new(Modifiers::META, Code::KeyX)),
+                "edit.paste" => Some(Accelerator::new(Modifiers::META, Code::KeyV)),
+                "timeline.cut-at-playhead" => Some(Accelerator::new(Modifiers::META, Code::KeyK)),
                 _ => None,
             };
             let label = commands
@@ -618,7 +616,7 @@ impl NativeMenu {
         let view_palette = MenuItem::new(
             i18n::text(VIEW_MENU_COMMAND.label_key),
             true,
-            Some(Accelerator::new(Some(Modifiers::META), Code::KeyP)),
+            Some(Accelerator::new(Modifiers::META, Code::KeyP)),
         );
         view_menu
             .append(&view_palette)
