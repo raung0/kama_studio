@@ -416,7 +416,7 @@ fn expand_component(element: Element) -> Result<TokenStream2> {
     let props_ident = format_ident!("{alias}UiProps");
     let built_in = matches!(
         alias.to_string().as_str(),
-        "Row" | "Column" | "HSpacer" | "VSpacer" | "Icon"
+        "Row" | "Column" | "Grid" | "HSpacer" | "VSpacer" | "Icon"
     );
     let marker = if built_in {
         quote! { #core::components::#marker_ident }

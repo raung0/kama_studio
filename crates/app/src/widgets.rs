@@ -361,7 +361,8 @@ impl GalleryRects {
                         .new()
                         .row()
                         .width(Size::Fill)
-                        .height(Size::FitScale(accordion_open))
+                        .height(Size::Fit)
+                        .collapse_y(accordion_open)
                         .gap(FORM_GAP)
                         .children(|ctx| {
                             let _ = ctx

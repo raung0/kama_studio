@@ -21,6 +21,16 @@ impl Component for ColumnComponent {
 }
 
 #[derive(Default)]
+pub struct GridComponent;
+
+#[ui_component("Grid", stateless)]
+impl Component for GridComponent {
+    fn ui(&mut self, ctx: &mut BuildCtx) -> BlockBuilder<'_> {
+        ctx.new().grid()
+    }
+}
+
+#[derive(Default)]
 pub struct HSpacerComponent;
 
 #[ui_component("HSpacer", stateless)]

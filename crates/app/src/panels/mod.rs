@@ -4399,7 +4399,8 @@ fn measure_inspector_sections(
                                     let _ =
                                         ctx.new()
                                             .width(Size::Fill)
-                                            .height(Size::FitScale(*open))
+                                            .height(Size::Fit)
+                                            .collapse_y(*open)
                                             .row()
                                             .children(|ctx| {
                                                 let _ = ctx
@@ -4766,7 +4767,8 @@ fn effect_control_rows<'a>(
                             body = ctx
                                 .new()
                                 .width(Size::Fill)
-                                .height(Size::FitScale(*open))
+                                .height(Size::Fit)
+                                .collapse_y(*open)
                                 .children(|ctx| {
                                     let _ = ctx
                                         .new()

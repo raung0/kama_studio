@@ -1822,73 +1822,86 @@ struct MonitorChromeRects {
     capture: [Rect; 3],
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "all control IDs are created in this measured layout"
+)]
 fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
-    let [_, fit_stage, _, status, _] = kama_ui::layout::column_array(
-        rect,
-        &[
-            kama_ui::layout::Item::height(0.0),
-            kama_ui::layout::Item::fill(),
-            kama_ui::layout::Item::height(6.0),
-            kama_ui::layout::Item::height(32.0),
-            kama_ui::layout::Item::height(0.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-        None,
-    );
-    let combo_w = 172.0_f32.min((status.width - 8.0).max(1.0));
-    let [
-        _,
-        combo,
-        _,
-        frame_snap,
-        _,
-        clip_snap,
-        _,
-        pen,
-        _,
-        mute,
-        _,
-        capture_first,
-        _,
-        capture_second,
-        _,
-        capture_third,
-        _,
-    ] = kama_ui::layout::row_array(
-        status,
-        &[
-            kama_ui::layout::Item::width(4.0),
-            kama_ui::layout::Item::new(Size::Pixels(combo_w), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(6.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(4.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(6.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(6.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(6.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(4.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::width(4.0),
-            kama_ui::layout::Item::new(Size::Pixels(28.0), Size::Pixels(28.0)),
-            kama_ui::layout::Item::fill(),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Center,
-    );
+    fn control(ctx: &mut kama_ui::BuildCtx, right_gap: f32) -> kama_ui::BlockId {
+        ctx.new()
+            .size(kama_ui::taffy::Size::from_lengths(28.0, 28.0))
+            .margin(kama_ui::taffy::Rect {
+                right: kama_ui::taffy::LengthPercentageAuto::length(right_gap),
+                ..kama_ui::taffy::Rect::length(0.0)
+            })
+            .build()
+    }
+
+    let ((fit_stage, combo, frame_snap, clip_snap, pen, mute, captures), measured) =
+        kama_ui::measure_layout(rect, |ctx| {
+            let mut fit_stage = kama_ui::BlockId::default();
+            let mut combo = kama_ui::BlockId::default();
+            let mut frame_snap = kama_ui::BlockId::default();
+            let mut clip_snap = kama_ui::BlockId::default();
+            let mut pen = kama_ui::BlockId::default();
+            let mut mute = kama_ui::BlockId::default();
+            let mut captures = [kama_ui::BlockId::default(); 3];
+            let _ = ctx
+                .new()
+                .size(kama_ui::taffy::Size::from_lengths(rect.width, rect.height))
+                .column()
+                .gap(6.0)
+                .children(|ctx| {
+                    fit_stage = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                    let _ = ctx
+                        .new()
+                        .size(kama_ui::taffy::Size::from_lengths(rect.width, 32.0))
+                        .row()
+                        .padding_edges(kama_ui::taffy::Rect {
+                            left: kama_ui::taffy::LengthPercentage::length(4.0),
+                            right: kama_ui::taffy::LengthPercentage::length(4.0),
+                            ..kama_ui::taffy::Rect::length(0.0)
+                        })
+                        .align_items(kama_ui::Align::Center)
+                        .children(|ctx| {
+                            combo = ctx
+                                .new()
+                                .size(kama_ui::taffy::Size::from_lengths(172.0, 28.0))
+                                .min_size(kama_ui::taffy::Size {
+                                    width: kama_ui::taffy::LengthPercentageAuto::length(1.0),
+                                    height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
+                                })
+                                .max_size(kama_ui::taffy::Size {
+                                    width: kama_ui::taffy::LengthPercentageAuto::percent(1.0),
+                                    height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
+                                })
+                                .margin(kama_ui::taffy::Rect {
+                                    right: kama_ui::taffy::LengthPercentageAuto::length(6.0),
+                                    ..kama_ui::taffy::Rect::length(0.0)
+                                })
+                                .build();
+                            frame_snap = control(ctx, 4.0);
+                            clip_snap = control(ctx, 6.0);
+                            pen = control(ctx, 6.0);
+                            mute = control(ctx, 6.0);
+                            captures[0] = control(ctx, 4.0);
+                            captures[1] = control(ctx, 4.0);
+                            captures[2] = control(ctx, 0.0);
+                        })
+                        .build();
+                });
+            (fit_stage, combo, frame_snap, clip_snap, pen, mute, captures)
+        });
     MonitorChromeRects {
-        fit_stage,
-        combo,
-        frame_snap,
-        clip_snap,
-        pen,
-        mute,
-        capture: [capture_first, capture_second, capture_third],
+        fit_stage: measured.rect(fit_stage).expect("monitor fit stage layout"),
+        combo: measured.rect(combo).expect("monitor combo layout"),
+        frame_snap: measured
+            .rect(frame_snap)
+            .expect("monitor frame snap layout"),
+        clip_snap: measured.rect(clip_snap).expect("monitor clip snap layout"),
+        pen: measured.rect(pen).expect("monitor pen layout"),
+        mute: measured.rect(mute).expect("monitor mute layout"),
+        capture: captures.map(|id| measured.rect(id).expect("monitor capture layout")),
     }
 }
 
@@ -4266,6 +4279,25 @@ mod snap_tests {
         },
         project::HostBinding,
     };
+
+    #[test]
+    fn monitor_chrome_preserves_origin_and_control_spacing() {
+        let layout = monitor_chrome_rects(Rect::new(23.0, 41.0, 500.0, 200.0));
+
+        assert_eq!(layout.fit_stage, Rect::new(23.0, 41.0, 500.0, 162.0));
+        assert_eq!(layout.combo, Rect::new(27.0, 211.0, 172.0, 28.0));
+        assert_eq!(layout.frame_snap, Rect::new(205.0, 211.0, 28.0, 28.0));
+        assert_eq!(layout.clip_snap, Rect::new(237.0, 211.0, 28.0, 28.0));
+        assert_eq!(layout.capture[2], Rect::new(403.0, 211.0, 28.0, 28.0));
+    }
+
+    #[test]
+    fn narrow_monitor_combo_clamps_to_status_width_and_keeps_gap() {
+        let layout = monitor_chrome_rects(Rect::new(23.0, 41.0, 100.0, 200.0));
+
+        assert_eq!(layout.combo, Rect::new(27.0, 211.0, 92.0, 28.0));
+        assert_eq!(layout.frame_snap, Rect::new(125.0, 211.0, 28.0, 28.0));
+    }
 
     fn local_test_node(id: u64, image_inputs: BTreeMap<String, ImageBinding>) -> EffectNode {
         EffectNode {

@@ -1465,18 +1465,29 @@ fn build_full_width_item(
     let mut item = BlockId::default();
     let _ = ctx
         .new()
+        .layout(kama_ui::taffy::Style {
+            padding: kama_ui::taffy::Rect {
+                left: kama_ui::taffy::prelude::length(PAD),
+                right: kama_ui::taffy::prelude::length(PAD),
+                ..kama_ui::taffy::Rect::zero()
+            },
+            align_items: match align {
+                Align::Start => kama_ui::taffy::prelude::AlignItems::START,
+                Align::Center => kama_ui::taffy::prelude::AlignItems::SAFE_CENTER,
+                Align::End => kama_ui::taffy::prelude::AlignItems::SAFE_END,
+            },
+            ..Default::default()
+        })
         .width(Size::Fill)
         .height(Size::Pixels(height))
         .row()
         .align_items(align)
         .children(|ctx| {
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
             item = ctx
                 .new()
                 .width(Size::Fill)
                 .height(Size::Pixels(item_height))
                 .build();
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     item
@@ -1486,23 +1497,38 @@ fn build_field_row(ctx: &mut kama_ui::BuildCtx) -> RenderFieldIds {
     let mut field = RenderFieldIds::default();
     let _ = ctx
         .new()
+        .layout(kama_ui::taffy::Style {
+            display: kama_ui::taffy::Display::Grid,
+            grid_template_columns: vec![
+                kama_ui::taffy::prelude::fr(42.0),
+                kama_ui::taffy::prelude::fr(58.0),
+            ],
+            gap: kama_ui::taffy::prelude::Size {
+                width: kama_ui::taffy::prelude::length(0.0),
+                height: kama_ui::taffy::prelude::length(0.0),
+            },
+            padding: kama_ui::taffy::Rect {
+                left: kama_ui::taffy::prelude::length(PAD),
+                right: kama_ui::taffy::prelude::length(PAD),
+                ..kama_ui::taffy::Rect::zero()
+            },
+            align_items: kama_ui::taffy::prelude::AlignItems::SAFE_CENTER,
+            ..Default::default()
+        })
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
-        .row()
         .align_items(Align::Center)
         .children(|ctx| {
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
             field.label = ctx
                 .new()
-                .width(Size::FillPortion(0.42))
+                .width(Size::Fill)
                 .height(Size::Pixels(20.0))
                 .build();
             field.control = ctx
                 .new()
-                .width(Size::FillPortion(0.58))
+                .width(Size::Fill)
                 .height(Size::Pixels(24.0))
                 .build();
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     field
@@ -1512,19 +1538,40 @@ fn build_two_button_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 2] {
     let mut buttons = [BlockId::default(); 2];
     let _ = ctx
         .new()
+        .layout(kama_ui::taffy::Style {
+            display: kama_ui::taffy::Display::Grid,
+            grid_template_columns: vec![
+                kama_ui::taffy::prelude::fr(42.0),
+                kama_ui::taffy::prelude::fr(58.0),
+            ],
+            padding: kama_ui::taffy::Rect {
+                left: kama_ui::taffy::prelude::length(PAD),
+                right: kama_ui::taffy::prelude::length(PAD),
+                ..kama_ui::taffy::Rect::zero()
+            },
+            ..Default::default()
+        })
         .width(Size::Fill)
         .height(Size::Pixels(ROW_H))
-        .row()
         .align_items(Align::Center)
         .children(|ctx| {
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
-            build_spacer(ctx, Size::FillPortion(0.42), Size::Fill);
+            let _ = ctx.new().build();
             let _ = ctx
                 .new()
-                .width(Size::FillPortion(0.58))
+                .layout(kama_ui::taffy::Style {
+                    display: kama_ui::taffy::Display::Grid,
+                    grid_template_columns: vec![
+                        kama_ui::taffy::prelude::fr(1.0),
+                        kama_ui::taffy::prelude::fr(1.0),
+                    ],
+                    gap: kama_ui::taffy::prelude::Size {
+                        width: kama_ui::taffy::prelude::length(4.0),
+                        height: kama_ui::taffy::prelude::length(0.0),
+                    },
+                    ..Default::default()
+                })
+                .width(Size::Fill)
                 .height(Size::Fill)
-                .row()
-                .gap(4.0)
                 .align_items(Align::Center)
                 .children(|ctx| {
                     for button in &mut buttons {
@@ -1536,7 +1583,6 @@ fn build_two_button_row(ctx: &mut kama_ui::BuildCtx) -> [BlockId; 2] {
                     }
                 })
                 .build();
-            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
         })
         .build();
     buttons
@@ -1560,7 +1606,8 @@ fn build_section(
             section_body = ctx
                 .new()
                 .width(Size::Fill)
-                .height(Size::FitScale(open))
+                .height(Size::Fit)
+                .collapse_y(open)
                 .column()
                 .children(|ctx| {
                     let _ = ctx
@@ -1604,12 +1651,19 @@ fn measure_render_rects(
                     ids.combos[RenderCombo::Preset as usize] = Some(build_field_row(ctx));
                     let _ = ctx
                         .new()
+                        .layout(kama_ui::taffy::Style {
+                            padding: kama_ui::taffy::Rect {
+                                left: kama_ui::taffy::prelude::length(PAD),
+                                right: kama_ui::taffy::prelude::length(PAD + 1.0),
+                                ..kama_ui::taffy::Rect::zero()
+                            },
+                            ..Default::default()
+                        })
                         .width(Size::Fill)
                         .height(Size::Pixels(ROW_H))
                         .row()
                         .align_items(Align::Center)
                         .children(|ctx| {
-                            build_spacer(ctx, Size::Pixels(PAD), Size::Fill);
                             let _ = ctx
                                 .new()
                                 .width(Size::Fill)
@@ -1630,7 +1684,6 @@ fn measure_render_rects(
                                         .build();
                                 })
                                 .build();
-                            build_spacer(ctx, Size::Pixels(PAD + 1.0), Size::Fill);
                         })
                         .build();
                     build_spacer(ctx, Size::Fill, Size::Pixels(6.0));
@@ -1806,6 +1859,18 @@ impl Drop for RenderPanelState {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn field_controls_keep_their_grid_widths_and_heights() {
+        let preset = built_in_presets().remove(0);
+        let layout = measure_render_rects(320.0, 0.0, &preset, [1.0; 5]);
+        let field = layout.combo_field(RenderCombo::Preset).unwrap();
+
+        assert!(field.label.width > 0.0);
+        assert!(field.control.width > field.label.width);
+        assert!((field.label.height - 20.0).abs() < 0.001);
+        assert!((field.control.height - 24.0).abs() < 0.001);
+    }
 
     fn assert_range_button_layout(width: f32) {
         let preset = built_in_presets().remove(0);

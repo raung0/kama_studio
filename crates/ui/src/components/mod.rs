@@ -24,8 +24,8 @@ pub use knob::Knob;
 pub use label::Label;
 pub use number_input::NumberInput;
 pub use primitives::{
-    ColumnUi, ColumnUiProps, HSpacerUi, HSpacerUiProps, IconUi, IconUiProps, RowUi, RowUiProps,
-    VSpacerUi, VSpacerUiProps,
+    ColumnUi, ColumnUiProps, GridUi, GridUiProps, HSpacerUi, HSpacerUiProps, IconUi, IconUiProps,
+    RowUi, RowUiProps, VSpacerUi, VSpacerUiProps,
 };
 pub use progress_bar::ProgressBar;
 pub use slider::Slider;

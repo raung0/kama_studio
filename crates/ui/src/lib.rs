@@ -1,10 +1,12 @@
 extern crate self as kama_ui;
 
 pub use kama_ui_macros::{ui, ui_component};
+pub use taffy;
 pub mod components;
 pub mod control_registry;
 pub mod dock;
 pub mod layout;
+mod layout_api;
 mod layout_engine;
 mod text_measure;
 use std::{
@@ -405,13 +407,7 @@ pub const TEXTURE_MODE_CONTAIN: u32 = 3;
 )]
 pub struct Block {
     pub id: BlockId,
-    pub width: Size,
-    pub height: Size,
-    pub direction: Direction,
-    pub gap: f32,
-    pub padding: f32,
-    pub justify_content: Align,
-    pub align_items: Align,
+    pub layout: taffy::Style,
     pub fill: Option<Color>,
     pub fill_texture: Option<TextureSource>,
     pub texture_uv: [f32; 4],
@@ -443,6 +439,9 @@ pub struct Block {
     layer: Layer,
     centered: bool,
     position: Option<[f32; 2]>,
+    legacy_absolute: bool,
+    sizing: [Option<Size>; 2],
+    collapse: [Option<f32>; 2],
     backdrop_blur: f32,
     backdrop_tint: Color,
     opacity: f32,
@@ -454,6 +453,8 @@ pub struct Block {
     reveal_border_only: bool,
 
     rect: Rect,
+    content_rect: Rect,
+    padding_rect: Rect,
     explicit_clips: Vec<ClipShape>,
     clips: Vec<ClipShape>,
     content_clips: Vec<ClipShape>,
@@ -468,13 +469,19 @@ impl Block {
     fn new(id: BlockId, scope_seed: u64) -> Self {
         Self {
             id,
-            width: Size::Fit,
-            height: Size::Fit,
-            direction: Direction::Column,
-            gap: 0.0,
-            padding: 0.0,
-            justify_content: Align::Start,
-            align_items: Align::Start,
+            layout: taffy::Style {
+                position: taffy::Position::Relative,
+                flex_direction: taffy::FlexDirection::Column,
+                align_items: taffy::AlignItems::START,
+                justify_content: taffy::JustifyContent::START,
+                min_size: taffy::Size::zero(),
+                flex_shrink: 0.0,
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Hidden,
+                    y: taffy::Overflow::Hidden,
+                },
+                ..taffy::Style::default()
+            },
             fill: None,
             fill_texture: None,
             texture_uv: [0.0, 0.0, 1.0, 1.0],
@@ -505,6 +512,9 @@ impl Block {
             layer: Layer::Base,
             centered: false,
             position: None,
+            legacy_absolute: false,
+            sizing: [Some(Size::Fit); 2],
+            collapse: [None; 2],
             backdrop_blur: 0.0,
             backdrop_tint: Color::rgba(0.03, 0.04, 0.055, 0.52),
             opacity: 1.0,
@@ -515,6 +525,8 @@ impl Block {
             reveal: false,
             reveal_border_only: false,
             rect: Rect::default(),
+            content_rect: Rect::default(),
+            padding_rect: Rect::default(),
             explicit_clips: Vec::new(),
             clips: Vec::new(),
             content_clips: Vec::new(),
@@ -541,6 +553,7 @@ pub struct BuildCtx {
 #[derive(Clone, Debug, Default)]
 pub struct LayoutRects {
     rects: HashMap<BlockId, Rect>,
+    content_rects: HashMap<BlockId, Rect>,
     scroll_ranges: HashMap<BlockId, ScrollRange>,
 }
 
@@ -548,6 +561,11 @@ impl LayoutRects {
     #[must_use]
     pub fn rect(&self, id: BlockId) -> Option<Rect> {
         self.rects.get(&id).copied()
+    }
+
+    #[must_use]
+    pub fn content_rect(&self, id: BlockId) -> Option<Rect> {
+        self.content_rects.get(&id).copied()
     }
 
     #[must_use]
@@ -563,14 +581,16 @@ pub fn measure_layout<R>(
     fn collect(
         blocks: &[Block],
         rects: &mut HashMap<BlockId, Rect>,
+        content_rects: &mut HashMap<BlockId, Rect>,
         scroll_ranges: &mut HashMap<BlockId, ScrollRange>,
     ) {
         for block in blocks {
             rects.insert(block.id, block.rect);
+            content_rects.insert(block.id, block.content_rect);
             if block.horizontal_scroll.is_some() || block.vertical_scroll.is_some() {
                 scroll_ranges.insert(block.id, block.scroll_range);
             }
-            collect(&block.children, rects, scroll_ranges);
+            collect(&block.children, rects, content_rects, scroll_ranges);
         }
     }
 
@@ -580,12 +600,14 @@ pub fn measure_layout<R>(
     layout_roots(&mut blocks, viewport);
 
     let mut rects = HashMap::new();
+    let mut content_rects = HashMap::new();
     let mut scroll_ranges = HashMap::new();
-    collect(&blocks, &mut rects, &mut scroll_ranges);
+    collect(&blocks, &mut rects, &mut content_rects, &mut scroll_ranges);
     (
         result,
         LayoutRects {
             rects,
+            content_rects,
             scroll_ranges,
         },
     )
@@ -694,18 +716,10 @@ impl BlockBuilder<'_> {
     }
 
     const_builder_setters! {
-        width(value: Size) => width = value;
-        height(value: Size) => height = value;
-        direction(value: Direction) => direction = value;
-        gap(value: f32) => gap = value.max(0.0);
-        padding(value: f32) => padding = value.max(0.0);
-        justify_content(align: Align) => justify_content = align;
-        align_items(align: Align) => align_items = align;
         fill(color: Color) => fill = Some(color);
         texture_uv(uv: [f32; 4]) => texture_uv = uv;
         texture_mode(mode: u32) => texture_mode = mode;
         texture_rotation(radians: f32) => texture_rotation = radians;
-        border(pixels: u32) => border_width = pixels as f32;
         border_color(color: Color) => border_color = color;
         border_radius(value: f32) => border_radius = value.max(0.0);
         text_color(color: Color) => text_color = color;
@@ -738,15 +752,12 @@ impl BlockBuilder<'_> {
     }
 
     builder_flags! {
-        row, row_if => direction = Direction::Row;
-        column, column_if => direction = Direction::Column;
         monospace, monospace_if => font_kind = FontKind::Monospace;
         reveal, reveal_if => reveal = true;
         border_reveal, border_reveal_if => reveal = true, reveal_border_only = true;
         interactive, interactive_if => interactive = true, reveal = true, foreground = Some(ColorKind::Contrast);
         interactive_no_reveal, interactive_no_reveal_if => interactive = true, foreground = Some(ColorKind::Contrast);
         text_centered, text_centered_if => text_align = Align::Center, text_vertical_align = Align::Center;
-        content_centered, content_centered_if => justify_content = Align::Center, align_items = Align::Center;
         animate_fill, animate_fill_if => animate_fill = true;
         no_wrap, no_wrap_if => text_wrap = false;
     }
@@ -759,24 +770,21 @@ impl BlockBuilder<'_> {
     }
 
     const_builder_setters! {
-        clip_children(enabled: bool) => clip_children = enabled;
         backdrop_tint(color: Color) => backdrop_tint = color;
         animate_entry(enabled: bool) => animate_entry = enabled;
         animate_interaction(enabled: bool) => animate_interaction = enabled;
-        horizontal_scroll(state: ScrollState) => horizontal_scroll = Some(state);
-        vertical_scroll(state: ScrollState) => vertical_scroll = Some(state);
     }
 
     builder_flags! {
-        overflow_visible, overflow_visible_if => clip_children = false;
-        overlay, overlay_if => layer = Layer::Overlay;
-        top_overlay, top_overlay_if => layer = Layer::Popup;
+        overlay, overlay_if => layer = Layer::Overlay, legacy_absolute = true;
+        top_overlay, top_overlay_if => layer = Layer::Popup, legacy_absolute = true;
         centered, centered_if => centered = true;
     }
 
     #[must_use]
     pub fn position(self, (x, y): (f32, f32)) -> Self {
         self.block.position = Some((x, y).into());
+        self.block.legacy_absolute = true;
         self
     }
 
@@ -784,8 +792,13 @@ impl BlockBuilder<'_> {
     pub const fn bounds(self, (x, y, width, height): (f32, f32, f32, f32)) -> Self {
         let block = &mut *self.block;
         block.position = Some([x, y]);
-        block.width = Size::Pixels(width);
-        block.height = Size::Pixels(height);
+        block.legacy_absolute = true;
+        block.sizing = [Some(Size::Pixels(width)), Some(Size::Pixels(height))];
+        block.collapse = [None; 2];
+        block.layout.size = taffy::Size {
+            width: taffy::Dimension::length(width.max(0.0)),
+            height: taffy::Dimension::length(height.max(0.0)),
+        };
         self
     }
 
@@ -800,6 +813,7 @@ impl BlockBuilder<'_> {
         let block = &mut *self.block;
         block.layer = Layer::Popup;
         block.centered = true;
+        block.legacy_absolute = true;
         block.animate_entry = true;
         self
     }
@@ -810,6 +824,7 @@ impl BlockBuilder<'_> {
         let block = &mut *self.block;
         block.layer = Layer::Popup;
         block.popup_dismiss = Some(state);
+        block.legacy_absolute = true;
         self
     }
 
@@ -1029,6 +1044,9 @@ impl Gui {
 fn popup_capture(blocks: &[Block]) -> Option<(Rect, PopupState)> {
     let mut capture = None;
     for block in blocks {
+        if block.layout.display == taffy::Display::None {
+            continue;
+        }
         if let Some(state) = block.popup_dismiss.as_ref() {
             capture = Some((block.rect, state.clone()));
         }
@@ -1316,6 +1334,9 @@ fn append_tooltip(
 
 fn find_block(blocks: &[Block], id: BlockId) -> Option<&Block> {
     for block in blocks {
+        if block.layout.display == taffy::Display::None {
+            continue;
+        }
         if block.id == id {
             return Some(block);
         }
@@ -1346,6 +1367,7 @@ fn prepare_block(
     inherited_clips: &[ClipShape],
     inherited_layer: Layer,
     explicit_clip_origin: [f32; 2],
+    viewport: Rect,
 ) {
     block.rect = rect;
     if !rounded_corners_enabled() {
@@ -1358,7 +1380,7 @@ fn prepare_block(
         }
     }
     block.clips = inherited_clips.to_vec();
-    if block.layer <= inherited_layer {
+    if !block.legacy_absolute || block.layer <= inherited_layer {
         for mut clip in block.explicit_clips.iter().copied() {
             clip.rect.x += explicit_clip_origin[0];
             clip.rect.y += explicit_clip_origin[1];
@@ -1367,19 +1389,50 @@ fn prepare_block(
     }
     block.layer = block.layer.max(inherited_layer);
     block.content_clips = block.clips.clone();
-    if block.clip_children {
+    let clip_x = block.clip_children || block.layout.overflow.x != taffy::Overflow::Visible;
+    let clip_y = block.clip_children || block.layout.overflow.y != taffy::Overflow::Visible;
+    if clip_x || clip_y {
         push_clip(
             &mut block.content_clips,
             ClipShape {
-                rect: rect.inset(block.border_width),
-                radius: (block.border_radius - block.border_width).max(0.0),
+                rect: Rect::new(
+                    if clip_x {
+                        block.padding_rect.x
+                    } else {
+                        viewport.x
+                    },
+                    if clip_y {
+                        block.padding_rect.y
+                    } else {
+                        viewport.y
+                    },
+                    if clip_x {
+                        block.padding_rect.width
+                    } else {
+                        viewport.width
+                    },
+                    if clip_y {
+                        block.padding_rect.height
+                    } else {
+                        viewport.height
+                    },
+                ),
+                radius: if clip_x && clip_y {
+                    (block.border_radius - block.border_width).max(0.0)
+                } else {
+                    0.0
+                },
             },
         );
     }
 }
 
-fn is_flow(block: &Block) -> bool {
-    block.layer == Layer::Base && block.position.is_none()
+const fn is_flow(block: &Block) -> bool {
+    !block.legacy_absolute
+        && !matches!(
+            block.layout.position,
+            taffy::Position::Absolute | taffy::Position::Fixed
+        )
 }
 
 fn push_clip(clips: &mut Vec<ClipShape>, clip: ClipShape) {
@@ -1424,6 +1477,9 @@ fn cursor_at_layer(
     inherited: Layer,
 ) -> Option<CursorShape> {
     for block in blocks.iter().rev() {
+        if block.layout.display == taffy::Display::None {
+            continue;
+        }
         let effective = inherited.max(block.layer);
         if let Some(shape) = cursor_at_layer(&block.children, position, desired, effective) {
             return Some(shape);
@@ -1460,6 +1516,9 @@ fn hit_test_layer(
     inherited: Layer,
 ) -> Option<BlockId> {
     for block in blocks.iter().rev() {
+        if block.layout.display == taffy::Display::None {
+            continue;
+        }
         let effective = inherited.max(block.layer);
         if let Some(id) = hit_test_layer(&block.children, position, desired, effective) {
             return Some(id);
@@ -1524,6 +1583,9 @@ fn rounded_rect_contains(rect: Rect, radius: f32, point: [f32; 2]) -> bool {
 
 fn find_block_mut(blocks: &mut [Block], id: BlockId) -> Option<&mut Block> {
     for block in blocks {
+        if block.layout.display == taffy::Display::None {
+            continue;
+        }
         if block.id == id {
             return Some(block);
         }
@@ -1637,6 +1699,9 @@ fn emit_block(
     inherited_background: Color,
     inherited_foreground: Option<ColorKind>,
 ) -> Result<()> {
+    if block.layout.display == taffy::Display::None {
+        return Ok(());
+    }
     let scale = emit.renderer.scale_factor();
     let effective_layer = inherited_layer.max(block.layer);
     let commands = match effective_layer {
@@ -1846,10 +1911,7 @@ fn emit_text(
     renderer: &mut Renderer,
     commands: &mut Vec<DrawCommand>,
 ) -> Result<()> {
-    let text_rect = args
-        .block
-        .rect
-        .inset(args.block.padding + args.block.border_width);
+    let text_rect = args.block.content_rect;
     if text_rect.width <= 0.0 || text_rect.height <= 0.0 {
         return Ok(());
     }
@@ -2369,6 +2431,56 @@ mod cursor_tests {
     fn interactive_blocks_default_to_pointer_cursor() {
         let blocks = vec![block(1, CursorShape::Auto, true)];
         assert_eq!(cursor_at(&blocks, [10.0, 10.0]), CursorShape::Pointer);
+    }
+
+    #[test]
+    fn display_none_subtree_cannot_capture_pointer_input() {
+        let behind = block(1, CursorShape::Pointer, true);
+        let mut hidden = block(2, CursorShape::EwResize, true);
+        hidden.layout.display = taffy::Display::None;
+        hidden.children.push(block(3, CursorShape::Grab, true));
+        let blocks = [behind, hidden];
+
+        assert_eq!(hit_test(&blocks, [10.0, 10.0]), Some(BlockId(1)));
+        assert_eq!(cursor_at(&blocks, [10.0, 10.0]), CursorShape::Pointer);
+    }
+
+    #[test]
+    fn native_overflow_clips_input_only_on_the_requested_axis() {
+        let mut ctx = BuildCtx::with_seed(ROOT_SCOPE_SEED);
+        let mut child = BlockId::default();
+        let _ = ctx
+            .new()
+            .layout(taffy::Style {
+                position: taffy::Position::Relative,
+                size: taffy::Size::from_lengths(40.0, 20.0),
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Visible,
+                    y: taffy::Overflow::Hidden,
+                },
+                ..taffy::Style::default()
+            })
+            .children(|ctx| {
+                child = ctx
+                    .new()
+                    .layout(taffy::Style {
+                        position: taffy::Position::Absolute,
+                        inset: taffy::Rect {
+                            left: taffy::LengthPercentageAuto::length(60.0),
+                            top: taffy::LengthPercentageAuto::length(10.0),
+                            ..taffy::Rect::auto()
+                        },
+                        size: taffy::Size::from_lengths(20.0, 20.0),
+                        ..taffy::Style::default()
+                    })
+                    .interactive()
+                    .build();
+            })
+            .build();
+        layout_roots(&mut ctx.blocks, Rect::new(0.0, 0.0, 100.0, 100.0));
+
+        assert_eq!(hit_test(&ctx.blocks, [70.0, 15.0]), Some(child));
+        assert_eq!(hit_test(&ctx.blocks, [70.0, 25.0]), None);
     }
 
     #[test]
