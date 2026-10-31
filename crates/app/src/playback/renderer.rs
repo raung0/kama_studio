@@ -18,7 +18,7 @@ use crate::{
     clip_graph_cache,
     effects::{
         EffectRuntime, GpuValue, ImageBinding, ImageGraphIndex, PipelineInstance, ValueEvaluator,
-        resolved_node_input_cached,
+        fused_graph_stages, resolved_node_input_cached,
     },
     embedded_vfs, messages,
     plugin::{GeneratorBackend, GeneratorDefinition, PluginRegistry},
@@ -1989,6 +1989,7 @@ impl FrameRenderer {
             plugins: &'graph PluginRegistry,
             values: &'values RefCell<ValueEvaluator<'graph>>,
             nodes: &'values HashMap<u64, &'graph crate::effects::EffectNode>,
+            fused_stages: &'values HashMap<u64, crate::effects::CompiledStage>,
         }
 
         fn resolve_binding(
@@ -2035,6 +2036,35 @@ impl FrameRenderer {
                 return eval.render.transparent(input.width, input.height);
             };
 
+            if let Some(stage) = view.fused_stages.get(&node_id) {
+                let stage_nodes: Vec<_> = stage
+                    .node_ids
+                    .iter()
+                    .filter_map(|id| nodes.get(id).copied())
+                    .collect();
+                if let Some(first) = stage_nodes.first() {
+                    let binding = first
+                        .image_inputs
+                        .values()
+                        .next()
+                        .unwrap_or(&ImageBinding::Disconnected);
+                    let source = resolve_binding(binding, input, view, eval, cache, visiting);
+                    let effect = EffectInputs::new(
+                        instance,
+                        plugins,
+                        eval.context,
+                        view.values,
+                        eval.render.render_scale,
+                    );
+                    let output = eval
+                        .render
+                        .apply_stage(source, stage, &stage_nodes, &effect);
+                    visiting.remove(&node_id);
+                    cache.insert(node_id, output.clone());
+                    return output;
+                }
+            }
+
             if node.node_type == crate::effects::PIPELINE_NODE_TYPE {
                 let source_binding = node
                     .stack_input
@@ -2064,6 +2094,7 @@ impl FrameRenderer {
                         ));
                         let nested_nodes =
                             target.nodes.iter().map(|node| (node.id, node)).collect();
+                        let nested_stages = fused_graph_stages(&target.nodes, &target.output);
                         let nested_view = ResolveView {
                             pipeline: target,
                             instance: None,
@@ -2071,6 +2102,7 @@ impl FrameRenderer {
                             plugins,
                             values: &nested_values,
                             nodes: &nested_nodes,
+                            fused_stages: &nested_stages,
                         };
                         let output = resolve_binding(
                             &target.output,
@@ -2299,6 +2331,7 @@ impl FrameRenderer {
             context.value_context(),
         ));
         let nodes = pipeline.nodes.iter().map(|node| (node.id, node)).collect();
+        let fused_stages = fused_graph_stages(&pipeline.nodes, &pipeline.output);
         let view = ResolveView {
             pipeline,
             instance: Some(instance),
@@ -2306,6 +2339,7 @@ impl FrameRenderer {
             plugins,
             values: &values,
             nodes: &nodes,
+            fused_stages: &fused_stages,
         };
         let output = resolve_binding(
             &pipeline.output,
@@ -2406,9 +2440,24 @@ impl FrameRenderer {
         let local_width = local_input.width;
         let local_height = local_input.height;
         let mut local_outputs = HashMap::<u64, GpuFrame>::new();
+        let local_stages = fused_graph_stages(&instance.local_nodes, &instance.local_output);
+        let fused_intermediates: HashSet<_> = local_stages
+            .values()
+            .flat_map(|stage| stage.node_ids.iter().rev().skip(1).copied())
+            .collect();
         for node_index in local_node_evaluation_order(instance) {
             let node = &instance.local_nodes[node_index];
-            let input = match node
+            if fused_intermediates.contains(&node.id) {
+                continue;
+            }
+            let stage = local_stages.get(&node.id);
+            let stage_nodes: Vec<_> = stage
+                .into_iter()
+                .flat_map(|stage| &stage.node_ids)
+                .filter_map(|id| instance.local_nodes.iter().find(|node| node.id == *id))
+                .collect();
+            let input_node = stage_nodes.first().copied().unwrap_or(node);
+            let input = match input_node
                 .stack_image_input()
                 .map(|(_, binding)| binding)
                 .unwrap_or(&crate::effects::ImageBinding::Disconnected)
@@ -2422,7 +2471,9 @@ impl FrameRenderer {
                     .cloned()
                     .unwrap_or_else(|| render.transparent(local_width, local_height)),
             };
-            let output = if node.id == crate::effects::LOCAL_TRANSFORM_NODE_ID {
+            let output = if let Some(stage) = stage {
+                render.apply_stage(input, stage, &stage_nodes, &local_effect)
+            } else if node.id == crate::effects::LOCAL_TRANSFORM_NODE_ID {
                 let adjusted;
                 let transform = if local_position_offset != [0.0, 0.0] {
                     adjusted = transform_with_position_offset(

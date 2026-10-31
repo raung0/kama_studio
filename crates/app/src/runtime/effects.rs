@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -163,6 +163,87 @@ fn fragment_key(nodes: &[&EffectNode]) -> u64 {
     hasher.finish()
 }
 
+pub fn fused_graph_stages(
+    nodes: &[EffectNode],
+    output: &ImageBinding,
+) -> HashMap<NodeId, CompiledStage> {
+    fn eligible(node: &EffectNode) -> bool {
+        node.execution == NodeExecution::PointwiseGpu
+            && node.image_inputs.len() == 1
+            && node.dynamic_image_inputs.is_none()
+            && node.node_type != PIPELINE_NODE_TYPE
+    }
+
+    let graph = ImageGraphIndex::new(nodes);
+    let mut reachable = HashSet::new();
+    let mut pending = match output {
+        ImageBinding::Node(socket) => vec![socket.node],
+        _ => Vec::new(),
+    };
+    let mut consumers = HashMap::<NodeId, Vec<NodeId>>::new();
+    while let Some(id) = pending.pop() {
+        if !reachable.insert(id) {
+            continue;
+        }
+        let Some(node) = graph.node(id) else {
+            continue;
+        };
+        for binding in node.image_inputs.values() {
+            if let ImageBinding::Node(socket) = binding {
+                consumers.entry(socket.node).or_default().push(id);
+                pending.push(socket.node);
+            }
+        }
+    }
+
+    let mut stages = HashMap::new();
+    for node in nodes.iter().filter(|node| reachable.contains(&node.id)) {
+        if !eligible(node) {
+            continue;
+        }
+        if consumers
+            .get(&node.id)
+            .is_some_and(|next| next.len() == 1 && graph.node(next[0]).is_some_and(eligible))
+        {
+            continue;
+        }
+        let mut run = vec![node];
+        let mut seen = HashSet::from([node.id]);
+        let mut current = node;
+        while let Some(ImageBinding::Node(socket)) = current.image_inputs.values().next() {
+            let Some(previous) = graph.node(socket.node) else {
+                break;
+            };
+            if !eligible(previous)
+                || consumers
+                    .get(&previous.id)
+                    .is_none_or(|next| next.len() != 1)
+                || !seen.insert(previous.id)
+            {
+                break;
+            }
+            run.push(previous);
+            current = previous;
+        }
+        if run.len() < 2 {
+            continue;
+        }
+        run.reverse();
+        stages.insert(
+            node.id,
+            CompiledStage {
+                fragment: Arc::new(CompiledFragment {
+                    key: fragment_key(&run),
+                    execution: NodeExecution::PointwiseGpu,
+                    node_types: run.iter().map(|node| node.node_type.clone()).collect(),
+                }),
+                node_ids: run.iter().map(|node| node.id).collect(),
+            },
+        );
+    }
+    stages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +361,155 @@ mod tests {
         let a_fragment = &runtime.compiled(1).unwrap().stages[0].fragment;
         let b_fragment = &runtime.compiled(2).unwrap().stages[0].fragment;
         assert!(Arc::ptr_eq(a_fragment, b_fragment));
+    }
+
+    fn image(node: NodeId) -> ImageBinding {
+        ImageBinding::Node(SocketRef {
+            node,
+            output: "image".into(),
+        })
+    }
+
+    fn graph_node(id: NodeId, execution: NodeExecution, inputs: &[ImageBinding]) -> EffectNode {
+        let mut node = EffectNode::builtin(id, BuiltinNodePreset::Invert);
+        node.execution = execution;
+        node.image_inputs = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| (format!("image_{index}"), binding.clone()))
+            .collect();
+        node.stack_input = Some("image_0".into());
+        node
+    }
+
+    #[test]
+    fn graph_fusion_combines_color_effects_after_a_generator() {
+        let nodes = vec![
+            graph_node(10, NodeExecution::GeneratorGpu, &[]),
+            graph_node(20, NodeExecution::PointwiseGpu, &[image(10)]),
+            graph_node(30, NodeExecution::PointwiseGpu, &[image(20)]),
+        ];
+        let stages = fused_graph_stages(&nodes, &image(30));
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[&30].node_ids, vec![20, 30]);
+    }
+
+    #[test]
+    fn graph_fusion_preserves_shared_outputs_at_a_branch() {
+        let nodes = vec![
+            graph_node(
+                10,
+                NodeExecution::PointwiseGpu,
+                &[ImageBinding::PipelineInput],
+            ),
+            graph_node(20, NodeExecution::PointwiseGpu, &[image(10)]),
+            graph_node(30, NodeExecution::PointwiseGpu, &[image(20)]),
+            graph_node(40, NodeExecution::PointwiseGpu, &[image(20)]),
+            graph_node(50, NodeExecution::PointwiseGpu, &[image(40)]),
+            graph_node(60, NodeExecution::SpatialGpu, &[image(30), image(50)]),
+        ];
+        let stages = fused_graph_stages(&nodes, &image(60));
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[&20].node_ids, vec![10, 20]);
+        assert_eq!(stages[&50].node_ids, vec![40, 50]);
+    }
+
+    #[test]
+    fn graph_fusion_keeps_spatial_effects_between_color_runs() {
+        let nodes = vec![
+            graph_node(
+                10,
+                NodeExecution::PointwiseGpu,
+                &[ImageBinding::PipelineInput],
+            ),
+            graph_node(20, NodeExecution::PointwiseGpu, &[image(10)]),
+            graph_node(30, NodeExecution::SpatialGpu, &[image(20)]),
+            graph_node(40, NodeExecution::PointwiseGpu, &[image(30)]),
+            graph_node(50, NodeExecution::PointwiseGpu, &[image(40)]),
+        ];
+        let stages = fused_graph_stages(&nodes, &image(50));
+        assert_eq!(stages.len(), 2);
+        assert_eq!(stages[&20].node_ids, vec![10, 20]);
+        assert_eq!(stages[&50].node_ids, vec![40, 50]);
+    }
+
+    #[test]
+    fn graph_fusion_ignores_disconnected_consumers_and_storage_order() {
+        let nodes = vec![
+            graph_node(30, NodeExecution::PointwiseGpu, &[image(20)]),
+            graph_node(99, NodeExecution::SpatialGpu, &[image(10), image(20)]),
+            graph_node(20, NodeExecution::PointwiseGpu, &[image(10)]),
+            graph_node(
+                10,
+                NodeExecution::PointwiseGpu,
+                &[ImageBinding::PipelineInput],
+            ),
+        ];
+        let stages = fused_graph_stages(&nodes, &image(30));
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[&30].node_ids, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn graph_fusion_does_not_merge_dynamic_inputs() {
+        let mut nodes = vec![
+            graph_node(
+                10,
+                NodeExecution::PointwiseGpu,
+                &[ImageBinding::PipelineInput],
+            ),
+            graph_node(20, NodeExecution::PointwiseGpu, &[image(10)]),
+        ];
+        nodes[1].dynamic_image_inputs = Some(DynamicImageInputs {
+            count_input: "count".into(),
+            prefix: "image_".into(),
+            min: 1,
+            max: 64,
+        });
+        assert!(fused_graph_stages(&nodes, &image(20)).is_empty());
+    }
+
+    #[test]
+    fn local_graph_fusion_emits_one_pass_after_the_default_transform() {
+        let registry = crate::plugin::PluginRegistry::load_default("").unwrap();
+        let mut instance = registry.visual_pipeline_instance().unwrap();
+        let mut invert = registry
+            .effect("builtin.invert")
+            .unwrap()
+            .instantiate(20)
+            .unwrap();
+        invert
+            .image_inputs
+            .insert("image".into(), instance.local_output.clone());
+        let mut vignette = registry
+            .effect("builtin.vignette")
+            .unwrap()
+            .instantiate(30)
+            .unwrap();
+        vignette.image_inputs.insert("image".into(), image(20));
+        let mut second_invert = registry
+            .effect("builtin.invert")
+            .unwrap()
+            .instantiate(40)
+            .unwrap();
+        second_invert.image_inputs.insert("image".into(), image(30));
+        instance
+            .local_nodes
+            .extend([invert, vignette, second_invert]);
+        instance.local_output = image(40);
+
+        let stages = fused_graph_stages(&instance.local_nodes, &instance.local_output);
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[&40].node_ids, vec![20, 30, 40]);
+        let source = crate::shader_codegen::build_fused_pointwise_shader(
+            &stages[&40].fragment.node_types,
+            &registry,
+        )
+        .unwrap();
+        let module = naga::front::wgsl::parse_str(&source).unwrap();
+        assert_eq!(module.entry_points.len(), 1);
+        assert_eq!(source.matches("textureLoad(").count(), 1);
+        assert_eq!(source.matches("textureStore(").count(), 1);
     }
 
     #[test]
