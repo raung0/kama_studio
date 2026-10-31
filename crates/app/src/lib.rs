@@ -86,7 +86,11 @@ mod updater;
 mod version;
 mod waveform;
 mod widgets;
-use app_menu::{NativeMenu, app_menu_height, dock_tab_close_rect};
+#[cfg(target_os = "macos")]
+use app_menu::NativeMenu;
+#[cfg(not(target_os = "macos"))]
+use app_menu::{AppMenuKeyboardState, AppMenuState, build_app_menu};
+use app_menu::{app_menu_height, dock_tab_close_rect};
 use app_modal::{ActionDialog, LayoutSaveDialog, PopupAnimation, SimpleDialog};
 
 use std::{

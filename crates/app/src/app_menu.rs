@@ -1,7 +1,13 @@
+#[cfg(target_os = "macos")]
+use super::{Accelerator, Code, Menu, MenuEvent, MenuItem, Modifiers, PredefinedMenuItem, Submenu};
+#[cfg(not(target_os = "macos"))]
 use super::{
-    Accelerator, Code, CommandRegistry, FileCommand, LayoutCommand, Menu, MenuEvent, MenuItem,
-    Modifiers, PathBuf, PredefinedMenuItem, Rect, Submenu, i18n, recent_projects, saved_layouts,
-    ui,
+    AppIcon, Color, CursorShape, EditorApp, ElementState, Hash, Icons, Key, KeyEvent, Modal,
+    NamedKey, RADIUS_MD, RADIUS_SM, SimpleDialog, Size, theme,
+};
+use super::{
+    CommandRegistry, FileCommand, LayoutCommand, PathBuf, Rect, i18n, recent_projects,
+    saved_layouts, ui,
 };
 
 pub const APP_MENU_HEIGHT: f32 = 22.0;
