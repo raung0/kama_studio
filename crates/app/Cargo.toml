@@ -52,7 +52,9 @@ winresource = "0.1"
 [package.metadata.bundle]
 name = "Kama"
 identifier = "app.kama.Kama"
-osx_minimum_system_version = "15.0"
+
+[package.metadata.bundle.osx]
+minimum_system_version = "15.0"
 
 [lints]
 workspace = true
