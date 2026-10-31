@@ -88,6 +88,8 @@
                 openssl
                 pkg-config
                 ffmpeg-full
+                cargo-unused-features
+                cargo-bloat
                 cargo-bundle
                 cargo-deny
                 cargo-edit
