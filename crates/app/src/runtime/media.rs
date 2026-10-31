@@ -427,6 +427,16 @@ pub fn probe_av_media(path: &Path) -> Result<AvMediaProbe> {
 
 type DecodedFrameBatch = (Arc<VideoFrame>, Vec<(f64, Arc<VideoFrame>)>, f64);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DecodeFramePolicy {
+    All,
+    ReferenceOnly,
+}
+
+fn scrub_frame_allowed(kind: ffmpeg::picture::Type) -> bool {
+    !matches!(kind, ffmpeg::picture::Type::B | ffmpeg::picture::Type::BI)
+}
+
 struct DecodeCancel<'a> {
     generation: &'a AtomicU64,
     expected: u64,
@@ -497,6 +507,7 @@ struct DecoderState {
     last_frame_time: Option<f64>,
     last_output_frame: Option<(f64, Arc<VideoFrame>)>,
     hardware_frame_seen: bool,
+    frame_policy: DecodeFramePolicy,
 }
 
 impl DecoderState {
@@ -590,6 +601,7 @@ impl DecoderState {
             last_frame_time: None,
             last_output_frame: None,
             hardware_frame_seen: false,
+            frame_policy: DecodeFramePolicy::All,
         })
     }
 
@@ -641,12 +653,27 @@ impl DecoderState {
         self.last_frame_time
     }
 
+    fn set_frame_policy(&mut self, policy: DecodeFramePolicy) -> bool {
+        if self.frame_policy == policy {
+            return false;
+        }
+        self.frame_policy = policy;
+        self.decoder.skip_frame(match policy {
+            DecodeFramePolicy::All => ffmpeg::Discard::None,
+            DecodeFramePolicy::ReferenceOnly => ffmpeg::Discard::Bidirectional,
+        });
+        self.decoder.flush();
+        self.last_frame_time = None;
+        self.last_output_frame = None;
+        true
+    }
+
     fn decode_at(
         &mut self,
         target_seconds: f64,
         cache_from: f64,
         collect_nearby: bool,
-        fast_keyframe_preview: bool,
+        frame_policy: DecodeFramePolicy,
         frame_interval: f64,
         cancel: Option<&DecodeCancel<'_>>,
     ) -> Result<Option<DecodedFrameBatch>> {
@@ -727,7 +754,7 @@ impl DecoderState {
                 continue;
             }
 
-            if intra_only && !fast_keyframe_preview {
+            if intra_only {
                 if let Some(packet_pts) = packet.pts().or_else(|| packet.dts()) {
                     let packet_time = packet_pts as f64 * f64::from(time_base);
                     if packet_time + timestamp_slop < target_seconds {
@@ -774,7 +801,12 @@ impl DecoderState {
                 if cancel.is_some_and(|cancel| cancel.cancelled()) {
                     continue;
                 }
-                if timestamp + timestamp_slop < target_seconds && !fast_keyframe_preview {
+                if frame_policy == DecodeFramePolicy::ReferenceOnly
+                    && !scrub_frame_allowed(decoded.kind())
+                {
+                    continue;
+                }
+                if timestamp + timestamp_slop < target_seconds {
                     let retain_eof_candidate =
                         allow_eof_fallback || target_seconds - timestamp <= eof_tolerance;
                     if (collect_nearby && timestamp + timestamp_slop >= cache_from)
@@ -828,6 +860,11 @@ impl DecoderState {
                 .unwrap_or(*decoded_until);
             *decoded_until = (*decoded_until).max(timestamp);
             *last_frame_time = Some(timestamp);
+            if frame_policy == DecodeFramePolicy::ReferenceOnly
+                && !scrub_frame_allowed(decoded.kind())
+            {
+                continue;
+            }
             if timestamp + timestamp_slop >= target_seconds {
                 let converted = convert(&decoded)?;
                 *last_output_frame = Some((timestamp, Arc::clone(&converted)));
@@ -1244,6 +1281,7 @@ struct BlockingVideoDecoder {
     path: PathBuf,
     state: Option<DecoderState>,
     cache: FrameCache,
+    scrub_cache: FrameCache,
     last_scrub_decode: Option<Instant>,
     hardware_candidates: Vec<String>,
     hardware_policy_epoch: u64,
@@ -1264,6 +1302,7 @@ impl BlockingVideoDecoder {
             path,
             state: None,
             cache: FrameCache::default(),
+            scrub_cache: FrameCache::default(),
             last_scrub_decode: None,
             hardware_candidates: if hardware_decoding_enabled() {
                 hardware_decode_names()
@@ -1288,6 +1327,7 @@ impl BlockingVideoDecoder {
         };
         self.state = None;
         self.cache = FrameCache::default();
+        self.scrub_cache = FrameCache::default();
         self.last_scrub_decode = None;
     }
 
@@ -1377,6 +1417,19 @@ impl BlockingVideoDecoder {
         })
     }
 
+    fn reference_frame(
+        &mut self,
+        time: f64,
+        timeline_fps: f64,
+        width: u32,
+        height: u32,
+        cancel: Option<&DecodeCancel<'_>>,
+    ) -> Result<Option<Arc<VideoFrame>>> {
+        self.last_scrub_decode = None;
+        self.scrub_preview(time, timeline_fps, width, height, cancel)
+            .map(|preview| preview.map(|preview| preview.frame))
+    }
+
     fn scrub_preview_once(
         &mut self,
         time: f64,
@@ -1399,7 +1452,7 @@ impl BlockingVideoDecoder {
             width,
             height,
         };
-        if let Some(frame) = self.cache.get(key) {
+        if let Some(frame) = self.scrub_cache.get(key) {
             return Ok(Some(ScrubFrame { frame, exact: true }));
         }
 
@@ -1407,7 +1460,7 @@ impl BlockingVideoDecoder {
             .last_scrub_decode
             .is_some_and(|last| last.elapsed() < SCRUB_DECODE_INTERVAL)
         {
-            if let Some(frame) = self.cache.nearest(key) {
+            if let Some(frame) = self.scrub_cache.nearest(key) {
                 return Ok(Some(ScrubFrame {
                     frame,
                     exact: false,
@@ -1419,9 +1472,14 @@ impl BlockingVideoDecoder {
             .state
             .as_ref()
             .is_some_and(|state| state.output_width != width || state.output_height != height);
+        let policy_changed = self
+            .state
+            .as_mut()
+            .is_some_and(|state| state.set_frame_policy(DecodeFramePolicy::ReferenceOnly));
         let half_frame = 0.5 / fps;
         let can_decode_forward = self.state.as_ref().is_some_and(|state| {
             !dimensions_changed
+                && !policy_changed
                 && state.last_frame_time().is_some_and(|decoded_time| {
                     target_time + half_frame >= decoded_time
                         && target_time - decoded_time <= SCRUB_SEQUENTIAL_WINDOW_SECONDS
@@ -1437,6 +1495,9 @@ impl BlockingVideoDecoder {
                 &self.hardware_candidates,
                 self.prefer_native,
             )?);
+            if let Some(state) = self.state.as_mut() {
+                state.set_frame_policy(DecodeFramePolicy::ReferenceOnly);
+            }
         } else if dimensions_changed || !can_decode_forward {
             if let Some(state) = self.state.as_mut() {
                 if let Some(cancel) = cancel {
@@ -1454,6 +1515,9 @@ impl BlockingVideoDecoder {
                         &self.hardware_candidates,
                         self.prefer_native,
                     )?);
+                    if let Some(state) = self.state.as_mut() {
+                        state.set_frame_policy(DecodeFramePolicy::ReferenceOnly);
+                    }
                 }
             }
         }
@@ -1469,13 +1533,13 @@ impl BlockingVideoDecoder {
                 target_time,
                 target_time,
                 false,
-                !can_decode_forward,
+                DecodeFramePolicy::ReferenceOnly,
                 1.0 / fps,
                 cancel,
             )
             .with_context(|| {
                 format!(
-                    "fast scrub preview {} at {target_time:.3}s",
+                    "reference-frame scrub preview {} at {target_time:.3}s",
                     self.path.display()
                 )
             })?
@@ -1484,7 +1548,7 @@ impl BlockingVideoDecoder {
         };
 
         let decoded_index = (decoded_time.max(0.0) * fps).floor() as i64;
-        self.cache.insert(
+        self.scrub_cache.insert(
             FrameKey {
                 frame_index: decoded_index,
                 width,
@@ -1511,6 +1575,15 @@ impl BlockingVideoDecoder {
         if let Some(cancel) = cancel {
             cancel.check()?;
         }
+        let requested_policy = if interactive_scrub {
+            DecodeFramePolicy::ReferenceOnly
+        } else {
+            DecodeFramePolicy::All
+        };
+        let policy_changed = self
+            .state
+            .as_mut()
+            .is_some_and(|state| state.set_frame_policy(requested_policy));
         let source_fps = timeline_fps.max(1.0);
         let request_fps = if interactive_scrub {
             source_fps.clamp(1.0, SCRUB_PREVIEW_FPS)
@@ -1526,7 +1599,12 @@ impl BlockingVideoDecoder {
             width,
             height,
         };
-        if let Some(frame) = self.cache.get(key) {
+        let cached = if interactive_scrub {
+            self.scrub_cache.get(key)
+        } else {
+            self.cache.get(key)
+        };
+        if let Some(frame) = cached {
             return Ok(Some(frame));
         }
 
@@ -1535,7 +1613,7 @@ impl BlockingVideoDecoder {
                 .last_scrub_decode
                 .is_some_and(|last| last.elapsed() < SCRUB_DECODE_INTERVAL)
         {
-            if let Some(frame) = self.cache.nearest(key) {
+            if let Some(frame) = self.scrub_cache.nearest(key) {
                 return Ok(Some(frame));
             }
         }
@@ -1546,12 +1624,13 @@ impl BlockingVideoDecoder {
         } else {
             SEEK_RESTART_THRESHOLD_SECONDS
         };
-        let restart = self.state.as_ref().is_none_or(|state| {
-            state.output_width != width
-                || state.output_height != height
-                || target_time + half_frame < state.decoded_until
-                || target_time - state.decoded_until > restart_threshold
-        });
+        let restart = policy_changed
+            || self.state.as_ref().is_none_or(|state| {
+                state.output_width != width
+                    || state.output_height != height
+                    || target_time + half_frame < state.decoded_until
+                    || target_time - state.decoded_until > restart_threshold
+            });
         if restart {
             let seek_time = (target_time
                 - if interactive_scrub {
@@ -1593,6 +1672,10 @@ impl BlockingVideoDecoder {
             }
         }
 
+        if let Some(state) = self.state.as_mut() {
+            state.set_frame_policy(requested_policy);
+        }
+
         let cache_from = if restart {
             (target_time
                 - if interactive_scrub {
@@ -1612,7 +1695,7 @@ impl BlockingVideoDecoder {
                 target_time,
                 cache_from,
                 interactive_scrub && restart,
-                false,
+                requested_policy,
                 1.0 / fps,
                 cancel,
             )
@@ -1622,16 +1705,22 @@ impl BlockingVideoDecoder {
         };
 
         for (timestamp, nearby_frame) in nearby {
-            self.cache.insert(
-                FrameKey {
-                    frame_index: (timestamp.max(0.0) * fps).floor() as i64,
-                    width,
-                    height,
-                },
-                nearby_frame,
-            );
+            let nearby_key = FrameKey {
+                frame_index: (timestamp.max(0.0) * fps).floor() as i64,
+                width,
+                height,
+            };
+            if interactive_scrub {
+                self.scrub_cache.insert(nearby_key, nearby_frame);
+            } else {
+                self.cache.insert(nearby_key, nearby_frame);
+            }
         }
-        self.cache.insert(key, Arc::clone(&frame));
+        if interactive_scrub {
+            self.scrub_cache.insert(key, Arc::clone(&frame));
+        } else {
+            self.cache.insert(key, Arc::clone(&frame));
+        }
         if interactive_scrub {
             self.last_scrub_decode = Some(Instant::now());
         } else {
@@ -2897,12 +2986,11 @@ fn video_preview_worker(
                 }
                 break;
             }
-            let frame = match decoder.frame(
+            let frame = match decoder.reference_frame(
                 time,
                 request.source_fps,
                 preview_width,
                 preview_height,
-                false,
                 None,
             ) {
                 Ok(Some(frame)) => frame,
@@ -3228,6 +3316,14 @@ mod decode_scheduler_tests {
             source_step_seconds,
             kind: DecodeRequestKind::Playback,
         }
+    }
+
+    #[test]
+    fn scrub_policy_rejects_bidirectional_frames() {
+        assert!(scrub_frame_allowed(ffmpeg::picture::Type::I));
+        assert!(scrub_frame_allowed(ffmpeg::picture::Type::P));
+        assert!(!scrub_frame_allowed(ffmpeg::picture::Type::B));
+        assert!(!scrub_frame_allowed(ffmpeg::picture::Type::BI));
     }
 
     #[test]
