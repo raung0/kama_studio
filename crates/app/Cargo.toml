@@ -43,7 +43,7 @@ ciborium = "0.2"
 wasmtime = "50.0.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = "0.19.3"
+muda = "0.21.2"
 
 [build-dependencies]
 resvg = "0.48.1"
