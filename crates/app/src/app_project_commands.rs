@@ -40,6 +40,7 @@ impl EditorApp {
             .reset(&self.editor.project, &self.editor.timeline, history_label);
         self.editor.history_gesture = None;
         self.effects.rebuild(&self.editor.project.pipelines);
+        self.render_panel.clear_project_cache();
         self.playback.clear_caches();
         self.monitor.clear_captured_frame();
         self.playback

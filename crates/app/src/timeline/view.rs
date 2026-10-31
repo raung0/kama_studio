@@ -1,5 +1,14 @@
 use super::*;
 
+impl RenderCacheState {
+    const fn tint(self) -> Color {
+        match self {
+            Self::Rendered => Color::rgb8(0x16, 0x43, 0x2c),
+            Self::Dirty => Color::rgb8(0x61, 0x3d, 0x19),
+        }
+    }
+}
+
 impl TimelineState {
     pub fn build(
         &self,
@@ -475,10 +484,7 @@ impl TimelineState {
             if x1 <= x0 {
                 continue;
             }
-            let fill = match range.state {
-                RenderCacheState::Rendered => Color::rgba8(0x12, 0x63, 0x35, 0x2a),
-                RenderCacheState::Dirty => Color::rgba8(0xd2, 0x78, 0x16, 0x34),
-            };
+            let fill = range.state.tint();
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-render-cache", stack.0, track.id, range_index),
@@ -667,10 +673,7 @@ impl TimelineState {
             if x1 <= x0 {
                 continue;
             }
-            let fill = match range.state {
-                RenderCacheState::Rendered => Color::rgba8(0x0d, 0x59, 0x2d, 0x32),
-                RenderCacheState::Dirty => Color::rgba8(0xd2, 0x78, 0x16, 0x3c),
-            };
+            let fill = range.state.tint();
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-ruler-render-cache", stack.0, range_index),
@@ -708,17 +711,26 @@ impl TimelineState {
             timeline_ticks(self.scroll_time, self.pixels_per_second, layout.body.width)
         {
             let x = layout.body.x + x;
+            let tick_color = if self
+                .render_cache_ranges
+                .iter()
+                .any(|range| time >= f64::from(range.start) && time < f64::from(range.end))
+            {
+                Color::rgb8(0xd8, 0xe5, 0xdc)
+            } else {
+                theme::timeline_muted()
+            };
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-tick", stack.0, index),
                     Rect::new(x, RULER_H - 7.0, 1.0, 7.0),
                 ) {
-                    fill: theme::timeline_muted();
+                    fill: tick_color;
                 }
                 Rect(("timeline-time", stack.0, index), Rect::new(x + 4.0, 2.0, 60.0, 16.0)) {
                     font_size: 9.0;
                     monospace;
-                    text_color: theme::timeline_muted();
+                    text_color: tick_color;
                     text: format_time(time, step);
                 }
             });

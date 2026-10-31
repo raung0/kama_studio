@@ -1,6 +1,6 @@
 use kama_ui::{
     Align, BlockId, Color, IconId, Rect, ScrollState, Size,
-    components::{Accordion, Button, ComboBox, NumberInput, SpinInput, TextEdit, ToggleButton},
+    components::{Accordion, Button, ComboBox, NumberInput, TextEdit, ToggleButton},
     measure_layout,
 };
 use serde::{Deserialize, Serialize};
@@ -255,8 +255,8 @@ pub(crate) struct RenderPanelState {
     user_presets: Vec<RenderPreset>,
     preset_name: TextEdit,
     numbers: [NumberInput; 3],
-    begin_set: bool,
-    end_set: bool,
+    custom_begin: bool,
+    custom_end: bool,
     combos: [ComboBox; 7],
     sections: [Accordion; 5],
     scroll: ScrollState,
@@ -298,8 +298,8 @@ impl RenderPanelState {
                     .bounds(0.0, 100_000_000.0)
                     .precision(0),
             ],
-            begin_set: false,
-            end_set: false,
+            custom_begin: false,
+            custom_end: false,
             combos: std::array::from_fn(|index| ComboBox::new([0, 0, 0, 0, 0, 1, 2][index])),
             sections: std::array::from_fn(|_| Accordion::new(true)),
             scroll: ScrollState::default(),
@@ -320,6 +320,13 @@ impl RenderPanelState {
     pub(crate) fn cancel_active(&mut self) {
         self.session.cancel();
         self.start_requested = false;
+    }
+
+    pub(crate) fn clear_project_cache(&mut self) {
+        self.session = RenderSession::default();
+        self.start_requested = false;
+        self.custom_begin = false;
+        self.custom_end = false;
     }
 
     pub(crate) fn is_animating(&self) -> bool {
@@ -351,7 +358,7 @@ impl RenderPanelState {
         fps: f64,
     ) {
         let fps = fps.max(1.0);
-        timeline.set_render_output_range((self.begin_set && self.end_set).then_some((
+        timeline.set_render_output_range(Some((
             self.settings.begin_frame as f32 / fps as f32,
             self.settings.end_frame.saturating_add(1) as f32 / fps as f32,
         )));
@@ -377,11 +384,9 @@ impl RenderPanelState {
         plugins: &PluginRegistry,
         interaction: (u64, bool, bool),
     ) {
+        self.sync_default_range(project, timeline);
         if self.start_requested {
             self.start_requested = false;
-            if !self.render_range_ready() {
-                return;
-            }
             let begin = self.settings.begin_frame.min(self.settings.end_frame);
             self.settings.begin_frame = begin;
             self.settings.end_frame = self.settings.end_frame.max(begin);
@@ -530,11 +535,11 @@ impl RenderPanelState {
                 self.settings.preset.quality = value.round().clamp(0.0, 51.0) as u8
             }
             RenderNumber::Begin => {
-                self.begin_set = true;
+                self.custom_begin = true;
                 self.settings.begin_frame = value.round().max(0.0) as u64;
             }
             RenderNumber::End => {
-                self.end_set = true;
+                self.custom_end = true;
                 self.settings.end_frame = value.round().max(0.0) as u64;
             }
         }
@@ -595,8 +600,15 @@ impl RenderPanelState {
         self.sections[index].open_amount() > 0.98
     }
 
-    fn render_range_ready(&self) -> bool {
-        self.begin_set && self.end_set
+    fn sync_default_range(&mut self, project: &Project, timeline: &TimelineState) {
+        if !self.custom_begin {
+            self.settings.begin_frame = 0;
+        }
+        if !self.custom_end {
+            let fps = project.active_settings().frame_rate.max(1.0);
+            self.settings.end_frame =
+                (timeline.render_end_seconds() as f64 * fps).ceil().max(1.0) as u64 - 1;
+        }
     }
 
     pub(crate) fn build(
@@ -609,14 +621,7 @@ impl RenderPanelState {
         popup_bounds: Rect,
     ) {
         let chevron = icons.get(AppIcon::Chevron);
-        if !self.begin_set {
-            self.settings.begin_frame = 0;
-        }
-        if !self.end_set {
-            let fps = project.active_settings().frame_rate.max(1.0);
-            self.settings.end_frame =
-                (timeline.render_end_seconds() as f64 * fps).ceil().max(1.0) as u64 - 1;
-        }
+        self.sync_default_range(project, timeline);
         self.sync_controls();
         let unscrolled = measure_render_rects(
             rect.width,
@@ -882,13 +887,12 @@ impl RenderPanelState {
 
         if self.sections[4].is_visible() {
             ctx.with_clip(layout.section_bodies[4], |ctx| {
-            label_at(
-                ctx,
-                layout.number_field(RenderNumber::Begin).label,
-                &i18n::text("render-begin-frame"),
-                theme::text(),
-            );
-            if self.begin_set {
+                label_at(
+                    ctx,
+                    layout.number_field(RenderNumber::Begin).label,
+                    &i18n::text("render-begin-frame"),
+                    theme::text(),
+                );
                 self.number_mut(RenderNumber::Begin).build(
                     ctx,
                     "render-begin-frame",
@@ -896,28 +900,18 @@ impl RenderPanelState {
                     "",
                     style,
                 );
-            } else {
-                SpinInput::build(
+                two_buttons_at(
                     ctx,
-                    "render-begin-frame",
-                    layout.number(RenderNumber::Begin),
-                    &i18n::text("render-not-set"),
-                    style,
+                    layout.begin_buttons,
+                    [&i18n::text("render-playhead"), &i18n::text("render-start")],
+                    "render-begin",
                 );
-            }
-            two_buttons_at(
-                ctx,
-                layout.begin_buttons,
-                [&i18n::text("render-playhead"), &i18n::text("render-start")],
-                "render-begin",
-            );
-            label_at(
-                ctx,
-                layout.number_field(RenderNumber::End).label,
-                &i18n::text("render-end-frame"),
-                theme::text(),
-            );
-            if self.end_set {
+                label_at(
+                    ctx,
+                    layout.number_field(RenderNumber::End).label,
+                    &i18n::text("render-end-frame"),
+                    theme::text(),
+                );
                 self.number_mut(RenderNumber::End).build(
                     ctx,
                     "render-end-frame",
@@ -925,85 +919,67 @@ impl RenderPanelState {
                     "",
                     style,
                 );
-            } else {
-                SpinInput::build(
+                two_buttons_at(
                     ctx,
-                    "render-end-frame",
-                    layout.number(RenderNumber::End),
-                    &i18n::text("render-not-set"),
-                    style,
+                    layout.end_buttons,
+                    [&i18n::text("render-playhead"), &i18n::text("render-end")],
+                    "render-end",
                 );
-            }
-            two_buttons_at(
-                ctx,
-                layout.end_buttons,
-                [&i18n::text("render-playhead"), &i18n::text("render-end")],
-                "render-end",
-            );
-            toggle_row_at(
-                ctx,
-                layout.background,
-                &i18n::text("render-background-task"),
-                self.settings.background,
-            );
-            toggle_row_at(
-                ctx,
-                layout.transcode,
-                &i18n::text("render-transcode-output"),
-                self.settings.transcode,
-            );
-
-            let phase = self.phase();
-            let range_ready = self.render_range_ready();
-            match phase {
-                RenderPhase::Rendering => {
-                    Button::build(ctx, "render-pause", layout.action, &i18n::text("render-pause"), style)
-                }
-                RenderPhase::Paused => {
-                    Button::build(ctx, "render-resume", layout.action, &i18n::text("render-resume"), style)
-                }
-                RenderPhase::Transcoding => Button::build_filled(
+                toggle_row_at(
                     ctx,
-                    "render-transcoding",
-                    layout.action,
-                    &i18n::text("render-transcoding"),
-                    theme::focused(),
-                    style,
-                ),
-                _ if range_ready => {
-                    Button::build_filled(
+                    layout.background,
+                    &i18n::text("render-background-task"),
+                    self.settings.background,
+                );
+                toggle_row_at(
+                    ctx,
+                    layout.transcode,
+                    &i18n::text("render-transcode-output"),
+                    self.settings.transcode,
+                );
+
+                let phase = self.phase();
+                match phase {
+                    RenderPhase::Rendering => Button::build(
                         ctx,
-                        "render-start",
+                        "render-pause",
                         layout.action,
-                        &i18n::text("render-start-render"),
-                        theme::accent(),
+                        &i18n::text("render-pause"),
                         style,
-                    );
-                    render_button_icon(
+                    ),
+                    RenderPhase::Paused => Button::build(
                         ctx,
-                        "render-start-icon",
+                        "render-resume",
                         layout.action,
-                        icons.get(AppIcon::StartRender),
-                        theme::panel(),
-                    );
-                }
-                _ => {
-                    kama_ui::ui!(ctx, {
-                        Rect("render-start-disabled", layout.action) {
-                            fill: theme::control(); border: 1; border_color: theme::line(); border_radius: style.radius_md;
-                            font_size: 11.0 * style.text_scale; text_color: theme::muted().mix(theme::control(), 0.45);
-                            text_centered; text: i18n::text("render-start-render");
-                        }
-                    });
-                    render_button_icon(
+                        &i18n::text("render-resume"),
+                        style,
+                    ),
+                    RenderPhase::Transcoding => Button::build_filled(
                         ctx,
-                        "render-start-disabled-icon",
+                        "render-transcoding",
                         layout.action,
-                        icons.get(AppIcon::StartRender),
-                        theme::muted(),
-                    );
+                        &i18n::text("render-transcoding"),
+                        theme::focused(),
+                        style,
+                    ),
+                    _ => {
+                        Button::build_filled(
+                            ctx,
+                            "render-start",
+                            layout.action,
+                            &i18n::text("render-start-render"),
+                            theme::accent(),
+                            style,
+                        );
+                        render_button_icon(
+                            ctx,
+                            "render-start-icon",
+                            layout.action,
+                            icons.get(AppIcon::StartRender),
+                            theme::panel(),
+                        );
+                    }
                 }
-            }
             });
         }
     }
@@ -1167,7 +1143,7 @@ impl RenderPanelState {
         }
         if self.section_open(4) {
             if layout.number(RenderNumber::Begin).contains(p) {
-                self.begin_set = true;
+                self.custom_begin = true;
                 if let Some(value) = self.number_mut(RenderNumber::Begin).pointer_pressed(
                     layout.number(RenderNumber::Begin),
                     p,
@@ -1178,19 +1154,19 @@ impl RenderPanelState {
                 return true;
             }
             if layout.begin_buttons[0].contains(p) {
-                self.begin_set = true;
+                self.custom_begin = true;
                 self.settings.begin_frame = (timeline.playhead().max(0.0) as f64
                     * project.active_settings().frame_rate)
                     .round() as u64;
                 return true;
             }
             if layout.begin_buttons[1].contains(p) {
-                self.begin_set = true;
+                self.custom_begin = false;
                 self.settings.begin_frame = 0;
                 return true;
             }
             if layout.number(RenderNumber::End).contains(p) {
-                self.end_set = true;
+                self.custom_end = true;
                 if let Some(value) = self.number_mut(RenderNumber::End).pointer_pressed(
                     layout.number(RenderNumber::End),
                     p,
@@ -1201,14 +1177,14 @@ impl RenderPanelState {
                 return true;
             }
             if layout.end_buttons[0].contains(p) {
-                self.end_set = true;
+                self.custom_end = true;
                 self.settings.end_frame = (timeline.playhead().max(0.0) as f64
                     * project.active_settings().frame_rate)
                     .round() as u64;
                 return true;
             }
             if layout.end_buttons[1].contains(p) {
-                self.end_set = true;
+                self.custom_end = false;
                 self.settings.end_frame = (timeline.render_end_seconds() as f64
                     * project.active_settings().frame_rate)
                     .ceil()
@@ -1230,8 +1206,7 @@ impl RenderPanelState {
                     RenderPhase::Rendering => self.session.pause(),
                     RenderPhase::Paused => self.session.resume(),
                     RenderPhase::Transcoding => {}
-                    _ if self.render_range_ready() => self.start_requested = true,
-                    _ => {}
+                    _ => self.start_requested = true,
                 }
                 return true;
             }
@@ -1749,5 +1724,105 @@ mod layout_tests {
     fn range_buttons_split_the_control_column_evenly() {
         assert_range_button_layout(180.0);
         assert_range_button_layout(480.0);
+    }
+
+    fn range_fixture() -> (Project, TimelineState, RenderPanelState) {
+        let mut project = Project::new();
+        project.active_composition_mut().settings.frame_rate = 24.0;
+        let mut document = project.active_composition().timeline.clone();
+        document.end_time = Some(2.5);
+        let timeline = TimelineState::from_document(document);
+        let panel = RenderPanelState::new(&project, &timeline);
+        (project, timeline, panel)
+    }
+
+    #[test]
+    fn full_timeline_is_selected_and_render_can_start_without_setting_bounds() {
+        let (project, timeline, mut panel) = range_fixture();
+        assert_eq!(
+            (panel.settings.begin_frame, panel.settings.end_frame),
+            (0, 59)
+        );
+        let rect = Rect::new(0.0, 0.0, 480.0, 2_000.0);
+        let layout = measure_render_rects(
+            rect.width,
+            0.0,
+            &panel.settings.preset,
+            panel.section_amounts(),
+        );
+
+        panel.pointer_pressed(
+            rect,
+            [
+                layout.action.x + layout.action.width * 0.5,
+                layout.action.y + layout.action.height * 0.5,
+            ],
+            ModifiersState::empty(),
+            &project,
+            &timeline,
+        );
+
+        assert!(panel.start_requested);
+    }
+
+    #[test]
+    fn default_end_tracks_timeline_duration_and_frame_rate() {
+        let (mut project, timeline, mut panel) = range_fixture();
+        project.active_composition_mut().settings.frame_rate = 30.0;
+        let mut document = timeline.document();
+        document.end_time = Some(4.25);
+        let timeline = TimelineState::from_document(document);
+
+        panel.sync_default_range(&project, &timeline);
+
+        assert_eq!(
+            (panel.settings.begin_frame, panel.settings.end_frame),
+            (0, 127)
+        );
+    }
+
+    #[test]
+    fn custom_bounds_are_preserved_when_the_timeline_changes() {
+        let (project, timeline, mut panel) = range_fixture();
+        panel.apply_number(RenderNumber::Begin, 12.0);
+        panel.apply_number(RenderNumber::End, 35.0);
+        let mut document = timeline.document();
+        document.end_time = Some(8.0);
+        let timeline = TimelineState::from_document(document);
+
+        panel.sync_default_range(&project, &timeline);
+
+        assert_eq!(
+            (panel.settings.begin_frame, panel.settings.end_frame),
+            (12, 35)
+        );
+    }
+
+    #[test]
+    fn project_reset_restores_automatic_full_timeline_bounds() {
+        let (project, timeline, mut panel) = range_fixture();
+        panel.apply_number(RenderNumber::Begin, 12.0);
+        panel.apply_number(RenderNumber::End, 35.0);
+
+        panel.clear_project_cache();
+        panel.sync_default_range(&project, &timeline);
+
+        assert_eq!(
+            (panel.settings.begin_frame, panel.settings.end_frame),
+            (0, 59)
+        );
+    }
+
+    #[test]
+    fn an_empty_timeline_has_a_nonempty_default_frame_range() {
+        let project = Project::new();
+        let timeline = TimelineState::from_document(project.active_composition().timeline.clone());
+
+        let panel = RenderPanelState::new(&project, &timeline);
+
+        assert_eq!(
+            (panel.settings.begin_frame, panel.settings.end_frame),
+            (0, 0)
+        );
     }
 }

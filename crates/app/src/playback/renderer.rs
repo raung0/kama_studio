@@ -2586,7 +2586,7 @@ impl FrameRenderer {
         if decoded_frame_ready {
             self.last_signature = None;
         }
-        if timeline.is_playing() && !timeline.is_scrubbing() {
+        if render_cache.is_none() && timeline.is_playing() && !timeline.is_scrubbing() {
             self.preload_upcoming_videos(project, timeline, preview_width, preview_height);
         }
         if self.presentation.as_ref().is_some_and(|presentation| {
