@@ -5,6 +5,8 @@ pub mod components;
 pub mod control_registry;
 pub mod dock;
 pub mod layout;
+mod layout_engine;
+mod text_measure;
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -1206,7 +1208,7 @@ fn measure_text_ink_width(
     scale: f32,
 ) -> f32 {
     let scale = scale.max(0.001);
-    let line_height = font_size * 1.25;
+    let line_height = font_size * text_measure::LINE_HEIGHT;
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
     let glyphs = {
         let mut borrowed = buffer.borrow_with(font_system);
@@ -1245,7 +1247,7 @@ fn measure_text_ink_width(
 }
 
 fn measure_text(font_system: &mut FontSystem, text: &str, font_size: f32) -> [f32; 2] {
-    let line_height = font_size * 1.25;
+    let line_height = font_size * text_measure::LINE_HEIGHT;
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
     let mut borrowed = buffer.borrow_with(font_system);
     borrowed.set_size(None, None);
@@ -1308,17 +1310,8 @@ fn append_tooltip(
         .text(text)
         .opacity(state.opacity)
         .build();
-    for mut tooltip in ctx.blocks {
-        let rect = absolute_rect(&tooltip, viewport);
-        layout_block(
-            &mut tooltip,
-            rect,
-            &[],
-            Layer::Base,
-            [viewport.x, viewport.y],
-        );
-        roots.push(tooltip);
-    }
+    layout_roots(&mut ctx.blocks, viewport);
+    roots.extend(ctx.blocks);
 }
 
 fn find_block(blocks: &[Block], id: BlockId) -> Option<&Block> {
@@ -1333,30 +1326,21 @@ fn find_block(blocks: &[Block], id: BlockId) -> Option<&Block> {
     None
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "layout nodes are created and used within the same tree without removal"
+)]
 fn layout_roots(blocks: &mut [Block], viewport: Rect) {
-    let (fixed, fill_weight) = flow_metrics(blocks, false, 0.0);
-    let available_height = fill_share(viewport.height, fixed, fill_weight);
-    let mut cursor_y = viewport.y;
-
-    for block in blocks {
-        if !is_flow(block) {
-            let rect = absolute_rect(block, viewport);
-            layout_block(block, rect, &[], Layer::Base, [viewport.x, viewport.y]);
-            continue;
-        }
-        let height = resolve_main(block.height, available_height, intrinsic_size(block, false));
-        let rect = Rect::new(
-            viewport.x,
-            cursor_y,
-            resolve_cross(block.width, viewport.width, intrinsic_size(block, true)),
-            height,
-        );
-        cursor_y += height;
-        layout_block(block, rect, &[], Layer::Base, [viewport.x, viewport.y]);
+    thread_local! {
+        static TEXT: std::cell::RefCell<text_measure::TextMeasurer> =
+            std::cell::RefCell::new(text_measure::TextMeasurer::new());
     }
+    TEXT.with_borrow_mut(|text| {
+        layout_engine::layout(blocks, viewport, text).expect("valid layout tree");
+    });
 }
 
-fn layout_block(
+fn prepare_block(
     block: &mut Block,
     rect: Rect,
     inherited_clips: &[ClipShape],
@@ -1392,202 +1376,10 @@ fn layout_block(
             },
         );
     }
-
-    if block.children.is_empty() {
-        return;
-    }
-    let viewport_content = rect.inset(block.padding + block.border_width);
-    let mut content = viewport_content;
-    content.x -= block
-        .horizontal_scroll
-        .map_or(0.0, |scroll| scroll.offset.max(0.0));
-    content.y -= block
-        .vertical_scroll
-        .map_or(0.0, |scroll| scroll.offset.max(0.0));
-    let horizontal = block.direction == Direction::Row;
-    let main_available = axis_extent(content, horizontal);
-    let cross_available = axis_extent(content, !horizontal);
-    let (fixed, fill_weight) = flow_metrics(&block.children, horizontal, block.gap);
-    let fill_size = fill_share(main_available, fixed, fill_weight);
-    let occupied = fill_size.mul_add(fill_weight, fixed);
-    let mut cursor = alignment_offset(main_available, occupied, block.justify_content);
-
-    for child in &mut block.children {
-        if !is_flow(child) {
-            let rect = absolute_rect(child, content);
-
-            let child_clips = if child.layer > block.layer {
-                &[][..]
-            } else {
-                block.content_clips.as_slice()
-            };
-            layout_block(
-                child,
-                rect,
-                child_clips,
-                block.layer,
-                [content.x, content.y],
-            );
-            continue;
-        }
-        let main = resolve_main(
-            axis_spec(child, horizontal),
-            fill_size,
-            intrinsic_size(child, horizontal),
-        );
-        let cross = resolve_cross(
-            axis_spec(child, !horizontal),
-            cross_available,
-            intrinsic_size(child, !horizontal),
-        );
-        let child_rect = axis_rect(content, horizontal, cursor, main, cross, block.align_items);
-        cursor += main + block.gap;
-        layout_block(
-            child,
-            child_rect,
-            &block.content_clips,
-            block.layer,
-            [content.x, content.y],
-        );
-    }
-
-    let content_width = block
-        .children
-        .iter()
-        .map(|child| child.rect.right() - content.x)
-        .fold(0.0, f32::max);
-    let content_height = block
-        .children
-        .iter()
-        .map(|child| child.rect.bottom() - content.y)
-        .fold(0.0, f32::max);
-    block.scroll_range = ScrollRange {
-        horizontal: if block.horizontal_scroll.is_some() {
-            (content_width - viewport_content.width).max(0.0)
-        } else {
-            0.0
-        },
-        vertical: if block.vertical_scroll.is_some() {
-            (content_height - viewport_content.height).max(0.0)
-        } else {
-            0.0
-        },
-    };
 }
 
 fn is_flow(block: &Block) -> bool {
     block.layer == Layer::Base && block.position.is_none()
-}
-
-fn absolute_rect(block: &Block, parent: Rect) -> Rect {
-    let mut rect = Rect::new(
-        parent.x,
-        parent.y,
-        resolve_absolute(block.width, parent.width, intrinsic_size(block, true)),
-        resolve_absolute(block.height, parent.height, intrinsic_size(block, false)),
-    );
-    if block.centered {
-        rect = rect.centered_in(parent);
-    }
-    if let Some([x, y]) = block.position {
-        rect.x = parent.x + x;
-        rect.y = parent.y + y;
-    }
-    rect
-}
-
-const fn axis_spec(block: &Block, horizontal: bool) -> Size {
-    if horizontal {
-        block.width
-    } else {
-        block.height
-    }
-}
-
-const fn axis_extent(rect: Rect, horizontal: bool) -> f32 {
-    if horizontal { rect.width } else { rect.height }
-}
-
-fn axis_rect(
-    parent: Rect,
-    horizontal: bool,
-    cursor: f32,
-    main: f32,
-    cross: f32,
-    align: Align,
-) -> Rect {
-    let cross_offset = alignment_offset(axis_extent(parent, !horizontal), cross, align);
-    if horizontal {
-        Rect::new(parent.x + cursor, parent.y + cross_offset, main, cross)
-    } else {
-        Rect::new(parent.x + cross_offset, parent.y + cursor, cross, main)
-    }
-}
-
-fn alignment_offset(available: f32, occupied: f32, align: Align) -> f32 {
-    let remaining = (available - occupied).max(0.0);
-    remaining
-        * match align {
-            Align::Start => 0.0,
-            Align::Center => 0.5,
-            Align::End => 1.0,
-        }
-}
-
-fn flow_metrics(blocks: &[Block], horizontal: bool, gap: f32) -> (f32, f32) {
-    let mut fixed = 0.0;
-    let mut fill_weight = 0.0;
-    let flow = blocks.iter().filter(|block| is_flow(block));
-    let count = flow.clone().count();
-    for block in flow {
-        match axis_spec(block, horizontal) {
-            Size::Pixels(value) => fixed += value.max(0.0),
-            Size::Fit => fixed += intrinsic_size(block, horizontal),
-            Size::FitScale(scale) => {
-                fixed = intrinsic_size(block, horizontal).mul_add(normalized_scale(scale), fixed);
-            }
-            Size::Fill => fill_weight += 1.0,
-            Size::FillPortion(portion) => fill_weight += normalized_weight(portion),
-        }
-    }
-    (
-        gap.mul_add(count.saturating_sub(1) as f32, fixed),
-        fill_weight,
-    )
-}
-
-fn fill_share(available: f32, fixed: f32, weight: f32) -> f32 {
-    if weight <= 0.0 {
-        0.0
-    } else {
-        (available - fixed).max(0.0) / weight
-    }
-}
-
-const fn normalized_weight(value: f32) -> f32 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
-}
-
-const fn normalized_scale(value: f32) -> f32 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
-}
-
-fn resolve_main(spec: Size, fill: f32, intrinsic: f32) -> f32 {
-    match spec {
-        Size::Pixels(value) => value.max(0.0),
-        Size::Fit => intrinsic,
-        Size::FitScale(scale) => intrinsic * normalized_scale(scale),
-        Size::Fill => fill,
-        Size::FillPortion(portion) => fill * normalized_weight(portion),
-    }
 }
 
 fn push_clip(clips: &mut Vec<ClipShape>, clip: ClipShape) {
@@ -1616,71 +1408,6 @@ fn push_clip(clips: &mut Vec<ClipShape>, clip: ClipShape) {
         clips.remove(remove_index);
     }
     clips.push(clip);
-}
-
-fn resolve_cross(spec: Size, available: f32, intrinsic: f32) -> f32 {
-    match spec {
-        Size::Pixels(value) => value.max(0.0),
-        Size::Fill | Size::FillPortion(_) => available.max(0.0),
-        Size::Fit => intrinsic.min(available).max(0.0),
-        Size::FitScale(scale) => (intrinsic * normalized_scale(scale))
-            .min(available)
-            .max(0.0),
-    }
-}
-
-fn resolve_absolute(spec: Size, available: f32, intrinsic: f32) -> f32 {
-    match spec {
-        Size::Pixels(value) => value.max(0.0),
-        Size::Fill | Size::FillPortion(_) => available.max(0.0),
-        Size::Fit => intrinsic.max(0.0),
-        Size::FitScale(scale) => (intrinsic * normalized_scale(scale)).max(0.0),
-    }
-}
-
-fn intrinsic_size(block: &Block, horizontal: bool) -> f32 {
-    let padding = (block.padding + block.border_width) * 2.0;
-    if block.children.is_empty() {
-        let text = block.text.as_ref().map_or(0.0, |text| {
-            if horizontal {
-                let advance = match block.font_kind {
-                    FontKind::Sans => 0.55,
-
-                    FontKind::Monospace => 0.60,
-                };
-                text.chars().count() as f32 * block.font_size * advance
-            } else {
-                block.font_size * 1.4
-            }
-        });
-        return text + padding;
-    }
-
-    let parallel = horizontal == (block.direction == Direction::Row);
-    let mut size = 0.0f32;
-    let flow = block.children.iter().filter(|child| is_flow(child));
-    let count = flow.clone().count();
-    for child in flow {
-        let child_size = preferred_size(child, horizontal);
-        size = if parallel {
-            size + child_size
-        } else {
-            size.max(child_size)
-        };
-    }
-    size + if parallel {
-        block.gap * count.saturating_sub(1) as f32
-    } else {
-        0.0
-    } + padding
-}
-
-fn preferred_size(block: &Block, horizontal: bool) -> f32 {
-    match axis_spec(block, horizontal) {
-        Size::Pixels(value) => value.max(0.0),
-        Size::FitScale(scale) => intrinsic_size(block, horizontal) * normalized_scale(scale),
-        Size::Fit | Size::Fill | Size::FillPortion(_) => intrinsic_size(block, horizontal),
-    }
 }
 
 fn cursor_at(blocks: &[Block], position: [f32; 2]) -> CursorShape {
@@ -2134,7 +1861,10 @@ fn emit_text(
     let text_color = args.text_color;
     let mut buffer = Buffer::new(
         &mut gui.font_system,
-        Metrics::new(args.block.font_size, args.block.font_size * 1.25),
+        Metrics::new(
+            args.block.font_size,
+            args.block.font_size * text_measure::LINE_HEIGHT,
+        ),
     );
     let physical_glyphs = {
         let mut borrowed = buffer.borrow_with(&mut gui.font_system);
@@ -2326,31 +2056,26 @@ mod layout_tests {
     }
 
     #[test]
-    fn monospace_fit_uses_monospace_cell_width() {
-        let ((sans, mono), measured) = measure_layout(Rect::new(0.0, 0.0, 400.0, 100.0), |ctx| {
-            let sans = ctx
+    fn fit_text_uses_shaped_glyph_advances() {
+        let ((wide, narrow), measured) = measure_layout(Rect::new(0.0, 0.0, 400.0, 100.0), |ctx| {
+            let wide = ctx
                 .new()
                 .width(Size::Fit)
                 .height(Size::Pixels(20.0))
                 .font_size(10.0)
-                .text("0000000000")
+                .text("WWWWWWWWWW")
                 .build();
-            let mono = ctx
+            let narrow = ctx
                 .new()
                 .width(Size::Fit)
                 .height(Size::Pixels(20.0))
                 .font_size(10.0)
-                .font_kind(FontKind::Monospace)
-                .text("0000000000")
+                .text("iiiiiiiiii")
                 .build();
-            (sans, mono)
+            (wide, narrow)
         });
 
-        let sans = measured.rect(sans).unwrap().width;
-        let mono = measured.rect(mono).unwrap().width;
-        assert!((sans - 55.0).abs() < 0.001);
-        assert!((mono - 60.0).abs() < 0.001);
-        assert!(mono > sans);
+        assert!(measured.rect(wide).unwrap().width > measured.rect(narrow).unwrap().width);
     }
 
     #[test]
