@@ -1054,10 +1054,9 @@ impl Renderer {
                 };
                 if let (Some(index), Some(command_index)) =
                     (cursor.to_usize(), command_index.to_u32())
+                    && let Some(slot) = indices.get_mut(index)
                 {
-                    if let Some(slot) = indices.get_mut(index) {
-                        *slot = command_index;
-                    }
+                    *slot = command_index;
                 }
                 *cursor = cursor.saturating_add(1);
             });
@@ -1523,7 +1522,7 @@ fn make_builtin_icon(size: u32) -> Vec<u8> {
     let mut pixels = vec![0u8; pixel_count];
     let center = (size as f32).mul_add(0.5, -0.5);
     let radius = (size as f32).mul_add(0.375, 0.0);
-    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let Some(index) = index.to_u32() else { break };
         let x = index.checked_rem(size).unwrap_or_default();
         let y = index.checked_div(size).unwrap_or_default();

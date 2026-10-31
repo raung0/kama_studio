@@ -110,7 +110,7 @@ impl MessagesState {
         if !rect.contains(point) {
             return false;
         }
-        let content = snapshot().len() as f32 * ROW_HEIGHT + PAD * 2.0;
+        let content = PAD.mul_add(2.0, snapshot().len() as f32 * ROW_HEIGHT);
         self.scroll
             .scroll_by(-delta[1], (content - rect.height).max(0.0))
     }

@@ -43,17 +43,17 @@ use super::{
 };
 
 #[derive(Clone, Debug)]
-pub(crate) struct RenderCachePreview {
+pub struct RenderCachePreview {
     pub path: PathBuf,
     pub local_time: f64,
     pub generation: u64,
     pub frame: u64,
 }
 
-pub(crate) const GRAPH_GENERATOR_VARIANT_CAPACITY: usize = 4;
+pub const GRAPH_GENERATOR_VARIANT_CAPACITY: usize = 4;
 
 #[derive(Debug)]
-pub(crate) struct GraphGeneratorVariants<T> {
+pub struct GraphGeneratorVariants<T> {
     pub(crate) variants: crate::app_shared::BoundedCache<u64, T>,
 }
 
@@ -82,13 +82,13 @@ impl<T: Clone> GraphGeneratorVariants<T> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SourceGeometry {
+pub struct SourceGeometry {
     pub(crate) size: (u32, u32),
     pub(crate) position_offset: [f32; 2],
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PreviewOutput<'a> {
+pub struct PreviewOutput<'a> {
     pub(crate) texture: Option<ExternalTextureId>,
     pub(crate) source_geometry: &'a HashMap<u32, SourceGeometry>,
 }
@@ -203,7 +203,7 @@ impl GeneratorWorker {
             .shared
             .jobs
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         jobs.insert(job.slot, job);
         drop(jobs);
         self.shared.wake.notify_one();
@@ -239,7 +239,7 @@ impl GeneratorWorker {
         self.shared
             .jobs
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         while self.responses.try_recv().is_ok() {}
     }
@@ -265,12 +265,12 @@ fn generator_worker_loop(
             let mut jobs = shared
                 .jobs
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             while jobs.is_empty() && !shared.closed.load(Ordering::Acquire) {
                 jobs = shared
                     .wake
                     .wait(jobs)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             if shared.closed.load(Ordering::Acquire) {
                 return;
@@ -590,7 +590,7 @@ struct TimelineRender<'a> {
     record_source_geometry: bool,
 }
 
-pub(crate) struct FrameRenderer {
+pub struct FrameRenderer {
     texture: Option<ExternalTextureId>,
     presentation: Option<PresentationTexture>,
     gpu: Option<VideoGpuRuntime>,
@@ -1090,10 +1090,10 @@ impl FrameRenderer {
                             continue;
                         }
                     };
-                    if write_error.is_none() {
-                        if let Err(error) = surface.write_mapped(&mapped, writer) {
-                            write_error = Some(error);
-                        }
+                    if write_error.is_none()
+                        && let Err(error) = surface.write_mapped(&mapped, writer)
+                    {
+                        write_error = Some(error);
                     }
                     drop(mapped);
                     surface.buffer.unmap();
@@ -1145,10 +1145,11 @@ impl FrameRenderer {
             return Ok(Some(frame));
         }
         if pending {
-            if let Some((path, generation, frame, _)) = &self.render_cache_gpu {
-                if path == &cache.path && *generation == cache.generation {
-                    return Ok(Some(Arc::clone(frame)));
-                }
+            if let Some((path, generation, frame, _)) = &self.render_cache_gpu
+                && path == &cache.path
+                && *generation == cache.generation
+            {
+                return Ok(Some(Arc::clone(frame)));
             }
             return Ok(None);
         }
@@ -1164,18 +1165,17 @@ impl FrameRenderer {
         cache: &RenderCachePreview,
         frame: &Arc<VideoFrame>,
     ) -> GpuFrame {
-        if let Some((path, generation, cached_frame, surface)) = &mut self.render_cache_gpu {
-            if path == &cache.path
-                && *generation == cache.generation
-                && surface.matches(frame.as_ref())
-            {
-                if Arc::ptr_eq(cached_frame, frame) {
-                    return surface.frame();
-                }
-                if gpu.upload_video_into(queue, encoder, surface, frame.as_ref()) {
-                    *cached_frame = Arc::clone(frame);
-                    return surface.frame();
-                }
+        if let Some((path, generation, cached_frame, surface)) = &mut self.render_cache_gpu
+            && path == &cache.path
+            && *generation == cache.generation
+            && surface.matches(frame.as_ref())
+        {
+            if Arc::ptr_eq(cached_frame, frame) {
+                return surface.frame();
+            }
+            if gpu.upload_video_into(queue, encoder, surface, frame.as_ref()) {
+                *cached_frame = Arc::clone(frame);
+                return surface.frame();
             }
         }
 
@@ -1277,7 +1277,7 @@ impl FrameRenderer {
             }
         };
         let frame_index =
-            (timeline_time.max(0.0) as f64 * settings.frame_rate.max(1.0)).floor() as u64;
+            (f64::from(timeline_time.max(0.0)) * settings.frame_rate.max(1.0)).floor() as u64;
         let has_video_solo = tracks
             .iter()
             .any(|track| track.kind != TrackKind::Audio && track.solo);
@@ -1306,10 +1306,10 @@ impl FrameRenderer {
                         continue;
                     }
                     let row = track.property_row(&clip.source, clip.source_instance);
-                    let composite = row.map(|row| &row.composite).unwrap_or(&clip.composite);
-                    let pipeline = row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline);
+                    let composite = row.map_or(&clip.composite, |row| &row.composite);
+                    let pipeline = row.map_or(&clip.pipeline, |row| &row.pipeline);
                     let clip_opacity =
-                        composite.opacity(timeline_time as f64) * clip.opacity.clamp(0.0, 1.0);
+                        composite.opacity(f64::from(timeline_time)) * clip.opacity.clamp(0.0, 1.0);
                     if clip_opacity <= 0.0 && render.blocking_decode {
                         continue;
                     }
@@ -1320,7 +1320,7 @@ impl FrameRenderer {
                         accumulated,
                         pipeline,
                         EffectEvalContext {
-                            timeline_time: timeline_time as f64,
+                            timeline_time: f64::from(timeline_time),
                             local_time,
                             frame_index,
                             frame_rate: settings.frame_rate,
@@ -1332,19 +1332,19 @@ impl FrameRenderer {
                         original,
                         processed,
                         clip_opacity,
-                        composite.blend_mode(timeline_time as f64),
-                        composite.alpha_blend_mode(timeline_time as f64),
+                        composite.blend_mode(f64::from(timeline_time)),
+                        composite.alpha_blend_mode(f64::from(timeline_time)),
                     );
                 }
                 continue;
             }
 
-            let track_opacity = track.composite.opacity(timeline_time as f64);
+            let track_opacity = track.composite.opacity(f64::from(timeline_time));
             if track_opacity <= 0.0 && render.blocking_decode {
                 continue;
             }
-            let track_mode = track.composite.blend_mode(timeline_time as f64);
-            let track_alpha_mode = track.composite.alpha_blend_mode(timeline_time as f64);
+            let track_mode = track.composite.blend_mode(f64::from(timeline_time));
+            let track_alpha_mode = track.composite.alpha_blend_mode(f64::from(timeline_time));
             if active_clips.is_empty() && track.pipeline.is_none() {
                 continue;
             }
@@ -1352,17 +1352,17 @@ impl FrameRenderer {
             let mut track_frame: Option<GpuFrame> = None;
             for &clip in active_clips {
                 let row = track.property_row(&clip.source, clip.source_instance);
-                let source_state = row.map(|row| &row.source).unwrap_or(&clip.source);
-                let composite = row.map(|row| &row.composite).unwrap_or(&clip.composite);
-                let pipeline = row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline);
-                let model3d = row.map(|row| &row.model3d).unwrap_or(&clip.model3d);
+                let source_state = row.map_or(&clip.source, |row| &row.source);
+                let composite = row.map_or(&clip.composite, |row| &row.composite);
+                let pipeline = row.map_or(&clip.pipeline, |row| &row.pipeline);
+                let model3d = row.map_or(&clip.model3d, |row| &row.model3d);
                 let clip_opacity =
-                    composite.opacity(timeline_time as f64) * clip.opacity.clamp(0.0, 1.0);
+                    composite.opacity(f64::from(timeline_time)) * clip.opacity.clamp(0.0, 1.0);
                 if clip_opacity <= 0.0 && render.blocking_decode {
                     continue;
                 }
-                let clip_mode = composite.blend_mode(timeline_time as f64);
-                let clip_alpha_mode = composite.alpha_blend_mode(timeline_time as f64);
+                let clip_mode = composite.blend_mode(f64::from(timeline_time));
+                let clip_alpha_mode = composite.alpha_blend_mode(f64::from(timeline_time));
                 let local_time = clip.local_time(timeline_time);
                 if clip.source.is_effect_input() {
                     let base = track_frame
@@ -1374,7 +1374,7 @@ impl FrameRenderer {
                         base,
                         pipeline,
                         EffectEvalContext {
-                            timeline_time: timeline_time as f64,
+                            timeline_time: f64::from(timeline_time),
                             local_time,
                             frame_index,
                             frame_rate: settings.frame_rate,
@@ -1405,7 +1405,7 @@ impl FrameRenderer {
                 let source_geometry = self.source_render_geometry(
                     render.project,
                     source_state,
-                    timeline_time as f64,
+                    f64::from(timeline_time),
                     render.plugins,
                     settings.canvas_size,
                     [preview_width, preview_height],
@@ -1427,8 +1427,8 @@ impl FrameRenderer {
                     SourceRenderTiming {
                         timeline_fps: settings.frame_rate,
                         local_time: source_time,
-                        keyframe_time: timeline_time as f64,
-                        source_step_seconds: clip.speed.max(0.01) as f64
+                        keyframe_time: f64::from(timeline_time),
+                        source_step_seconds: f64::from(clip.speed.max(0.01))
                             / settings.frame_rate.max(1.0),
                     },
                     [source_dimensions.0, source_dimensions.1],
@@ -1439,7 +1439,7 @@ impl FrameRenderer {
                     source,
                     pipeline,
                     EffectEvalContext {
-                        timeline_time: timeline_time as f64,
+                        timeline_time: f64::from(timeline_time),
                         local_time,
                         frame_index,
                         frame_rate: settings.frame_rate,
@@ -1481,8 +1481,8 @@ impl FrameRenderer {
                     track_frame,
                     pipeline,
                     EffectEvalContext {
-                        timeline_time: timeline_time as f64,
-                        local_time: timeline_time as f64,
+                        timeline_time: f64::from(timeline_time),
+                        local_time: f64::from(timeline_time),
                         frame_index,
                         frame_rate: settings.frame_rate,
                     },
@@ -1569,16 +1569,18 @@ impl FrameRenderer {
         };
         dimensions
             .filter(|(width, height)| *width > 0 && *height > 0)
-            .map(|dimensions| {
-                scaled_source_geometry(
-                    dimensions,
-                    [0.0, 0.0],
-                    canvas_size,
-                    preview_width,
-                    preview_height,
-                )
-            })
-            .unwrap_or_else(|| SourceGeometry::canvas(preview_width, preview_height))
+            .map_or_else(
+                || SourceGeometry::canvas(preview_width, preview_height),
+                |dimensions| {
+                    scaled_source_geometry(
+                        dimensions,
+                        [0.0, 0.0],
+                        canvas_size,
+                        preview_width,
+                        preview_height,
+                    )
+                },
+            )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1617,13 +1619,12 @@ impl FrameRenderer {
                                             .then_some(other_clip)
                                     },
                                 );
-                                if let Some(other_clip) = reusable {
-                                    if let Some((path, decoder, _)) =
+                                if let Some(other_clip) = reusable
+                                    && let Some((path, decoder, _)) =
                                         self.export_video_decoders.remove(&other_clip)
-                                    {
-                                        self.export_video_decoders
-                                            .insert(clip_id, (path, decoder, export_decode_epoch));
-                                    }
+                                {
+                                    self.export_video_decoders
+                                        .insert(clip_id, (path, decoder, export_decode_epoch));
                                 }
                             }
                             let export_entry = self
@@ -1665,10 +1666,9 @@ impl FrameRenderer {
                             self.waiting_for_video = true;
                             if let Some((cached_path, _, surface)) =
                                 self.video_gpu_cache.get(&clip_id)
+                                && cached_path.as_path() == asset.path.as_path()
                             {
-                                if cached_path.as_path() == asset.path.as_path() {
-                                    return Ok(surface.frame());
-                                }
+                                return Ok(surface.frame());
                             }
                         }
                         if let Some(frame) = frame {
@@ -1815,8 +1815,7 @@ impl FrameRenderer {
                     if let Some(worker) = &mut self.generator_worker {
                         let render_origin =
                             generator_content_bounds(definition, parameters, keyframe_time)
-                                .map(|(x, y, _, _)| [x, y])
-                                .unwrap_or([0.0, 0.0]);
+                                .map_or([0.0, 0.0], |(x, y, _, _)| [x, y]);
                         worker.request(GeneratorWorkerJob {
                             slot: GeneratorWorkerSlot::Clip(clip_id),
                             key: cache_key,
@@ -1872,8 +1871,7 @@ impl FrameRenderer {
                         };
                         let render_origin =
                             generator_content_bounds(definition, parameters, keyframe_time)
-                                .map(|(x, y, _, _)| [x, y])
-                                .unwrap_or([0.0, 0.0]);
+                                .map_or([0.0, 0.0], |(x, y, _, _)| [x, y]);
                         let cpu = self.render_wasm_generator(
                             WasmGeneratorRender {
                                 module,
@@ -2160,7 +2158,7 @@ impl FrameRenderer {
                     let previous = eval
                         .graph_generator_cache
                         .get(&slot)
-                        .and_then(|variants| variants.latest());
+                        .and_then(GraphGeneratorVariants::latest);
                     worker.request(GeneratorWorkerJob {
                         slot: GeneratorWorkerSlot::Graph {
                             pipeline: pipeline.id,
@@ -2375,52 +2373,52 @@ impl FrameRenderer {
         local_output_size: Option<[u32; 2]>,
         local_position_offset: [f32; 2],
     ) -> GpuFrame {
-        if let Some(id) = instance.pipeline {
-            if let Some(pipeline) = render.project.pipeline(id) {
-                let values = RefCell::new(ValueEvaluator::new(
-                    &pipeline.value_nodes,
-                    context.value_context(),
-                ));
-                let effect = EffectInputs::new(
-                    Some(instance),
-                    render.plugins,
-                    context,
-                    &values,
-                    render.render_scale,
-                );
-                if pipeline.nodes.iter().any(|node| {
-                    node.image_inputs.len() != 1
-                        || node.dynamic_image_inputs.is_some()
-                        || node.node_type == crate::effects::PIPELINE_NODE_TYPE
-                        || matches!(
-                            node.execution,
-                            crate::effects::NodeExecution::GeneratorGpu
-                                | crate::effects::NodeExecution::GeneratorCpu
-                        )
-                }) {
-                    frame = self.evaluate_shared_graph(render, frame, pipeline, instance, context);
-                } else {
-                    match &pipeline.output {
-                        crate::effects::ImageBinding::Disconnected => {
-                            frame = render.transparent(frame.width, frame.height);
-                        }
-                        crate::effects::ImageBinding::PipelineInput => {}
-                        crate::effects::ImageBinding::Node(_) => {
-                            if let Some(compiled) = render.effects.compiled(id) {
-                                for stage in &compiled.stages {
-                                    let nodes: Vec<_> = stage
-                                        .node_ids
-                                        .iter()
-                                        .filter_map(|node_id| {
-                                            pipeline.nodes.iter().find(|node| node.id == *node_id)
-                                        })
-                                        .collect();
-                                    frame = render.apply_stage(frame, stage, &nodes, &effect);
-                                }
-                            } else {
-                                for node in pipeline.main_path() {
-                                    frame = render.apply_local(frame, node, &effect);
-                                }
+        if let Some(id) = instance.pipeline
+            && let Some(pipeline) = render.project.pipeline(id)
+        {
+            let values = RefCell::new(ValueEvaluator::new(
+                &pipeline.value_nodes,
+                context.value_context(),
+            ));
+            let effect = EffectInputs::new(
+                Some(instance),
+                render.plugins,
+                context,
+                &values,
+                render.render_scale,
+            );
+            if pipeline.nodes.iter().any(|node| {
+                node.image_inputs.len() != 1
+                    || node.dynamic_image_inputs.is_some()
+                    || node.node_type == crate::effects::PIPELINE_NODE_TYPE
+                    || matches!(
+                        node.execution,
+                        crate::effects::NodeExecution::GeneratorGpu
+                            | crate::effects::NodeExecution::GeneratorCpu
+                    )
+            }) {
+                frame = self.evaluate_shared_graph(render, frame, pipeline, instance, context);
+            } else {
+                match &pipeline.output {
+                    crate::effects::ImageBinding::Disconnected => {
+                        frame = render.transparent(frame.width, frame.height);
+                    }
+                    crate::effects::ImageBinding::PipelineInput => {}
+                    crate::effects::ImageBinding::Node(_) => {
+                        if let Some(compiled) = render.effects.compiled(id) {
+                            for stage in &compiled.stages {
+                                let nodes: Vec<_> = stage
+                                    .node_ids
+                                    .iter()
+                                    .filter_map(|node_id| {
+                                        pipeline.nodes.iter().find(|node| node.id == *node_id)
+                                    })
+                                    .collect();
+                                frame = render.apply_stage(frame, stage, &nodes, &effect);
+                            }
+                        } else {
+                            for node in pipeline.main_path() {
+                                frame = render.apply_local(frame, node, &effect);
                             }
                         }
                     }
@@ -2457,11 +2455,10 @@ impl FrameRenderer {
                 .filter_map(|id| instance.local_nodes.iter().find(|node| node.id == *id))
                 .collect();
             let input_node = stage_nodes.first().copied().unwrap_or(node);
-            let input = match input_node
-                .stack_image_input()
-                .map(|(_, binding)| binding)
-                .unwrap_or(&crate::effects::ImageBinding::Disconnected)
-            {
+            let input = match input_node.stack_image_input().map_or(
+                &crate::effects::ImageBinding::Disconnected,
+                |(_, binding)| binding,
+            ) {
                 crate::effects::ImageBinding::Disconnected => {
                     render.transparent(local_width, local_height)
                 }
@@ -2475,15 +2472,15 @@ impl FrameRenderer {
                 render.apply_stage(input, stage, &stage_nodes, &local_effect)
             } else if node.id == crate::effects::LOCAL_TRANSFORM_NODE_ID {
                 let adjusted;
-                let transform = if local_position_offset != [0.0, 0.0] {
+                let transform = if local_position_offset == [0.0, 0.0] {
+                    node
+                } else {
                     adjusted = transform_with_position_offset(
                         node,
                         context.keyframe_time(),
                         local_position_offset,
                     );
                     &adjusted
-                } else {
-                    node
                 };
                 render.apply_local_sized(
                     input,
@@ -2507,15 +2504,15 @@ impl FrameRenderer {
                     local_input.clone()
                 } else if let Some(transform) = instance.transform() {
                     let adjusted;
-                    let transform = if local_position_offset != [0.0, 0.0] {
+                    let transform = if local_position_offset == [0.0, 0.0] {
+                        transform
+                    } else {
                         adjusted = transform_with_position_offset(
                             transform,
                             context.keyframe_time(),
                             local_position_offset,
                         );
                         &adjusted
-                    } else {
-                        transform
                     };
                     render.apply_local_sized(
                         local_input.clone(),
@@ -2619,18 +2616,17 @@ impl FrameRenderer {
         self.waiting_for_video = false;
 
         let cached_render_frame = if let Some(cache) = render_cache {
-            match self.request_render_cache_frame(
+            if let Some(frame) = self.request_render_cache_frame(
                 cache,
                 project.active_settings().frame_rate.max(1.0),
                 preview_width,
                 preview_height,
             )? {
-                Some(frame) => Some(frame),
-                None => {
-                    self.waiting_for_video = true;
-                    self.last_signature = None;
-                    return Ok(());
-                }
+                Some(frame)
+            } else {
+                self.waiting_for_video = true;
+                self.last_signature = None;
+                return Ok(());
             }
         } else {
             self.render_cache_decoder = None;
@@ -2782,13 +2778,13 @@ impl FrameRenderer {
     }
 }
 
-pub(crate) fn local_node_evaluation_order(instance: &PipelineInstance) -> Vec<usize> {
+pub fn local_node_evaluation_order(instance: &PipelineInstance) -> Vec<usize> {
     ImageGraphIndex::new(&instance.local_nodes).stack_evaluation_order(&instance.local_output)
 }
 
-pub(crate) fn quantize_composition_time(time: f32, frame_rate: f64) -> f32 {
+pub fn quantize_composition_time(time: f32, frame_rate: f64) -> f32 {
     let fps = frame_rate.max(1.0);
-    ((time.max(0.0) as f64 * fps).floor() / fps) as f32
+    ((f64::from(time.max(0.0)) * fps).floor() / fps) as f32
 }
 
 fn persistent_wasm_graph_frame_key(memory_key: u64, module: &Path, entry: &str) -> u64 {
@@ -2801,17 +2797,17 @@ fn persistent_wasm_graph_frame_key(memory_key: u64, module: &Path, entry: &str) 
         fingerprint.hash(&mut hasher);
     } else if let Ok(metadata) = std::fs::metadata(module) {
         metadata.len().hash(&mut hasher);
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) {
-                since_epoch.as_secs().hash(&mut hasher);
-                since_epoch.subsec_nanos().hash(&mut hasher);
-            }
+        if let Ok(modified) = metadata.modified()
+            && let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            since_epoch.as_secs().hash(&mut hasher);
+            since_epoch.subsec_nanos().hash(&mut hasher);
         }
     }
     hasher.finish()
 }
 
-pub(crate) fn generator_render_cache_key(
+pub fn generator_render_cache_key(
     generator_type: &str,
     parameters: &std::collections::BTreeMap<String, crate::project::HostBinding>,
     keyframe_time: f64,
@@ -2932,7 +2928,7 @@ fn render_signature(
     } else {
         project.active_settings().frame_rate.max(1.0)
     };
-    let preview_frame = (timeline.playhead().max(0.0) as f64 * preview_fps).floor() as i64;
+    let preview_frame = (f64::from(timeline.playhead().max(0.0)) * preview_fps).floor() as i64;
     preview_frame.hash(&mut hasher);
     timeline.is_scrubbing().hash(&mut hasher);
     preview_width.hash(&mut hasher);
@@ -3027,7 +3023,7 @@ fn generator_vec2_array(
     }
 }
 
-pub(crate) fn tight_generator_source_geometry(
+pub fn tight_generator_source_geometry(
     source: &VisualSource,
     local_time: f64,
     plugins: &PluginRegistry,
@@ -3046,8 +3042,8 @@ pub(crate) fn tight_generator_source_geometry(
     let (x, y, width, height) = generator_content_bounds(definition, parameters, local_time)?;
     let canvas = [canvas_size[0].max(1) as f32, canvas_size[1].max(1) as f32];
     let position_offset = [
-        (x + width as f32 * 0.5) / canvas[0] - 0.5,
-        (y + height as f32 * 0.5) / canvas[1] - 0.5,
+        (width as f32).mul_add(0.5, x) / canvas[0] - 0.5,
+        (height as f32).mul_add(0.5, y) / canvas[1] - 0.5,
     ];
     Some(scaled_source_geometry(
         (width, height),
@@ -3106,7 +3102,7 @@ fn transform_with_position_offset(
     node
 }
 
-pub(crate) fn generator_content_bounds(
+pub fn generator_content_bounds(
     definition: &GeneratorDefinition,
     parameters: &BTreeMap<String, HostBinding>,
     time: f64,
@@ -3247,9 +3243,8 @@ fn collect_nested_cache_clip_ids(
         if !active_path.insert(composition.id) {
             continue;
         }
-        let parent_clip_key = scope
-            .map(|scope| scoped_clip_id(scope, clip.id))
-            .unwrap_or(u64::from(clip.id));
+        let parent_clip_key =
+            scope.map_or(u64::from(clip.id), |scope| scoped_clip_id(scope, clip.id));
         let child_scope = nested_cache_scope(parent_clip_key, composition.id);
         for child in &composition.timeline.clips {
             ids.insert(scoped_clip_id(child_scope, child.id));
@@ -3297,13 +3292,13 @@ fn frame_from_image(
 
 fn placeholder_frame(label: &str, preview_width: u32, preview_height: u32) -> CpuFrame {
     let mut frame = CpuFrame::transparent(preview_width, preview_height);
-    let hash = label
-        .bytes()
-        .fold(0u32, |hash, byte| hash.wrapping_mul(16777619) ^ byte as u32);
+    let hash = label.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(16777619) ^ u32::from(byte)
+    });
     let tint = [
-        0.08 + ((hash & 0xff) as f32 / 255.0) * 0.10,
-        0.08 + (((hash >> 8) & 0xff) as f32 / 255.0) * 0.10,
-        0.08 + (((hash >> 16) & 0xff) as f32 / 255.0) * 0.10,
+        ((hash & 0xff) as f32 / 255.0).mul_add(0.10, 0.08),
+        (((hash >> 8) & 0xff) as f32 / 255.0).mul_add(0.10, 0.08),
+        (((hash >> 16) & 0xff) as f32 / 255.0).mul_add(0.10, 0.08),
         1.0,
     ];
     for y in 0..preview_height {

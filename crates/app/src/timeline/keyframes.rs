@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    Binding, EasingHandle, HashMap, HashSet, HostBinding, Interpolation, KEYFRAME_CURVE_H,
+    KEYFRAME_LANE_H, KeyframeBindingTarget, KeyframeDragPoint, KeyframeEaseDrag,
+    KeyframeEaseDragKind, KeyframeGroupOwner, KeyframeLane, KeyframeLaneGroup, KeyframeLaneId,
+    KeyframeLanePoint, KeyframeOwner, KeyframeProperty, LayerComposite, LayerPropertyRow,
+    Model3dClipTransform, PipelineInstance, Rect, ScalarKeyframeBinding, SelectedKeyframe,
+    TimelineLayout, TimelineState, TrackKind, VisualSource, keyframe_axis_range,
+    keyframe_control_positions, keyframe_easing, keyframe_points_range,
+    keyframe_property_axis_range, keyframe_segment_amount, keyframe_value_at_y, keyframe_value_y,
+};
 
 impl TimelineState {
     fn source_row_mut(&mut self, track: u32, row: usize) -> Option<&mut LayerPropertyRow> {
@@ -121,7 +130,7 @@ impl TimelineState {
                 .into_iter()
                 .map(|key| KeyframeLanePoint {
                     time: key.time,
-                    value: key.value as f64,
+                    value: f64::from(key.value),
                     interpolation: key.interpolation,
                     ease_in: key.ease_in,
                     ease_out: key.ease_out,
@@ -347,8 +356,7 @@ impl TimelineState {
                 .clips
                 .iter()
                 .find(|clip| clip.track == track.id && row.matches(clip))
-                .map(|clip| clip.name.as_str())
-                .unwrap_or("Source");
+                .map_or("Source", |clip| clip.name.as_str());
             Self::append_property_lanes(
                 &mut lanes,
                 &row.pipeline,
@@ -430,7 +438,9 @@ impl TimelineState {
         self.keyframe_lane_expansion
             .get(&id.group)
             .copied()
-            .unwrap_or_else(|| self.expanded_keyframe_lanes.contains(&id.group) as u8 as f32)
+            .unwrap_or_else(|| {
+                f32::from(u8::from(self.expanded_keyframe_lanes.contains(&id.group)))
+            })
     }
 
     pub(super) fn keyframe_property_is_expanded(&self, id: &KeyframeLaneId) -> bool {
@@ -446,7 +456,7 @@ impl TimelineState {
 
     pub(super) fn keyframe_property_height(&self, lane: &KeyframeLane) -> f32 {
         let open = self.keyframe_property_open_amount(&lane.id);
-        KEYFRAME_LANE_H + (KEYFRAME_CURVE_H - KEYFRAME_LANE_H) * open
+        (KEYFRAME_CURVE_H - KEYFRAME_LANE_H).mul_add(open, KEYFRAME_LANE_H)
     }
 
     pub(super) fn keyframe_rows_height(&self, index: usize) -> f32 {
@@ -629,9 +639,9 @@ impl TimelineState {
                                 right_value: b.value,
                             });
                         }
-                        let mid_mix = keyframe_segment_amount(a, b, 0.5) as f64;
-                        let mid_time = a.time + (b.time - a.time) * 0.5;
-                        let mid_value = a.value + (b.value - a.value) * mid_mix;
+                        let mid_mix = f64::from(keyframe_segment_amount(a, b, 0.5));
+                        let mid_time = f64::mul_add(b.time - a.time, 0.5, a.time);
+                        let mid_value = f64::mul_add(b.value - a.value, mid_mix, a.value);
                         let mid = [
                             self.time_x(layout, mid_time as f32),
                             keyframe_value_y(rect, Some(axis_range), mid_value),
@@ -829,7 +839,8 @@ impl TimelineState {
                 let ((minimum, maximum), _) = self
                     .keyframe_property_axis_for_lane(layout, &lane.id)
                     .unwrap_or((keyframe_axis_range(&lane, rect.height), rect));
-                let value_per_pixel = ((maximum - minimum) / rect.height.max(1.0) as f64) as f32;
+                let value_per_pixel =
+                    ((maximum - minimum) / f64::from(rect.height.max(1.0))) as f32;
                 Some(KeyframeDragPoint {
                     lane: selected.lane.clone(),
                     origin_time: selected.time,

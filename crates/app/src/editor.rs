@@ -10,7 +10,7 @@ use crate::{
     timeline::TimelineState,
 };
 
-pub(crate) struct EditorSession {
+pub struct EditorSession {
     pub(crate) project: Project,
     pub(crate) project_path: Option<PathBuf>,
     pub(crate) timeline: TimelineState,

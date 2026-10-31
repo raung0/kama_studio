@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    Color, ColorPicker, ComboBox, CompositionId, EnumControlsExt, FormatKey, Hash, IconId, Ime,
+    KeyEvent, KnobControlsExt, MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, ModifiersState,
+    NumberControls, NumberControlsExt, NumberInput, PANEL_GAP, PANEL_HEADER_H, Project,
+    ProjectBackground, ROW_H, Rect, Renderer, Result, Size, SliderControlsExt, ToggleButton,
+    offset_rect, panel_title, project_row_hit, property_label, property_row_frame, theme,
+};
 
 pub(super) fn project_background(
     project: &Project,
@@ -127,7 +133,7 @@ impl ProjectNumberField {
     fn control(self) -> ((f64, f64), f64, usize, &'static str) {
         match self {
             Self::ResolutionX | Self::ResolutionY => {
-                ((1.0, MAX_CANVAS_DIMENSION as f64), 4.0, 0, " px")
+                ((1.0, f64::from(MAX_CANVAS_DIMENSION)), 4.0, 0, " px")
             }
             Self::FrameRate => ((1.0, MAX_FRAME_RATE), 0.25, 2, " fps"),
         }
@@ -139,8 +145,8 @@ impl ProjectNumberField {
             .unwrap_or_else(|| project.active_composition())
             .settings;
         match self {
-            Self::ResolutionX => settings.canvas_size[0] as f64,
-            Self::ResolutionY => settings.canvas_size[1] as f64,
+            Self::ResolutionX => f64::from(settings.canvas_size[0]),
+            Self::ResolutionY => f64::from(settings.canvas_size[1]),
             Self::FrameRate => settings.frame_rate,
         }
     }

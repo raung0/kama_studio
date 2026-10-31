@@ -158,13 +158,13 @@ fn path() -> PathBuf {
     app_data_dir().join("settings.json")
 }
 
-pub(crate) fn load_plugin_paths() -> String {
+pub fn load_plugin_paths() -> String {
     read_json::<PreferencesFile>(&path())
         .unwrap_or_default()
         .plugin_paths
 }
 
-pub(crate) fn load(registry: &mut CommandRegistry) {
+pub fn load(registry: &mut CommandRegistry) {
     let preferences = read_json::<PreferencesFile>(&path()).unwrap_or_default();
     let _ = crate::i18n::initialize(preferences.language.as_deref());
     theme::set_theme_immediate(preferences.theme);
@@ -197,7 +197,7 @@ pub(crate) fn load(registry: &mut CommandRegistry) {
     }
 }
 
-pub(crate) fn save(registry: &CommandRegistry, plugin_paths: &str) {
+pub fn save(registry: &CommandRegistry, plugin_paths: &str) {
     let preferences = PreferencesFile {
         theme: theme::theme(),
         dark_accent: theme::dark_accent_rgba8(),
@@ -527,7 +527,7 @@ impl SearchDialogState {
     }
 }
 
-pub(crate) struct SettingsDialog {
+pub struct SettingsDialog {
     search: SearchDialogState,
     animation: PopupAnimation,
     dark_accent: ColorPicker,
@@ -1491,10 +1491,9 @@ impl SettingsDialog {
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::PluginPaths)
+            && self.plugin_paths.is_focused()
         {
-            if self.plugin_paths.is_focused() {
-                return Some(self.plugin_paths.caret_rect(layout.items[index].value));
-            }
+            return Some(self.plugin_paths.caret_rect(layout.items[index].value));
         }
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
@@ -1541,41 +1540,6 @@ impl SettingsDialog {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PreferencesFile;
-    use crate::updater::{self, ReleaseChannel};
-
-    #[test]
-    fn existing_preferences_without_language_use_system_default() {
-        let preferences: PreferencesFile = serde_json::from_str("{\"plugin_paths\": \"plugins\"}")
-            .expect("existing settings JSON should deserialize");
-        assert_eq!(preferences.language, None);
-        assert_eq!(
-            preferences.release_channel,
-            updater::default_release_channel()
-        );
-        assert_eq!(preferences.plugin_paths, "plugins");
-    }
-
-    #[test]
-    fn release_channel_preference_deserializes_when_explicitly_set() {
-        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": \"beta\"}")
-            .expect("release channel setting should deserialize");
-        assert_eq!(preferences.release_channel, ReleaseChannel::Beta);
-    }
-
-    #[test]
-    fn null_release_channel_migrates_to_current_build_channel() {
-        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": null}")
-            .expect("legacy null release channel should deserialize");
-        assert_eq!(
-            preferences.release_channel,
-            updater::default_release_channel()
-        );
-    }
-}
-
 fn filtered_keybind_indices(registry: &CommandRegistry, query: &str) -> Vec<usize> {
     if query.trim().is_empty() {
         return (0..registry.definitions().len()).collect();
@@ -1608,7 +1572,7 @@ fn filtered_keybind_indices(registry: &CommandRegistry, query: &str) -> Vec<usiz
     scored.into_iter().map(|(_, index)| index).collect()
 }
 
-pub(crate) struct KeybindsDialog {
+pub struct KeybindsDialog {
     search: SearchDialogState,
     animation: PopupAnimation,
     capturing: Option<String>,
@@ -1787,7 +1751,7 @@ impl KeybindsDialog {
                     self.capturing = None;
                     self.search.query.set_focused(true);
                 }
-                Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) => {
+                Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
                     registry.set_shortcut(&id, None);
                     self.capturing = None;
                     self.search.query.set_focused(true);
@@ -1845,5 +1809,40 @@ impl KeybindsDialog {
             .query
             .is_focused()
             .then(|| self.search.query.caret_rect(layout.shell.search))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PreferencesFile;
+    use crate::updater::{self, ReleaseChannel};
+
+    #[test]
+    fn existing_preferences_without_language_use_system_default() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"plugin_paths\": \"plugins\"}")
+            .expect("existing settings JSON should deserialize");
+        assert_eq!(preferences.language, None);
+        assert_eq!(
+            preferences.release_channel,
+            updater::default_release_channel()
+        );
+        assert_eq!(preferences.plugin_paths, "plugins");
+    }
+
+    #[test]
+    fn release_channel_preference_deserializes_when_explicitly_set() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": \"beta\"}")
+            .expect("release channel setting should deserialize");
+        assert_eq!(preferences.release_channel, ReleaseChannel::Beta);
+    }
+
+    #[test]
+    fn null_release_channel_migrates_to_current_build_channel() {
+        let preferences: PreferencesFile = serde_json::from_str("{\"release_channel\": null}")
+            .expect("legacy null release channel should deserialize");
+        assert_eq!(
+            preferences.release_channel,
+            updater::default_release_channel()
+        );
     }
 }

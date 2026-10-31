@@ -83,7 +83,7 @@ fn build_effect_wrapper(parameter_count: usize, image_input_count: usize, body: 
             _ => unreachable!("validated plugin image input count"),
         };
     format!(
-        r#"
+        r"
 struct EffectParams {{
     data: array<vec4<f32>, {parameter_count}>,
 }}
@@ -114,7 +114,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / vec2<f32>(output_dimensions);
 {body}
 }}
-"#
+"
     )
 }
 
@@ -148,7 +148,7 @@ pub fn build_generator_shader(generator: &GeneratorDefinition) -> Result<String>
     let parameter_count = generator.inputs.len().max(1);
     let entry = generator.entry.as_deref().unwrap_or("generate");
     let wrapper = format!(
-        r#"
+        r"
 struct EffectParams {{
     data: array<vec4<f32>, {parameter_count}>,
 }}
@@ -169,7 +169,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let color = {namespace}_{entry}({args});
     textureStore(output_tex, vec2<i32>(gid.xy), color);
 }}
-"#,
+",
         args = args.join(", "),
     );
     validate_assembled(

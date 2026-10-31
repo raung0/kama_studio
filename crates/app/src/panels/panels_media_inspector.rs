@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    Accordion, EnumControlsExt, INSPECTOR_SECTION_PAD, IconId, InspectorSectionRects,
+    KnobControlsExt, MediaKind, MediaStream, NumberControlsExt, PANEL_HEADER_H, ROW_H, Rect,
+    SliderControlsExt, TimelineState, TrackKind, accordion_header, format_duration,
+    inspector_accordion_body, inspector_section_content, measure_inspector_sections,
+    media_kind_label, media_streams, panel_title, property_label_rect, row_hit, theme,
+};
 
 pub(super) struct MediaInspectorRects {
     pub(super) general: InspectorSectionRects,
@@ -345,10 +351,7 @@ pub(super) fn media_audio_detail_rows(
                 format!("#{}", track.stream_index),
             ));
             if let Some(sample_rate) = track.sample_rate {
-                rows.push((
-                    format!("{prefix} sample rate"),
-                    format!("{} Hz", sample_rate),
-                ));
+                rows.push((format!("{prefix} sample rate"), format!("{sample_rate} Hz")));
             }
             if let Some(channels) = track.channels {
                 rows.push((format!("{prefix} channels"), channels.to_string()));

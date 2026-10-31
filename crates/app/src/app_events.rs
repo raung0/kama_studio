@@ -9,7 +9,7 @@ use winit::window::WindowId;
 #[cfg(target_os = "macos")]
 use muda::MenuEvent;
 
-pub(super) enum AppEvent {
+pub enum AppEvent {
     Interrupt,
     UpdateAvailable(AvailableUpdate),
     UpdateFinished {
@@ -22,7 +22,7 @@ pub(super) enum AppEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum FileCommand {
+pub enum FileCommand {
     NewProject,
     Save,
     SaveAs,
@@ -33,7 +33,7 @@ pub(super) enum FileCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum LayoutCommand {
+pub enum LayoutCommand {
     Save,
     SaveNamed(String),
     Load(PathBuf),
@@ -42,20 +42,20 @@ pub(super) enum LayoutCommand {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct SavedLayout {
+pub struct SavedLayout {
     pub(super) name: String,
     pub(super) path: PathBuf,
 }
 
-pub(super) fn layout_data_dir() -> PathBuf {
+pub fn layout_data_dir() -> PathBuf {
     app_data_dir().join("layouts")
 }
 
-pub(super) fn recent_projects_path() -> PathBuf {
+pub fn recent_projects_path() -> PathBuf {
     app_data_dir().join("recent-projects.json")
 }
 
-pub(super) fn recent_projects() -> Vec<PathBuf> {
+pub fn recent_projects() -> Vec<PathBuf> {
     read_json::<Vec<PathBuf>>(&recent_projects_path())
         .unwrap_or_default()
         .into_iter()
@@ -64,7 +64,7 @@ pub(super) fn recent_projects() -> Vec<PathBuf> {
         .collect()
 }
 
-pub(super) fn remember_recent_project(path: &Path) {
+pub fn remember_recent_project(path: &Path) {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut recent = recent_projects();
     recent.retain(|candidate| candidate != &path);
@@ -73,7 +73,7 @@ pub(super) fn remember_recent_project(path: &Path) {
     let _ = atomic_write_json(&recent_projects_path(), &recent);
 }
 
-pub(super) fn saved_layouts() -> Vec<SavedLayout> {
+pub fn saved_layouts() -> Vec<SavedLayout> {
     let mut layouts = std::fs::read_dir(layout_data_dir())
         .ok()
         .into_iter()

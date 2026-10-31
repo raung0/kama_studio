@@ -116,18 +116,24 @@ impl ModelMaterial {
             || self.opacity_texture.as_ref().is_some_and(|texture| {
                 texture
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel[0] < 255 || pixel[3] < 255)
             })
-            || self
-                .texture
-                .as_ref()
-                .is_some_and(|texture| texture.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255))
+            || self.texture.as_ref().is_some_and(|texture| {
+                texture
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] < 255)
+            })
     }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ModelMesh {
+pub struct ModelMesh {
     vertices: Vec<ModelVertex>,
     triangles: Vec<ModelTriangle>,
     materials: Vec<ModelMaterial>,
@@ -173,18 +179,17 @@ impl ModelMesh {
                 let uv = uvs
                     .as_ref()
                     .and_then(|values| values.get(index))
-                    .map(|uv| [uv.x, uv.y])
-                    .unwrap_or([0.0, 0.0]);
+                    .map_or([0.0, 0.0], |uv| [uv.x, uv.y]);
                 let color = colors
                     .as_ref()
                     .and_then(|values| values.get(index))
-                    .map(|color| [color.x, color.y, color.z, color.w])
-                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    .map_or([1.0, 1.0, 1.0, 1.0], |color| {
+                        [color.x, color.y, color.z, color.w]
+                    });
                 let normal = normals
                     .as_ref()
                     .and_then(|values| values.get(index))
-                    .map(|normal| [normal.x, normal.y, normal.z])
-                    .unwrap_or([0.0, 0.0, 0.0]);
+                    .map_or([0.0, 0.0, 0.0], |normal| [normal.x, normal.y, normal.z]);
                 vertices.push(ModelVertex {
                     position: [vertex.x, vertex.y, vertex.z],
                     normal,
@@ -255,9 +260,9 @@ impl ModelMesh {
             let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
             let face = [
-                ab[1] * ac[2] - ab[2] * ac[1],
-                ab[2] * ac[0] - ab[0] * ac[2],
-                ab[0] * ac[1] - ab[1] * ac[0],
+                f32::mul_add(ab[2], -ac[1], ab[1] * ac[2]),
+                f32::mul_add(ab[0], -ac[2], ab[2] * ac[0]),
+                f32::mul_add(ab[1], -ac[0], ab[0] * ac[1]),
             ];
             for index in triangle.indices {
                 for axis in 0..3 {
@@ -266,16 +271,24 @@ impl ModelMesh {
             }
         }
         for (vertex, fallback) in vertices.iter_mut().zip(accumulated) {
-            let length = (vertex.normal[0] * vertex.normal[0]
-                + vertex.normal[1] * vertex.normal[1]
-                + vertex.normal[2] * vertex.normal[2])
-                .sqrt();
+            let length = f32::mul_add(
+                vertex.normal[2],
+                vertex.normal[2],
+                f32::mul_add(
+                    vertex.normal[1],
+                    vertex.normal[1],
+                    vertex.normal[0] * vertex.normal[0],
+                ),
+            )
+            .sqrt();
             if length <= 1.0e-6 {
-                let fallback_length = (fallback[0] * fallback[0]
-                    + fallback[1] * fallback[1]
-                    + fallback[2] * fallback[2])
-                    .sqrt()
-                    .max(1.0e-6);
+                let fallback_length = f32::mul_add(
+                    fallback[2],
+                    fallback[2],
+                    f32::mul_add(fallback[1], fallback[1], fallback[0] * fallback[0]),
+                )
+                .sqrt()
+                .max(1.0e-6);
                 vertex.normal = fallback.map(|value| value / fallback_length);
             } else {
                 vertex.normal = vertex.normal.map(|value| value / length);
@@ -365,9 +378,9 @@ fn upload_texture(
     fallback: [u8; 4],
     srgb: bool,
 ) -> wgpu::Texture {
-    let (width, height, pixels) = source
-        .map(|texture| (texture.width, texture.height, texture.pixels.as_slice()))
-        .unwrap_or((1, 1, fallback.as_slice()));
+    let (width, height, pixels) = source.map_or((1, 1, fallback.as_slice()), |texture| {
+        (texture.width, texture.height, texture.pixels.as_slice())
+    });
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -875,7 +888,7 @@ impl ModelRenderer {
         let width = width.max(1);
         let height = height.max(1);
         let center: [f32; 3] =
-            std::array::from_fn(|axis| (model.min[axis] + model.max[axis]) * 0.5);
+            std::array::from_fn(|axis| f32::midpoint(model.min[axis], model.max[axis]));
         let extent: [f32; 3] =
             std::array::from_fn(|axis| (model.max[axis] - model.min[axis]).abs().max(1.0e-6));
         let uniform = SceneUniform {
@@ -886,7 +899,7 @@ impl ModelRenderer {
             rotation: [rotation[0], rotation[1], rotation[2], 0.0],
             position: [position[0], position[1], position[2], 0.0],
             viewport: [width as f32, height as f32, 0.0, 0.0],
-            shading: [if shading == Model3dShading::Pbr { 1 } else { 0 }, 0, 0, 0],
+            shading: [u32::from(shading == Model3dShading::Pbr), 0, 0, 0],
         };
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("kama 3D scene uniform"),
@@ -973,7 +986,7 @@ impl ModelRenderer {
     }
 }
 
-pub(crate) struct ModelGpuRuntime {
+pub struct ModelGpuRuntime {
     renderer: ModelRenderer,
     models: HashMap<PathBuf, Arc<GpuModel>>,
 }
@@ -1020,11 +1033,11 @@ impl ModelGpuRuntime {
     }
 }
 
-pub(crate) fn probe_size(path: &Path) -> Result<[f32; 3]> {
+pub fn probe_size(path: &Path) -> Result<[f32; 3]> {
     Ok(ModelMesh::load(path)?.normalized_size())
 }
 
-pub(crate) fn is_supported_path(path: &Path) -> bool {
+pub fn is_supported_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -1033,7 +1046,7 @@ pub(crate) fn is_supported_path(path: &Path) -> bool {
         })
 }
 
-pub(crate) fn supported_extensions() -> Vec<String> {
+pub fn supported_extensions() -> Vec<String> {
     let mut extensions = asset_importer::get_import_extensions()
         .into_iter()
         .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
@@ -1127,8 +1140,7 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
     .into_iter()
     .flatten()
     .next()
-    .map(|texture| texture.uv_index as usize)
-    .unwrap_or(0);
+    .map_or(0, |texture| texture.uv_index as usize);
 
     let load = |info: &Option<TextureInfo>| {
         info.as_ref()
@@ -1136,20 +1148,20 @@ fn load_material(scene: &Scene, model_path: &Path, material: &Material) -> Model
     };
     let emissive = material
         .emissive_color()
-        .map(|color| [color.x, color.y, color.z])
-        .unwrap_or([0.0; 3]);
+        .map_or([0.0; 3], |color| [color.x, color.y, color.z]);
 
     let alpha_mode = material
         .get_string_property_str("$mat.gltf.alphaMode")
         .ok()
         .flatten()
-        .map(|mode| match mode.to_ascii_uppercase().as_str() {
-            "OPAQUE" => ModelAlphaMode::Opaque,
-            "MASK" => ModelAlphaMode::Mask,
-            "BLEND" => ModelAlphaMode::Blend,
-            _ => ModelAlphaMode::Auto,
-        })
-        .unwrap_or(ModelAlphaMode::Auto);
+        .map_or(ModelAlphaMode::Auto, |mode| {
+            match mode.to_ascii_uppercase().as_str() {
+                "OPAQUE" => ModelAlphaMode::Opaque,
+                "MASK" => ModelAlphaMode::Mask,
+                "BLEND" => ModelAlphaMode::Blend,
+                _ => ModelAlphaMode::Auto,
+            }
+        });
     let alpha_cutoff = material
         .get_float_property_str("$mat.gltf.alphaCutoff")
         .ok()
@@ -1206,15 +1218,15 @@ fn load_material_texture(
     model_path: &Path,
     info: &TextureInfo,
 ) -> Option<ModelTexture> {
-    if let Ok(Some(texture)) = scene.embedded_texture_by_name(&info.path) {
-        if let Some(texture) = decode_embedded_texture(&texture) {
-            return Some(texture);
-        }
+    if let Ok(Some(texture)) = scene.embedded_texture_by_name(&info.path)
+        && let Some(texture) = decode_embedded_texture(&texture)
+    {
+        return Some(texture);
     }
-    if let Some(texture) = scene.find_texture_by_filename(&info.path) {
-        if let Some(texture) = decode_embedded_texture(&texture) {
-            return Some(texture);
-        }
+    if let Some(texture) = scene.find_texture_by_filename(&info.path)
+        && let Some(texture) = decode_embedded_texture(&texture)
+    {
+        return Some(texture);
     }
     let normalized = info.path.replace('\\', "/");
     let source = Path::new(&normalized);

@@ -1,11 +1,31 @@
-use super::*;
+use super::{
+    AUDIO_A, AUDIO_B, Align, AppIcon, Clip, Color, CursorShape, Drag, EDGE_W, EndBehavior, HashMap,
+    HashSet, Icons, Interpolation, KEYFRAME_LANE_H, KeyframeLanePoint, MIN_CLIP, MixerParameter,
+    OVERVIEW_BATCH_W, PLAYHEAD, Project, RADIUS_LG, RADIUS_MD, RADIUS_SM, RULER_H, Rect,
+    RenderCacheState, SNAP, Size, StackId, TRACK_BUTTON_W, TRACK_HANDLE_W, TRACK_HEADER_GAP,
+    TRACK_HEADER_PAD, TRACK_LABEL_W, TRACK_NAME_W, TRACK_TOP_H, TRACK_VU_W, TRANSPORT_BUTTON_GAP,
+    TRANSPORT_BUTTON_W, TimelineLayout, TimelineState, TimelineTool, TrackKind, VIDEO_A, VIDEO_B,
+    WaveformTextures, clip_source_duration, clip_waveforms, context_items, format_keyframe_value,
+    format_time, format_timecode, i18n, intersects, keyframe_component_label,
+    keyframe_control_positions, keyframe_easing, keyframe_property_axis_range,
+    keyframe_property_color, keyframe_segment_amount, keyframe_value_y, normalized_rect,
+    push_diamond_vertices, push_keyframe_curve_vertices, push_line_vertices, push_rect_vertices,
+    theme, tick_step, timeline_icon_toggle, timeline_ticks, ui, widgets,
+};
 
 impl RenderCacheState {
-    const fn tint(self) -> Color {
-        match self {
-            Self::Rendered => Color::rgb8(0x16, 0x43, 0x2c),
-            Self::Dirty => Color::rgb8(0x61, 0x3d, 0x19),
-        }
+    fn tint(self, background: Color) -> Color {
+        let brightness = 0.2126_f32.mul_add(
+            background.r,
+            0.7152_f32.mul_add(background.g, 0.0722 * background.b),
+        );
+        let (dark, light) = match self {
+            Self::Rendered | Self::Rendering => {
+                (Color::rgb8(0x26, 0x73, 0x42), Color::rgb8(0xc0, 0xe8, 0xcc))
+            }
+            Self::Dirty => (Color::rgb8(0x9e, 0x62, 0x25), Color::rgb8(0xf4, 0xd7, 0xb0)),
+        };
+        Color::rgb(brightness, brightness, brightness).mix(dark.mix(light, brightness), 0.5)
     }
 }
 
@@ -216,9 +236,9 @@ impl TimelineState {
                             continue;
                         }
                         let mid_t = 0.5f32;
-                        let mid_mix = keyframe_segment_amount(a, b, mid_t) as f64;
-                        let mid_time = a.time + (b.time - a.time) * 0.5;
-                        let mid_value = a.value + (b.value - a.value) * mid_mix;
+                        let mid_mix = f64::from(keyframe_segment_amount(a, b, mid_t));
+                        let mid_time = f64::mul_add(b.time - a.time, 0.5, a.time);
+                        let mid_value = f64::mul_add(b.value - a.value, mid_mix, a.value);
                         let mx = self.time_x(layout, mid_time as f32);
                         let my = keyframe_value_y(rect, axis_range, mid_value);
                         push_diamond_vertices(
@@ -327,12 +347,12 @@ impl TimelineState {
             if graph_settled {
                 let (minimum, maximum) =
                     axis_range.expect("expanded keyframe property has an axis range");
-                let middle = (minimum + maximum) * 0.5;
+                let middle = f64::midpoint(minimum, maximum);
                 let labels = [
                     (format_keyframe_value(maximum as f32), rect.y + 8.0),
                     (
                         format_keyframe_value(middle as f32),
-                        rect.y + rect.height * 0.5,
+                        f32::mul_add(rect.height, 0.5, rect.y),
                     ),
                     (format_keyframe_value(minimum as f32), rect.bottom() - 8.0),
                 ];
@@ -355,7 +375,7 @@ impl TimelineState {
         self.keyframe_track_expansion
             .get(&track)
             .copied()
-            .unwrap_or_else(|| self.expanded_keyframe_tracks.contains(&track) as u8 as f32)
+            .unwrap_or_else(|| f32::from(u8::from(self.expanded_keyframe_tracks.contains(&track))))
     }
 
     fn build_keyframe_header_lanes(
@@ -424,7 +444,8 @@ impl TimelineState {
                     .filter(|lane| seen.insert(lane.id.component))
                     .collect::<Vec<_>>();
                 for (component_offset, lane) in components.iter().enumerate() {
-                    let row_y = rect.y + KEYFRAME_LANE_H + 4.0 + component_offset as f32 * 18.0;
+                    let row_y =
+                        (component_offset as f32).mul_add(18.0, rect.y + KEYFRAME_LANE_H + 4.0);
                     if row_y + 16.0 > rect.bottom() {
                         break;
                     }
@@ -484,7 +505,12 @@ impl TimelineState {
             if x1 <= x0 {
                 continue;
             }
-            let fill = range.state.tint();
+            let background = if index.is_multiple_of(2) {
+                theme::timeline_bg()
+            } else {
+                theme::timeline_bg_alt()
+            };
+            let fill = range.state.tint(background);
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-render-cache", stack.0, track.id, range_index),
@@ -673,7 +699,7 @@ impl TimelineState {
             if x1 <= x0 {
                 continue;
             }
-            let fill = range.state.tint();
+            let fill = range.state.tint(theme::timeline_header());
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-ruler-render-cache", stack.0, range_index),
@@ -711,15 +737,7 @@ impl TimelineState {
             timeline_ticks(self.scroll_time, self.pixels_per_second, layout.body.width)
         {
             let x = layout.body.x + x;
-            let tick_color = if self
-                .render_cache_ranges
-                .iter()
-                .any(|range| time >= f64::from(range.start) && time < f64::from(range.end))
-            {
-                Color::rgb8(0xd8, 0xe5, 0xdc)
-            } else {
-                theme::timeline_muted()
-            };
+            let tick_color = theme::timeline_muted();
             ui::ui!(ctx, {
                 Rect(
                     ("timeline-tick", stack.0, index),
@@ -1212,7 +1230,7 @@ impl TimelineState {
                 ctx,
                 ("overview-after-end", stack.0),
                 body,
-                body.x + (end as f64 / total * body.width as f64) as f32,
+                body.x + (f64::from(end) / total * f64::from(body.width)) as f32,
             );
         }
         let lane_h = ((body.height - 8.0) / self.tracks.len().max(1) as f32).max(2.0);
@@ -1234,15 +1252,16 @@ impl TimelineState {
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
             {
-                let x = body.x + (clip.start as f64 / total * body.width as f64) as f32;
-                let right = x + (clip.duration as f64 / total * body.width as f64).max(1.0) as f32;
+                let x = body.x + (f64::from(clip.start) / total * f64::from(body.width)) as f32;
+                let right =
+                    x + (f64::from(clip.duration) / total * f64::from(body.width)).max(1.0) as f32;
                 let first = ((x - body.x) / OVERVIEW_BATCH_W).floor().max(0.0) as usize;
                 let last = ((right - body.x) / OVERVIEW_BATCH_W).floor().max(0.0) as usize;
                 let first = first.min(batch_count - 1);
                 let last = last.min(batch_count - 1);
                 let color = usize::from(clip.color.color() == colors[1]);
                 for (batch, vertices) in batches.iter_mut().enumerate().take(last + 1).skip(first) {
-                    let batch_x = body.x + batch as f32 * OVERVIEW_BATCH_W;
+                    let batch_x = (batch as f32).mul_add(OVERVIEW_BATCH_W, body.x);
                     let left = x.max(batch_x) - batch_x;
                     let right = right.min(batch_x + OVERVIEW_BATCH_W) - batch_x;
                     if right > left {
@@ -1253,9 +1272,9 @@ impl TimelineState {
                     }
                 }
             }
-            let y = body.y + 4.0 + track_index as f32 * lane_h;
+            let y = (track_index as f32).mul_add(lane_h, body.y + 4.0);
             for (batch, colors_vertices) in batches.into_iter().enumerate() {
-                let x = body.x + batch as f32 * OVERVIEW_BATCH_W;
+                let x = (batch as f32).mul_add(OVERVIEW_BATCH_W, body.x);
                 let width = OVERVIEW_BATCH_W.min(body.right() - x);
                 for (color, vertices) in colors_vertices.into_iter().enumerate() {
                     if !vertices.is_empty() {
@@ -1269,7 +1288,7 @@ impl TimelineState {
                 }
             }
         }
-        let playhead_x = body.x + (self.playhead as f64 / total * body.width as f64) as f32;
+        let playhead_x = body.x + (f64::from(self.playhead) / total * f64::from(body.width)) as f32;
         ui::ui!(ctx, {
             Rect(
                 ("overview-playhead", stack.0),
@@ -1338,22 +1357,22 @@ impl TimelineState {
                 }
             });
         }
-        if self.focused_stack == Some(stack) {
-            if let Some(Drag::BoxSelect { start, current, .. }) = &self.drag {
-                let rect = normalized_rect(*start, *current);
-                let local = Rect {
-                    x: rect.x - origin[0],
-                    y: rect.y - origin[1],
-                    ..rect
-                };
-                ui::ui!(ctx, {
-                    Rect(("timeline-box-select", stack.0), local) {
-                        fill: Color::rgba8(0xf0, 0xa2, 0x15, 0x18);
-                        border: 1;
-                        border_color: theme::accent();
-                    }
-                });
-            }
+        if self.focused_stack == Some(stack)
+            && let Some(Drag::BoxSelect { start, current, .. }) = &self.drag
+        {
+            let rect = normalized_rect(*start, *current);
+            let local = Rect {
+                x: rect.x - origin[0],
+                y: rect.y - origin[1],
+                ..rect
+            };
+            ui::ui!(ctx, {
+                Rect(("timeline-box-select", stack.0), local) {
+                    fill: Color::rgba8(0xf0, 0xa2, 0x15, 0x18);
+                    border: 1;
+                    border_color: theme::accent();
+                }
+            });
         }
     }
 
@@ -1514,5 +1533,41 @@ impl TimelineState {
                 text: i18n::text("timeline-set");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod cache_tint_tests {
+    use super::*;
+
+    #[test]
+    fn light_themes_get_light_cache_tints_and_dark_themes_get_dark_tints() {
+        let dark = Color::rgb8(0x22, 0x18, 0x30);
+        let light = Color::rgb8(0xd8, 0xd0, 0xe8);
+
+        for state in [
+            RenderCacheState::Rendered,
+            RenderCacheState::Rendering,
+            RenderCacheState::Dirty,
+        ] {
+            let dark_tint = state.tint(dark);
+            let light_tint = state.tint(light);
+            assert!(light_tint.r > dark_tint.r + 0.4);
+            assert!(light_tint.g > dark_tint.g + 0.4);
+            assert!(light_tint.b > dark_tint.b + 0.4);
+        }
+    }
+
+    #[test]
+    fn accented_backgrounds_keep_distinct_green_and_orange_status_hues() {
+        for background in [Color::rgb8(0xd8, 0xd0, 0xe8), Color::rgb8(0x82, 0x24, 0xd0)] {
+            let rendered = RenderCacheState::Rendered.tint(background);
+            let dirty = RenderCacheState::Dirty.tint(background);
+
+            assert!(rendered.g > rendered.r + 0.02);
+            assert!(rendered.g > rendered.b + 0.02);
+            assert!(dirty.r > dirty.g + 0.02);
+            assert!(dirty.g > dirty.b + 0.02);
+        }
     }
 }

@@ -94,14 +94,14 @@ pub struct Project {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PipelineSelectorRemap {
+pub struct PipelineSelectorRemap {
     pub(crate) owner: PipelineId,
     pub(crate) nodes: Vec<NodeId>,
     pub(crate) old_options: Vec<PipelineId>,
     pub(crate) new_options: Vec<PipelineId>,
 }
 
-pub(crate) fn remap_pipeline_selector_binding(
+pub fn remap_pipeline_selector_binding(
     binding: &mut Binding,
     old_options: &[PipelineId],
     new_options: &[PipelineId],
@@ -173,12 +173,12 @@ impl Project {
             if asset.kind == MediaKind::Unknown && crate::model3d::is_supported_path(&asset.path) {
                 asset.kind = MediaKind::Model3d;
             }
-            if asset.tracks.is_empty() && matches!(asset.kind, MediaKind::Video | MediaKind::Audio)
+            if asset.tracks.is_empty()
+                && matches!(asset.kind, MediaKind::Video | MediaKind::Audio)
+                && let Ok(probe) = probe_av_media(&asset.path)
             {
-                if let Ok(probe) = probe_av_media(&asset.path) {
-                    asset.has_audio = probe.has_audio;
-                    asset.tracks = probe.tracks;
-                }
+                asset.has_audio = probe.has_audio;
+                asset.tracks = probe.tracks;
             }
         }
         let legacy_model_settings = project
@@ -339,7 +339,7 @@ impl Project {
         for pipeline in &self.pipelines {
             let label = format!("pipeline {}", pipeline.name);
             validate_ids(
-                &format!("node in {}", label),
+                &format!("node in {label}"),
                 pipeline
                     .nodes
                     .iter()
@@ -585,8 +585,7 @@ impl Project {
             anyhow::ensure!(
                 self.pipeline(id)
                     .is_some_and(|pipeline| pipeline.kind == expected),
-                "{label} references an invalid {:?} pipeline {id}",
-                expected
+                "{label} references an invalid {expected:?} pipeline {id}"
             );
         }
         validate_ids(
@@ -626,16 +625,16 @@ impl Project {
                         | crate::plugin::InputType::Vec2Array
                         | crate::plugin::InputType::F32List
                 ) {
-                    if !node.host_inputs.contains_key(&input.id) {
-                        if let Ok(default) = input.ty.default_host(&input.default) {
-                            node.host_inputs.insert(input.id.clone(), default);
-                        }
+                    if !node.host_inputs.contains_key(&input.id)
+                        && let Ok(default) = input.ty.default_host(&input.default)
+                    {
+                        node.host_inputs.insert(input.id.clone(), default);
                     }
-                } else if !node.inputs.contains_key(&input.id) {
-                    if let Ok(default) = input.ty.default_gpu(&input.default) {
-                        node.inputs
-                            .insert(input.id.clone(), Binding::Constant(default));
-                    }
+                } else if !node.inputs.contains_key(&input.id)
+                    && let Ok(default) = input.ty.default_gpu(&input.default)
+                {
+                    node.inputs
+                        .insert(input.id.clone(), Binding::Constant(default));
                 }
             }
 
@@ -655,22 +654,19 @@ impl Project {
                     generator_type,
                     parameters,
                 }) = &mut clip.source
+                    && let Some(definition) = plugins.generator(generator_type)
                 {
-                    if let Some(definition) = plugins.generator(generator_type) {
-                        if generator_type == "builtin.shape"
-                            && !parameters.contains_key("shape_type")
+                    if generator_type == "builtin.shape" && !parameters.contains_key("shape_type") {
+                        parameters.insert(
+                            "shape_type".into(),
+                            HostBinding::Gpu(Binding::Constant(GpuValue::Enum(1))),
+                        );
+                    }
+                    for input in &definition.inputs {
+                        if !parameters.contains_key(&input.id)
+                            && let Ok(default) = input.ty.default_host(&input.default)
                         {
-                            parameters.insert(
-                                "shape_type".into(),
-                                HostBinding::Gpu(Binding::Constant(GpuValue::Enum(1))),
-                            );
-                        }
-                        for input in &definition.inputs {
-                            if !parameters.contains_key(&input.id) {
-                                if let Ok(default) = input.ty.default_host(&input.default) {
-                                    parameters.insert(input.id.clone(), default);
-                                }
-                            }
+                            parameters.insert(input.id.clone(), default);
                         }
                     }
                 }
@@ -694,22 +690,21 @@ impl Project {
                         generator_type,
                         parameters,
                     }) = &mut row.source
+                        && let Some(definition) = plugins.generator(generator_type)
                     {
-                        if let Some(definition) = plugins.generator(generator_type) {
-                            if generator_type == "builtin.shape"
-                                && !parameters.contains_key("shape_type")
+                        if generator_type == "builtin.shape"
+                            && !parameters.contains_key("shape_type")
+                        {
+                            parameters.insert(
+                                "shape_type".into(),
+                                HostBinding::Gpu(Binding::Constant(GpuValue::Enum(1))),
+                            );
+                        }
+                        for input in &definition.inputs {
+                            if !parameters.contains_key(&input.id)
+                                && let Ok(default) = input.ty.default_host(&input.default)
                             {
-                                parameters.insert(
-                                    "shape_type".into(),
-                                    HostBinding::Gpu(Binding::Constant(GpuValue::Enum(1))),
-                                );
-                            }
-                            for input in &definition.inputs {
-                                if !parameters.contains_key(&input.id) {
-                                    if let Ok(default) = input.ty.default_host(&input.default) {
-                                        parameters.insert(input.id.clone(), default);
-                                    }
-                                }
+                                parameters.insert(input.id.clone(), default);
                             }
                         }
                     }
@@ -929,7 +924,7 @@ impl Project {
             .timeline
             .clips
             .iter()
-            .map(|clip| clip.end())
+            .map(super::timeline::Clip::end)
             .fold(0.0f32, f32::max);
         let explicit_or_content = composition.timeline.end_time.unwrap_or(content_end);
         Some(if explicit_or_content <= 0.0 {
@@ -1337,7 +1332,7 @@ impl Project {
             .pipelines
             .iter()
             .any(|candidate| candidate.kind == kind && candidate.id != pipeline);
-        let selected = if has_candidate { 1 } else { 0 };
+        let selected = u32::from(has_candidate);
         self.add_effect_node_at(pipeline, kind, ui_position, |id| {
             Ok(EffectNode {
                 id,
@@ -1948,8 +1943,7 @@ impl Project {
         };
         let upstream = pipeline.nodes[index]
             .stack_image_input()
-            .map(|(_, binding)| binding.clone())
-            .unwrap_or(ImageBinding::Disconnected);
+            .map_or(ImageBinding::Disconnected, |(_, binding)| binding.clone());
         pipeline.nodes.remove(index);
         for candidate in &mut pipeline.nodes {
             candidate.replace_image_source(node, &upstream);
@@ -1980,16 +1974,15 @@ impl Project {
         {
             return false;
         }
-        if let Some(source) = source {
-            if source == node
+        if let Some(source) = source
+            && (source == node
                 || !pipeline
                     .nodes
                     .iter()
                     .any(|candidate| candidate.id == source)
-                || ImageGraphIndex::new(&pipeline.nodes).depends_on(source, node)
-            {
-                return false;
-            }
+                || ImageGraphIndex::new(&pipeline.nodes).depends_on(source, node))
+        {
+            return false;
         }
         let Some(target) = pipeline.node_mut(node) else {
             return false;
@@ -2049,34 +2042,31 @@ impl Project {
                 return false;
             };
 
-            let destination_input = match destination {
-                Some(destination) => {
-                    let Some(target) = candidate.node(destination) else {
-                        return false;
-                    };
-                    let Some(input) = destination_input
-                        .filter(|input| target.image_inputs.contains_key(*input))
-                        .or_else(|| target.stack_image_input_name())
-                        .map(str::to_owned)
-                    else {
-                        return false;
-                    };
-                    let Some(existing) = target.image_inputs.get(&input) else {
-                        return false;
-                    };
-                    if !image_binding_has_source(existing, source) {
-                        return false;
-                    }
-                    Some(input)
+            let destination_input = if let Some(destination) = destination {
+                let Some(target) = candidate.node(destination) else {
+                    return false;
+                };
+                let Some(input) = destination_input
+                    .filter(|input| target.image_inputs.contains_key(*input))
+                    .or_else(|| target.stack_image_input_name())
+                    .map(str::to_owned)
+                else {
+                    return false;
+                };
+                let Some(existing) = target.image_inputs.get(&input) else {
+                    return false;
+                };
+                if !image_binding_has_source(existing, source) {
+                    return false;
                 }
-                None => {
-                    if destination_input.is_some()
-                        || !image_binding_has_source(&candidate.output, source)
-                    {
-                        return false;
-                    }
-                    None
+                Some(input)
+            } else {
+                if destination_input.is_some()
+                    || !image_binding_has_source(&candidate.output, source)
+                {
+                    return false;
                 }
+                None
             };
 
             let source_binding = source.map_or(ImageBinding::PipelineInput, |source| {
@@ -2123,14 +2113,13 @@ impl Project {
             return false;
         };
         let output = pipeline_output_socket(pipeline.kind);
-        if let Some(source) = source {
-            if !pipeline
+        if let Some(source) = source
+            && !pipeline
                 .nodes
                 .iter()
                 .any(|candidate| candidate.id == source)
-            {
-                return false;
-            }
+        {
+            return false;
         }
         pipeline.output = source.map_or(ImageBinding::PipelineInput, |node| {
             ImageBinding::Node(SocketRef {

@@ -409,16 +409,16 @@ impl TextEdit {
             self.editor
                 .set_selection(Selection::Normal(self.editor.cursor()));
         } else if !shift {
-            if let Some((start, end)) = self.editor.selection_bounds() {
-                if matches!(key, NamedKey::ArrowLeft | NamedKey::ArrowRight) {
-                    self.editor.set_cursor(if *key == NamedKey::ArrowLeft {
-                        start
-                    } else {
-                        end
-                    });
-                    self.editor.set_selection(Selection::None);
-                    return true;
-                }
+            if let Some((start, end)) = self.editor.selection_bounds()
+                && matches!(key, NamedKey::ArrowLeft | NamedKey::ArrowRight)
+            {
+                self.editor.set_cursor(if *key == NamedKey::ArrowLeft {
+                    start
+                } else {
+                    end
+                });
+                self.editor.set_selection(Selection::None);
+                return true;
             }
             self.editor.set_selection(Selection::None);
         }

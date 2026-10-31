@@ -21,7 +21,7 @@ pub(super) struct ExportReadbackSurface {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExportPixelFormat {
+pub enum ExportPixelFormat {
     Nv12,
 
     P010Le,
@@ -34,7 +34,7 @@ pub(crate) enum ExportPixelFormat {
     Yuva444p10Le,
 }
 
-pub(crate) struct ExportRgba16Args<'a> {
+pub struct ExportRgba16Args<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub project: &'a Project,
@@ -43,7 +43,7 @@ pub(crate) struct ExportRgba16Args<'a> {
     pub timeline_time: f32,
 }
 
-pub(crate) struct ExportYuvBatchArgs<'a, W: std::io::Write> {
+pub struct ExportYuvBatchArgs<'a, W: std::io::Write> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
     pub project: &'a Project,
@@ -138,12 +138,11 @@ impl EncodeReadbackSurface {
             && (format != ExportPixelFormat::Nv12
                 || (width.is_multiple_of(4) && height.is_multiple_of(2)));
 
-        if format.direct_buffer_only() && !direct_mapped_storage {
-            panic!(
-                "{} export requires MAPPABLE_PRIMARY_BUFFERS and compatible 4:2:x dimensions",
-                format.ffmpeg_name()
-            );
-        }
+        assert!(
+            !(format.direct_buffer_only() && !direct_mapped_storage),
+            "{} export requires MAPPABLE_PRIMARY_BUFFERS and compatible 4:2:x dimensions",
+            format.ffmpeg_name()
+        );
         let mut textures = Vec::new();
         let mut views = Vec::new();
         let (padded_row_bytes, plane_stride, usage) = if direct_mapped_storage {
@@ -187,7 +186,7 @@ impl EncodeReadbackSurface {
                 textures.push(texture);
                 views.push(view);
             }
-            let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+            let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
             let padded = row_bytes.div_ceil(alignment) * alignment;
             (
                 padded,
@@ -392,12 +391,12 @@ impl ExportReadbackSurface {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let row_bytes = width as u64 * 8;
-        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+        let row_bytes = u64::from(width) * 8;
+        let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let padded_row_bytes = row_bytes.div_ceil(alignment) * alignment;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("kama export readback"),
-            size: padded_row_bytes * height as u64,
+            size: padded_row_bytes * u64::from(height),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });

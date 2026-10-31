@@ -1489,7 +1489,7 @@ macro_rules! named_definition {
 
 named_definition!(EffectDefinition, AudioEffectDefinition, GeneratorDefinition);
 
-pub(crate) fn shader_ident(value: &str) -> String {
+pub fn shader_ident(value: &str) -> String {
     let mut output = String::with_capacity(value.len());
     for character in value.chars() {
         if character.is_ascii_alphanumeric() || character == '_' {

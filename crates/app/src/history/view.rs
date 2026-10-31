@@ -12,7 +12,7 @@ const NODE_D: f32 = 8.0;
 const LINE_W: f32 = 2.0;
 
 #[derive(Default)]
-pub(crate) struct HistoryPanelState {
+pub struct HistoryPanelState {
     scroll: ScrollState,
 }
 
@@ -43,7 +43,7 @@ impl HistoryPanelState {
         if !rect.contains(point) {
             return false;
         }
-        let content = history.len() as f32 * ROW_H + PAD * 2.0;
+        let content = PAD.mul_add(2.0, history.len() as f32 * ROW_H);
         self.scroll
             .scroll_by(-delta[1], (content - rect.height).max(0.0))
     }
@@ -53,7 +53,7 @@ impl HistoryPanelState {
         let rows = history.graph_rows();
         let row_rects = history_row_rects(rect, rows.len(), self.scroll);
         let max_lane = rows.iter().map(|row| row.lane).max().unwrap_or(0);
-        let label_offset = (max_lane as f32 + 1.0) * LANE_W + GRAPH_LEFT + 5.0;
+        let label_offset = (max_lane as f32 + 1.0).mul_add(LANE_W, GRAPH_LEFT) + 5.0;
         kama_ui::ui!(ctx, {
             Rect("history-panel-bg", rect) {
                 fill: theme::panel();
@@ -76,8 +76,8 @@ impl HistoryPanelState {
             let Some(child_rect) = row_rects.get(row_number) else {
                 continue;
             };
-            let parent_y = parent_rect.y + parent_rect.height * 0.5;
-            let child_y = child_rect.y + child_rect.height * 0.5;
+            let parent_y = f32::mul_add(parent_rect.height, 0.5, parent_rect.y);
+            let child_y = f32::mul_add(child_rect.height, 0.5, child_rect.y);
             if child_y < -ROW_H || parent_y > rect.bottom() + ROW_H {
                 continue;
             }
@@ -115,7 +115,7 @@ impl HistoryPanelState {
                 Rect(("history-row", node.id), row) {
                     row;
                     fill: if selected { theme::control().mix(theme::accent(), 0.18) } else { Color::TRANSPARENT };
-                    border: if selected { 1 } else { 0 };
+                    border: u32::from(selected);
                     border_color: if selected { theme::accent().mix(theme::line_soft(), 0.45) } else { theme::line_soft() };
                     border_radius: 5.0; interactive;
 
@@ -134,7 +134,7 @@ impl HistoryPanelState {
                     Block { width: Size::Pixels(5.0); height: Size::Fill; }
                 }
                 Rect(("history-node", node.id), Rect::new(
-                    node_x - NODE_D * 0.5, row.y + row.height * 0.5 - NODE_D * 0.5, NODE_D, NODE_D,
+                    NODE_D.mul_add(-0.5, node_x), NODE_D.mul_add(-0.5, f32::mul_add(row.height, 0.5, row.y)), NODE_D, NODE_D,
                 )) {
                     fill: branch_color; border: if selected { 2 } else { 1 };
                     border_color: if selected { theme::text() } else { theme::panel() }; border_radius: NODE_D * 0.5;
@@ -197,7 +197,7 @@ struct HistoryRow {
 }
 
 fn history_lane_x(lane: usize) -> f32 {
-    PAD + GRAPH_LEFT + lane as f32 * LANE_W + LANE_W * 0.5
+    LANE_W.mul_add(0.5, (lane as f32).mul_add(LANE_W, PAD + GRAPH_LEFT))
 }
 
 fn history_row_rects(viewport: Rect, count: usize, scroll: ScrollState) -> Vec<Rect> {
@@ -231,7 +231,7 @@ fn history_row_rects(viewport: Rect, count: usize, scroll: ScrollState) -> Vec<R
 fn horizontal_line(a: f32, b: f32, y: f32) -> Rect {
     Rect::new(
         a.min(b),
-        y - LINE_W * 0.5,
+        LINE_W.mul_add(-0.5, y),
         (a - b).abs().max(LINE_W),
         LINE_W,
     )
@@ -239,7 +239,7 @@ fn horizontal_line(a: f32, b: f32, y: f32) -> Rect {
 
 fn vertical_line(x: f32, a: f32, b: f32) -> Rect {
     Rect::new(
-        x - LINE_W * 0.5,
+        LINE_W.mul_add(-0.5, x),
         a.min(b),
         LINE_W,
         (a - b).abs().max(LINE_W),
@@ -247,15 +247,15 @@ fn vertical_line(x: f32, a: f32, b: f32) -> Rect {
 }
 
 fn history_branch_color(branch: usize) -> Color {
-    let hue = (0.58 + branch as f32 * 0.618_034).fract();
+    let hue = (branch as f32).mul_add(0.618_034, 0.58).fract();
     let saturation = 0.66;
     let value = 0.92;
     let h = hue * 6.0;
     let sector = h.floor() as i32;
     let f = h - sector as f32;
     let p = value * (1.0 - saturation);
-    let q = value * (1.0 - saturation * f);
-    let t = value * (1.0 - saturation * (1.0 - f));
+    let q = value * f32::mul_add(saturation, -f, 1.0);
+    let t = value * f32::mul_add(saturation, -(1.0 - f), 1.0);
     let (r, g, b) = match sector.rem_euclid(6) {
         0 => (value, t, p),
         1 => (q, value, p),

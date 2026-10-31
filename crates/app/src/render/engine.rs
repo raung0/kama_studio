@@ -32,7 +32,7 @@ struct ActiveChunk {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RenderPhase {
+pub enum RenderPhase {
     Idle,
     Rendering,
     Paused,
@@ -218,14 +218,14 @@ impl RenderJob {
         if let Some(active) = self.active.take() {
             drop(active.encoder);
             let _ = fs::remove_file(active.temp_path);
-            if let Some(chunk) = self.chunks.get_mut(active.index) {
-                if chunk.state == ChunkState::Rendering {
-                    chunk.state = if chunk.signature != 0 || active.next_frame > chunk.start {
-                        ChunkState::Dirty
-                    } else {
-                        ChunkState::Pending
-                    };
-                }
+            if let Some(chunk) = self.chunks.get_mut(active.index)
+                && chunk.state == ChunkState::Rendering
+            {
+                chunk.state = if chunk.signature != 0 || active.next_frame > chunk.start {
+                    ChunkState::Dirty
+                } else {
+                    ChunkState::Pending
+                };
             }
         }
     }
@@ -510,7 +510,7 @@ impl RenderJob {
         if self
             .audio_mix
             .as_ref()
-            .is_some_and(|task| task.is_finished())
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let task = self
                 .audio_mix
@@ -526,7 +526,7 @@ impl RenderJob {
         if self
             .transcode
             .as_ref()
-            .is_some_and(|task| task.is_finished())
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
             let result = self
                 .transcode
@@ -572,17 +572,18 @@ impl RenderJob {
 
     fn timeline_ranges(&self) -> Vec<RenderCacheRange> {
         fn push_merged(ranges: &mut Vec<RenderCacheRange>, next: RenderCacheRange) {
-            if let Some(last) = ranges.last_mut() {
-                if last.state == next.state && (last.end - next.start).abs() <= 0.000_1 {
-                    last.end = last.end.max(next.end);
-                    return;
-                }
+            if let Some(last) = ranges.last_mut()
+                && last.state == next.state
+                && (last.end - next.start).abs() <= 0.000_1
+            {
+                last.end = last.end.max(next.end);
+                return;
             }
             ranges.push(next);
         }
 
         let mut ranges = Vec::new();
-        for chunk in &self.chunks {
+        for (index, chunk) in self.chunks.iter().enumerate() {
             let start = chunk.start as f32 / self.fps as f32;
             let end = (chunk.end + 1) as f32 / self.fps as f32;
             match chunk.state {
@@ -603,11 +604,29 @@ impl RenderJob {
                     },
                 ),
                 ChunkState::Rendering => {
-                    if chunk.signature != 0 {
+                    let done_end = self
+                        .active
+                        .as_ref()
+                        .filter(|active| active.index == index)
+                        .map_or(start, |active| {
+                            active.next_frame.min(chunk.end.saturating_add(1)) as f32
+                                / self.fps as f32
+                        });
+                    if done_end > start {
                         push_merged(
                             &mut ranges,
                             RenderCacheRange {
                                 start,
+                                end: done_end,
+                                state: RenderCacheState::Rendering,
+                            },
+                        );
+                    }
+                    if chunk.signature != 0 && done_end < end {
+                        push_merged(
+                            &mut ranges,
+                            RenderCacheRange {
+                                start: done_end,
                                 end,
                                 state: RenderCacheState::Dirty,
                             },
@@ -825,14 +844,13 @@ impl RenderTask {
         if self
             .worker
             .as_ref()
-            .is_some_and(|worker| worker.is_finished())
+            .is_some_and(std::thread::JoinHandle::is_finished)
+            && let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+            && self.status.phase != RenderPhase::Error
         {
-            if let Some(worker) = self.worker.take() {
-                if worker.join().is_err() && self.status.phase != RenderPhase::Error {
-                    self.status.phase = RenderPhase::Error;
-                    self.status.error = Some("render worker thread panicked".into());
-                }
-            }
+            self.status.phase = RenderPhase::Error;
+            self.status.error = Some("render worker thread panicked".into());
         }
     }
 
@@ -990,7 +1008,9 @@ fn run_render_worker(
     target_composition: CompositionId,
     live_end_frame: Arc<AtomicU64>,
 ) {
-    let mut last_status_at = Instant::now() - Duration::from_millis(100);
+    let mut last_status_at = Instant::now()
+        .checked_sub(Duration::from_millis(100))
+        .unwrap();
     let mut last_status_phase = job.phase;
 
     let _ = status_tx.try_send(RenderWorkerStatus::from_job(&job, update_revision));
@@ -1229,7 +1249,7 @@ fn render_export_batch_frames(canvas_size: [u32; 2]) -> usize {
 }
 
 fn render_encoder_threads(background: bool) -> usize {
-    let cores = thread::available_parallelism().map_or(4, |value| value.get());
+    let cores = thread::available_parallelism().map_or(4, std::num::NonZero::get);
     if background {
         cores.saturating_sub(1).max(2)
     } else {
@@ -1434,7 +1454,7 @@ fn range_signature(
 
         let active_times = sample_times
             .iter()
-            .filter(|time| **time >= clip.start as f64 && **time < clip.end() as f64)
+            .filter(|time| **time >= f64::from(clip.start) && **time < f64::from(clip.end()))
             .copied()
             .collect::<Vec<_>>();
         active_times.len().hash(&mut h);
@@ -1448,16 +1468,16 @@ fn range_signature(
         };
         let row = timeline.property_row(clip.track, &clip.source, clip.source_instance);
         clip.opacity.to_bits().hash(&mut h);
-        let source_state = row.map(|row| &row.source).unwrap_or(&clip.source);
+        let source_state = row.map_or(&clip.source, |row| &row.source);
         hash_visual_source(project, source_state, &source_times, &mut h, 0);
         hash_pipeline_instance(
             project,
-            row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline),
+            row.map_or(&clip.pipeline, |row| &row.pipeline),
             &active_times,
             &mut h,
         );
         hash_composite(
-            row.map(|row| &row.composite).unwrap_or(&clip.composite),
+            row.map_or(&clip.composite, |row| &row.composite),
             &active_times,
             &mut h,
         );
@@ -1603,7 +1623,7 @@ fn hash_composition_source(
                 clip.track == track.id
                     && times
                         .iter()
-                        .any(|time| *time >= clip.start as f64 && *time < clip.end() as f64)
+                        .any(|time| *time >= f64::from(clip.start) && *time < f64::from(clip.end()))
             })
             .collect::<Vec<_>>();
         if active_clips.is_empty() {
@@ -1631,7 +1651,7 @@ fn hash_composition_source(
             }
             let active_times = times
                 .iter()
-                .filter(|time| **time >= clip.start as f64 && **time < clip.end() as f64)
+                .filter(|time| **time >= f64::from(clip.start) && **time < f64::from(clip.end()))
                 .copied()
                 .collect::<Vec<_>>();
             active_times.len().hash(h);
@@ -1645,16 +1665,16 @@ fn hash_composition_source(
             };
             let row = timeline.property_row(clip.track, &clip.source, clip.source_instance);
             clip.opacity.to_bits().hash(h);
-            let source_state = row.map(|row| &row.source).unwrap_or(&clip.source);
+            let source_state = row.map_or(&clip.source, |row| &row.source);
             hash_visual_source(project, source_state, &source_times, h, depth);
             hash_pipeline_instance(
                 project,
-                row.map(|row| &row.pipeline).unwrap_or(&clip.pipeline),
+                row.map_or(&clip.pipeline, |row| &row.pipeline),
                 &active_times,
                 h,
             );
             hash_composite(
-                row.map(|row| &row.composite).unwrap_or(&clip.composite),
+                row.map_or(&clip.composite, |row| &row.composite),
                 &active_times,
                 h,
             );
@@ -1686,25 +1706,25 @@ fn hash_pipeline_instance(
     hash_effect_nodes(&instance.local_nodes, Some(instance), times, h);
     instance.pipeline.hash(h);
 
-    if let Some(id) = instance.pipeline {
-        if let Some(pipeline) = project.pipeline(id) {
-            hash_json(&pipeline.kind, h);
-            hash_json(&pipeline.output, h);
-            for node in pipeline.main_path() {
-                hash_effect_node(node, Some(instance), times, h);
+    if let Some(id) = instance.pipeline
+        && let Some(pipeline) = project.pipeline(id)
+    {
+        hash_json(&pipeline.kind, h);
+        hash_json(&pipeline.output, h);
+        for node in pipeline.main_path() {
+            hash_effect_node(node, Some(instance), times, h);
+        }
+        for value_node in &pipeline.value_nodes {
+            value_node.id.hash(h);
+            hash_json(&value_node.kind, h);
+            hash_json(&value_node.value, h);
+            for (name, binding) in &value_node.inputs {
+                name.hash(h);
+                hash_binding_samples(binding, times, h);
             }
-            for value_node in &pipeline.value_nodes {
-                value_node.id.hash(h);
-                hash_json(&value_node.kind, h);
-                hash_json(&value_node.value, h);
-                for (name, binding) in &value_node.inputs {
-                    name.hash(h);
-                    hash_binding_samples(binding, times, h);
-                }
-                if value_node.kind.is_runtime_source() {
-                    for time in times {
-                        time.to_bits().hash(h);
-                    }
+            if value_node.kind.is_runtime_source() {
+                for time in times {
+                    time.to_bits().hash(h);
                 }
             }
         }
@@ -2000,7 +2020,7 @@ impl RenderSession {
         fps: f64,
         active_composition: CompositionId,
     ) -> Option<RenderCachePreview> {
-        let frame = (timeline_time.max(0.0) as f64 * fps.max(1.0)).floor() as u64;
+        let frame = (f64::from(timeline_time.max(0.0)) * fps.max(1.0)).floor() as u64;
         let task = self.task.as_ref()?;
         if task.composition != active_composition || task.has_pending_video_update() {
             return None;
@@ -2370,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn uncommitted_frames_are_not_shown_as_cached() {
+    fn in_progress_frames_are_visible_without_exposing_an_uncommitted_cache() {
         let mut fixture = Fixture::new();
         fixture.commit_chunk(0);
         fixture
@@ -2381,8 +2401,11 @@ mod tests {
 
         let ranges = fixture.job.timeline_ranges();
 
-        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges.len(), 2);
         assert_eq!((ranges[0].start, ranges[0].end), (0.0, 8.0));
+        assert_eq!(ranges[0].state, RenderCacheState::Rendered);
+        assert_eq!((ranges[1].start, ranges[1].end), (8.0, 12.0));
+        assert_eq!(ranges[1].state, RenderCacheState::Rendering);
         assert_eq!(fixture.job.preview_ranges().len(), 1);
     }
 

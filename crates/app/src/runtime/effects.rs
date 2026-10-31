@@ -42,11 +42,11 @@ impl EffectRuntime {
             if pipeline.kind != PipelineKind::Video {
                 continue;
             }
-            if let Some(existing) = self.compiled.get(&pipeline.id) {
-                if existing.revision == pipeline.revision {
-                    live.insert(pipeline.id, existing.clone());
-                    continue;
-                }
+            if let Some(existing) = self.compiled.get(&pipeline.id)
+                && existing.revision == pipeline.revision
+            {
+                live.insert(pipeline.id, existing.clone());
+                continue;
             }
             let compiled = Arc::new(self.compile_pipeline(pipeline));
             live.insert(pipeline.id, compiled);
@@ -71,13 +71,12 @@ impl EffectRuntime {
         let mut stages = Vec::new();
         let mut run = Vec::<&EffectNode>::new();
         for node in pipeline.main_path() {
-            if let Some(first) = run.first() {
-                if first.execution != node.execution
-                    || node.execution != NodeExecution::PointwiseGpu
-                {
-                    stages.push(self.compile_stage(&run));
-                    run.clear();
-                }
+            if let Some(first) = run.first()
+                && (first.execution != node.execution
+                    || node.execution != NodeExecution::PointwiseGpu)
+            {
+                stages.push(self.compile_stage(&run));
+                run.clear();
             }
             run.push(node);
             if node.execution != NodeExecution::PointwiseGpu {

@@ -64,11 +64,11 @@ fn collect_upcoming_video_preloads(
 
         let source = track
             .property_row(&clip.source, clip.source_instance)
-            .map(|row| &row.source)
-            .unwrap_or(&clip.source);
-        let clip_key = scope
-            .map(|scope| scoped_clip_id(scope, clip.id))
-            .unwrap_or_else(|| u64::from(clip.id));
+            .map_or(&clip.source, |row| &row.source);
+        let clip_key = scope.map_or_else(
+            || u64::from(clip.id),
+            |scope| scoped_clip_id(scope, clip.id),
+        );
 
         match source {
             VisualSource::Media(media) => {
@@ -92,20 +92,20 @@ fn collect_upcoming_video_preloads(
                 {
                     source_time = source_time.rem_euclid(duration);
                 }
-                let (target_width, target_height) = asset
-                    .video_width
-                    .zip(asset.video_height)
-                    .map(|dimensions| {
-                        scaled_source_geometry(
-                            dimensions,
-                            [0.0, 0.0],
-                            canvas_size,
-                            preview_size[0],
-                            preview_size[1],
-                        )
-                        .size
-                    })
-                    .unwrap_or((preview_size[0].max(1), preview_size[1].max(1)));
+                let (target_width, target_height) =
+                    asset.video_width.zip(asset.video_height).map_or(
+                        (preview_size[0].max(1), preview_size[1].max(1)),
+                        |dimensions| {
+                            scaled_source_geometry(
+                                dimensions,
+                                [0.0, 0.0],
+                                canvas_size,
+                                preview_size[0],
+                                preview_size[1],
+                            )
+                            .size
+                        },
+                    );
                 targets.push(VideoPreloadTarget {
                     clip_key,
                     track_scope: scope,
@@ -113,11 +113,12 @@ fn collect_upcoming_video_preloads(
                     path: asset.path.clone(),
                     source_time,
                     source_fps: asset.frame_rate.unwrap_or(timeline_fps).max(1.0),
-                    source_step_seconds: clip.speed.max(0.01) as f64 / timeline_fps.max(1.0),
+                    source_step_seconds: f64::from(clip.speed.max(0.01)) / timeline_fps.max(1.0),
                     width: target_width,
                     height: target_height,
-                    starts_in: root_eta_start
-                        + (preload_time - window_start).max(0.0) * root_seconds_per_timeline_second,
+                    starts_in: (preload_time - window_start)
+                        .max(0.0)
+                        .mul_add(root_seconds_per_timeline_second, root_eta_start),
                 });
             }
             VisualSource::Composition(composition_id) => {
@@ -145,10 +146,11 @@ fn collect_upcoming_video_preloads(
                     } else {
                         (source_time, overlap_end)
                     };
-                    let child_end = child_start + (parent_segment_end - parent_cursor) * speed;
-                    let child_eta = root_eta_start
-                        + (parent_cursor - window_start).max(0.0)
-                            * root_seconds_per_timeline_second;
+                    let child_end =
+                        f32::mul_add(parent_segment_end - parent_cursor, speed, child_start);
+                    let child_eta = (parent_cursor - window_start)
+                        .max(0.0)
+                        .mul_add(root_seconds_per_timeline_second, root_eta_start);
                     let child_preview = scaled_source_geometry(
                         (
                             composition.settings.canvas_size[0],

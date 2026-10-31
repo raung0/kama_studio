@@ -292,7 +292,7 @@ impl<S: Source> AudioFxSource<S> {
         let sample_rate = inner.sample_rate().get();
         let initial = settings
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         Self {
             chain: AudioEffectChain::new(runtime, &initial, channels, sample_rate),
@@ -321,7 +321,7 @@ impl<S: Source> AudioFxSource<S> {
         let settings = self
             .settings
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         self.chain.process(&mut self.output, &settings);
         self.cursor = 0;
@@ -355,7 +355,7 @@ impl<S: Source> Source for AudioFxSource<S> {
         let settings = self
             .settings
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         self.chain.reset(&settings);
         self.inner.try_seek(pos)
@@ -594,7 +594,7 @@ impl AudioPlayback {
         let master_meter = Arc::new(AudioMeter::default());
         let wasm = AudioWasmRuntime::new()
             .inspect_err(|error| {
-                messages::error("Audio", format!("WASM runtime unavailable: {error:#}"))
+                messages::error("Audio", format!("WASM runtime unavailable: {error:#}"));
             })
             .ok();
         match rodio::DeviceSinkBuilder::open_default_sink() {
@@ -711,14 +711,12 @@ impl AudioPlayback {
                         .all(|(current, next)| current.same_processor(next))
                     || (voice.mapping_offset - desired.mapping_offset).abs() > f32::EPSILON
                     || (voice.speed - desired.speed).abs() > f32::EPSILON
-                    || desired.source_time + AUDIO_DRIFT_TOLERANCE * desired.speed.max(0.01)
+                    || AUDIO_DRIFT_TOLERANCE.mul_add(desired.speed.max(0.01), desired.source_time)
                         < voice.source_anchor
                     || voice.player.empty()
             });
-            if replace {
-                if let Some(voice) = self.voices.remove(&clip) {
-                    voice.player.stop();
-                }
+            if replace && let Some(voice) = self.voices.remove(&clip) {
+                voice.player.stop();
             }
 
             if let std::collections::hash_map::Entry::Vacant(entry) = self.voices.entry(clip) {
@@ -754,7 +752,7 @@ impl AudioPlayback {
                 *voice
                     .effect_settings
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Arc::<[AudioEffectSettings]>::from(desired.effects.clone());
             }
             voice.control.publish(
@@ -768,8 +766,8 @@ impl AudioPlayback {
             let player_time =
                 (desired.source_time - voice.source_anchor).max(0.0) / desired.speed.max(0.01);
             let actual = voice.player.get_pos().as_secs_f32();
-            let source_rewound = desired.source_time
-                + AUDIO_DRIFT_TOLERANCE * desired.speed.max(0.01)
+            let source_rewound = AUDIO_DRIFT_TOLERANCE
+                .mul_add(desired.speed.max(0.01), desired.source_time)
                 < voice.last_source_time;
             let should_seek = if playing {
                 if started_playing {
@@ -861,7 +859,7 @@ struct AudioRoute<'a> {
 
 impl AudioRoute<'_> {
     fn source_time(&self, root_time: f32) -> f32 {
-        self.source_offset + root_time * self.source_rate
+        root_time.mul_add(self.source_rate, self.source_offset)
     }
 }
 
@@ -904,8 +902,7 @@ fn collect_audio_routes<'a>(
 
         let pipeline = track
             .property_row(&clip.source, clip.source_instance)
-            .map(|row| &row.pipeline)
-            .unwrap_or(&clip.pipeline);
+            .map_or(&clip.pipeline, |row| &row.pipeline);
         let layer = AudioRouteLayer {
             clip,
             track,
@@ -926,7 +923,7 @@ fn collect_audio_routes<'a>(
                 let mut layers = Vec::with_capacity(outer_layers.len() + 1);
                 layers.push(layer);
                 layers.extend(outer_layers.iter().rev().copied());
-                let source_offset = clip.source_offset + (time_offset - clip.start) * speed;
+                let source_offset = (time_offset - clip.start).mul_add(speed, clip.source_offset);
                 let source_rate = time_rate * speed;
                 let source_duration = asset.duration.map(|duration| duration.max(1.0e-6) as f32);
                 for (root_start, root_end, source_offset) in looped_source_segments(
@@ -952,7 +949,7 @@ fn collect_audio_routes<'a>(
                 let Some(composition) = project.composition(*composition_id) else {
                     continue;
                 };
-                let child_offset = clip.source_offset + (time_offset - clip.start) * speed;
+                let child_offset = (time_offset - clip.start).mul_add(speed, clip.source_offset);
                 let child_rate = time_rate * speed;
                 let child_duration = project.composition_duration(*composition_id);
                 let mut next_outer = Vec::with_capacity(outer_layers.len() + 1);
@@ -1014,14 +1011,15 @@ fn looped_source_segments(
 
     while root_start < root_range.1 {
         let root_start64 = f64::from(root_start);
-        let source_at_start = source_offset64 + root_start64 * source_rate64;
+        let source_at_start = f64::mul_add(root_start64, source_rate64, source_offset64);
         let cycle = (source_at_start / duration64).floor();
         if !cycle.is_finite() {
             break;
         }
 
-        let cycle_end_root =
-            (((cycle + 1.0) * duration64 - source_offset64) / source_rate64).min(root_limit64);
+        let cycle_end_root = (f64::mul_add(cycle + 1.0, duration64, -source_offset64)
+            / source_rate64)
+            .min(root_limit64);
         let mut root_end = cycle_end_root as f32;
         if !root_end.is_finite() || root_end > root_range.1 {
             root_end = root_range.1;
@@ -1036,7 +1034,7 @@ fn looped_source_segments(
         segments.push((
             root_start,
             root_end,
-            (source_offset64 - cycle * duration64) as f32,
+            f64::mul_add(cycle, -duration64, source_offset64) as f32,
         ));
         root_start = root_end;
     }
@@ -1051,22 +1049,22 @@ fn audio_route_settings(
 ) -> Vec<AudioEffectSettings> {
     let mut settings = Vec::new();
     for layer in &route.layers {
-        let timeline_time = layer.time_offset + root_time * layer.time_rate;
+        let timeline_time = root_time.mul_add(layer.time_rate, layer.time_offset);
         let local = layer.clip.timeline_local_time(timeline_time);
         settings.extend(audio_pipeline_settings(
             project,
             plugins,
             layer.pipeline,
-            timeline_time as f64,
-            local as f64,
+            f64::from(timeline_time),
+            f64::from(local),
         ));
         if let Some(track_pipeline) = &layer.track.pipeline {
             settings.extend(audio_pipeline_settings(
                 project,
                 plugins,
                 track_pipeline,
-                timeline_time as f64,
-                timeline_time as f64,
+                f64::from(timeline_time),
+                f64::from(timeline_time),
             ));
         }
     }
@@ -1077,7 +1075,7 @@ fn audio_route_mix(route: &AudioRoute<'_>, root_time: f32) -> (f32, f32) {
     let mut volume = 1.0;
     let mut pan = 0.0f32;
     for layer in &route.layers {
-        let timeline_time = layer.time_offset + root_time * layer.time_rate;
+        let timeline_time = root_time.mul_add(layer.time_rate, layer.time_offset);
         let local = layer.clip.timeline_local_time(timeline_time);
         let [track_volume, track_pan] = track_mix_at(layer.track, timeline_time);
         volume *= clip_volume(
@@ -1184,13 +1182,13 @@ fn track_mix_at(track: &Track, time: f32) -> [f32; 2] {
     [
         track
             .volume
-            .evaluate(time as f64)
+            .evaluate(f64::from(time))
             .and_then(GpuValue::f32)
             .unwrap_or(1.0)
             .clamp(0.0, 1.0),
         track
             .pan
-            .evaluate(time as f64)
+            .evaluate(f64::from(time))
             .and_then(GpuValue::f32)
             .unwrap_or(0.0)
             .clamp(-1.0, 1.0),
@@ -1258,7 +1256,7 @@ fn clip_volume(local: f32, duration: f32, fade_in: f32, fade_out: f32) -> f32 {
     volume
 }
 
-pub(crate) fn render_audio_wav(
+pub fn render_audio_wav(
     project: &Project,
     plugins: &PluginRegistry,
     timeline: &TimelineDocument,
@@ -1306,7 +1304,7 @@ pub(crate) fn render_audio_wav(
             messages::error(
                 "Audio render",
                 format!("WASM runtime unavailable: {error:#}"),
-            )
+            );
         })
         .ok();
 
@@ -1336,10 +1334,10 @@ pub(crate) fn render_audio_wav(
         let mut b = read_frame().unwrap_or([0.0; 2]);
         let step = source_sample_rate as f32 / sample_rate as f32 * route.source_rate.max(0.01);
         let mut source_pos = 0.0f32;
-        let out_first = ((route.root_start - start) as f64 * sample_rate as f64)
+        let out_first = (f64::from(route.root_start - start) * f64::from(sample_rate))
             .round()
             .max(0.0) as usize;
-        let out_last = ((route.root_end - start) as f64 * sample_rate as f64)
+        let out_last = (f64::from(route.root_end - start) * f64::from(sample_rate))
             .round()
             .max(0.0) as usize;
         let mut settings = audio_route_settings(project, plugins, &route, route.root_start);
@@ -1372,8 +1370,8 @@ pub(crate) fn render_audio_wav(
                     source_pos -= 1.0;
                 }
                 block.extend_from_slice(&[
-                    a[0] + (b[0] - a[0]) * source_pos,
-                    a[1] + (b[1] - a[1]) * source_pos,
+                    f32::mul_add(b[0] - a[0], source_pos, a[0]),
+                    f32::mul_add(b[1] - a[1], source_pos, a[1]),
                 ]);
                 source_pos += step;
                 let frame_time = start + (output_frame + offset) as f32 / sample_rate as f32;
@@ -1381,10 +1379,11 @@ pub(crate) fn render_audio_wav(
                 gains.push(stereo_mix_gains(volume, pan));
             }
             chain.process(&mut block, &settings);
-            for (offset, (stereo, gain)) in block.chunks_exact(2).zip(&gains).enumerate() {
+            for (offset, (stereo, gain)) in block.as_chunks::<2>().0.iter().zip(&gains).enumerate()
+            {
                 let target = (output_frame + offset) * 2;
-                mix[target] += stereo[0] * gain[0];
-                mix[target + 1] += stereo[1] * gain[1];
+                mix[target] = f32::mul_add(stereo[0], gain[0], mix[target]);
+                mix[target + 1] = f32::mul_add(stereo[1], gain[1], mix[target + 1]);
             }
             output_frame += block_frames;
         }

@@ -38,8 +38,7 @@ fn cache_root() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
+            .map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join("Library/Caches/kama/clip-graphs")
     }
     #[cfg(target_os = "windows")]
@@ -113,7 +112,7 @@ fn enqueue(write: CacheWrite) {
     }
 }
 
-pub(crate) fn store_frame_async(key: u64, frame: Arc<CpuFrame>) {
+pub fn store_frame_async(key: u64, frame: Arc<CpuFrame>) {
     let expected = (frame.width as usize)
         .checked_mul(frame.height as usize)
         .and_then(|pixels| pixels.checked_mul(4));
@@ -124,7 +123,7 @@ pub(crate) fn store_frame_async(key: u64, frame: Arc<CpuFrame>) {
     }
 }
 
-pub(crate) fn load_frame(key: u64) -> Option<CpuFrame> {
+pub fn load_frame(key: u64) -> Option<CpuFrame> {
     let path = frame_path(key);
     let result = read_frame(&path);
     if result.is_err() && path.exists() {
@@ -133,7 +132,7 @@ pub(crate) fn load_frame(key: u64) -> Option<CpuFrame> {
     result.ok()
 }
 
-pub(crate) fn store_text_async(namespace: &'static str, key: u64, text: String) {
+pub fn store_text_async(namespace: &'static str, key: u64, text: String) {
     if text.len() <= MAX_TEXT_BYTES {
         enqueue(CacheWrite::Text {
             namespace,
@@ -143,7 +142,7 @@ pub(crate) fn store_text_async(namespace: &'static str, key: u64, text: String) 
     }
 }
 
-pub(crate) fn load_text(namespace: &'static str, key: u64) -> Option<String> {
+pub fn load_text(namespace: &'static str, key: u64) -> Option<String> {
     let path = text_path(namespace, key);
     let result = read_text(&path);
     if result.is_err() && path.exists() {

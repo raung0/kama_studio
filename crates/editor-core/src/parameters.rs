@@ -270,10 +270,10 @@ impl HostBinding {
                         .resize_with(count, ScalarKeyframeTrack::default);
                 }
                 for channel in 0..count {
-                    if let Some(next) = HostComponentKeyframes::scalar(&value, channel) {
-                        if let Some(track) = channels.tracks.get_mut(channel) {
-                            track.set_key(time, next, Interpolation::Linear);
-                        }
+                    if let Some(next) = HostComponentKeyframes::scalar(&value, channel)
+                        && let Some(track) = channels.tracks.get_mut(channel)
+                    {
+                        track.set_key(time, next, Interpolation::Linear);
                     }
                 }
             }
@@ -295,10 +295,10 @@ impl HostBinding {
                     tracks: vec![ScalarKeyframeTrack::default(); count],
                 };
                 for channel in 0..count {
-                    if let Some(next) = HostComponentKeyframes::scalar(&base, channel) {
-                        if let Some(track) = channels.tracks.get_mut(channel) {
-                            track.set_key(time, next, Interpolation::Linear);
-                        }
+                    if let Some(next) = HostComponentKeyframes::scalar(&base, channel)
+                        && let Some(track) = channels.tracks.get_mut(channel)
+                    {
+                        track.set_key(time, next, Interpolation::Linear);
                     }
                 }
                 *self = Self::Components(channels);
@@ -312,10 +312,10 @@ impl HostBinding {
             Self::Keyframes(track) if track.has_keyframe(time) => {
                 let fallback = track.evaluate(time);
                 track.remove_keyframe(time);
-                if track.keys.is_empty() {
-                    if let Some(value) = fallback {
-                        *self = Self::Constant(value);
-                    }
+                if track.keys.is_empty()
+                    && let Some(value) = fallback
+                {
+                    *self = Self::Constant(value);
                 }
             }
             Self::Keyframes(track) => {
@@ -337,10 +337,10 @@ impl HostBinding {
                     }
                 } else if let Some(value) = channels.evaluate(time) {
                     for channel in 0..channels.tracks.len() {
-                        if let Some(next) = HostComponentKeyframes::scalar(&value, channel) {
-                            if let Some(track) = channels.tracks.get_mut(channel) {
-                                track.set_key(time, next, Interpolation::Linear);
-                            }
+                        if let Some(next) = HostComponentKeyframes::scalar(&value, channel)
+                            && let Some(track) = channels.tracks.get_mut(channel)
+                        {
+                            track.set_key(time, next, Interpolation::Linear);
                         }
                     }
                 }
@@ -362,10 +362,10 @@ impl HostBinding {
             };
             for key in &track.keys {
                 for channel in 0..count {
-                    if let Some(value) = HostComponentKeyframes::scalar(&key.value, channel) {
-                        if let Some(track) = channels.tracks.get_mut(channel) {
-                            track.set_key(key.time, value, Interpolation::Linear);
-                        }
+                    if let Some(value) = HostComponentKeyframes::scalar(&key.value, channel)
+                        && let Some(track) = channels.tracks.get_mut(channel)
+                    {
+                        track.set_key(key.time, value, Interpolation::Linear);
                     }
                 }
             }

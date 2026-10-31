@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-pub(crate) enum PaletteAction {
+pub enum PaletteAction {
     NewProject,
     NewComposition,
     OpenProject,
@@ -91,14 +91,14 @@ pub(crate) enum PaletteAction {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum DockCommand {
+pub enum DockCommand {
     ToggleMaximize(StackId),
     CloseTab { stack: StackId, tab: TabId },
     ActivateTab { stack: StackId, tab: TabId },
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum EditCommand {
+pub enum EditCommand {
     Timeline(TimelineAction),
     Inspector(InspectorAction),
     PipelineGraph(PipelineGraphAction),
@@ -108,7 +108,7 @@ pub(crate) enum EditCommand {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum EditorCommand {
+pub enum EditorCommand {
     Edit(EditCommand),
     Action(PaletteAction),
     Layout(LayoutCommand),
@@ -149,13 +149,13 @@ impl EditorCommand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum CommandScope {
+pub enum CommandScope {
     Global,
     Media,
 }
 
 #[derive(Default)]
-pub(crate) struct CommandQueue {
+pub struct CommandQueue {
     pending: VecDeque<EditorCommand>,
 }
 
@@ -193,7 +193,7 @@ enum BindingKey {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) struct KeyBinding {
+pub struct KeyBinding {
     key: BindingKey,
     primary: bool,
     shift: bool,
@@ -380,7 +380,7 @@ impl Display for KeyBinding {
     }
 }
 
-pub(crate) struct CommandRegistration {
+pub struct CommandRegistration {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) description: String,
@@ -392,7 +392,7 @@ pub(crate) struct CommandRegistration {
 }
 
 #[derive(Clone)]
-pub(crate) struct CommandDefinition {
+pub struct CommandDefinition {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) description: String,
@@ -403,7 +403,7 @@ pub(crate) struct CommandDefinition {
     palette_visible: bool,
 }
 
-pub(crate) struct CommandRegistry {
+pub struct CommandRegistry {
     definitions: Vec<CommandDefinition>,
     indices: HashMap<String, usize>,
     bindings: HashMap<(CommandScope, KeyBinding), usize>,
@@ -969,7 +969,7 @@ impl CommandRegistry {
     }
 }
 
-pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
     let query = query.to_lowercase();
     let candidate = candidate.to_lowercase();
     let chars = candidate.chars().collect::<Vec<_>>();

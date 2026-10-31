@@ -456,7 +456,12 @@ fn expand_component(element: Element) -> Result<TokenStream2> {
             let Some(value) = property.value else {
                 return Err(Error::new(name.span(), "component property requires value"));
             };
-            component_fields.push(quote! { #name: #value });
+            if matches!(&value, Expr::Path(path) if path.qself.is_none() && path.path.is_ident(&name))
+            {
+                component_fields.push(quote! { #name });
+            } else {
+                component_fields.push(quote! { #name: #value });
+            }
         } else {
             block_properties.push(property);
         }

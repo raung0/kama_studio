@@ -111,10 +111,8 @@ fn main() {
             std::process::exit(1);
         };
         resvg::render(&tree, transform, &mut pixmap.as_mut());
-        for pixel in pixmap.data_mut().chunks_exact_mut(4) {
-            let [red, green, blue, alpha] = pixel else {
-                continue;
-            };
+        for pixel in pixmap.data_mut().as_chunks_mut::<4>().0 {
+            let [red, green, blue, alpha] = pixel;
             let alpha = u32::from(*alpha);
             if alpha == 0 {
                 continue;
@@ -178,14 +176,14 @@ fn embed_builtin_plugin(out_dir: &Path) {
     ];
     let embedded_root = out_dir.join("embedded-plugins");
     let embedded = embedded_root.join("builtins");
-    if embedded_root.exists() {
-        if let Err(error) = fs::remove_dir_all(&embedded_root) {
-            eprintln!(
-                "remove stale embedded plugin directory {}: {error}",
-                embedded_root.display()
-            );
-            std::process::exit(1);
-        }
+    if embedded_root.exists()
+        && let Err(error) = fs::remove_dir_all(&embedded_root)
+    {
+        eprintln!(
+            "remove stale embedded plugin directory {}: {error}",
+            embedded_root.display()
+        );
+        std::process::exit(1);
     }
     if let Err(error) = fs::create_dir_all(&embedded) {
         eprintln!(
@@ -211,11 +209,11 @@ fn embed_builtin_plugin(out_dir: &Path) {
             }
         };
         let path = entry.path();
-        if path.is_file() {
-            if let Err(error) = fs::copy(&path, embedded.join(entry.file_name())) {
-                eprintln!("copy builtin asset {}: {error}", path.display());
-                std::process::exit(1);
-            }
+        if path.is_file()
+            && let Err(error) = fs::copy(&path, embedded.join(entry.file_name()))
+        {
+            eprintln!("copy builtin asset {}: {error}", path.display());
+            std::process::exit(1);
         }
     }
 

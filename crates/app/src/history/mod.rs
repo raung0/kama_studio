@@ -3,7 +3,7 @@ use kama_editor_core::{HistoryEntry, HistoryGraph};
 
 mod view;
 
-pub(crate) use view::HistoryPanelState;
+pub use view::HistoryPanelState;
 
 #[derive(Clone, Debug)]
 pub struct HistorySnapshot {

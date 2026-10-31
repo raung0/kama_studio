@@ -1,4 +1,4 @@
-pub(crate) fn default_color(index: usize) -> [f32; 4] {
+pub fn default_color(index: usize) -> [f32; 4] {
     const PALETTE: [[f32; 4]; 8] = [
         [0.97, 0.32, 0.46, 1.0],
         [0.20, 0.58, 0.99, 1.0],
@@ -12,7 +12,7 @@ pub(crate) fn default_color(index: usize) -> [f32; 4] {
     PALETTE[index % PALETTE.len()]
 }
 
-pub(crate) fn colors_from_values(values: &[f32], count: usize) -> Vec<[f32; 4]> {
+pub fn colors_from_values(values: &[f32], count: usize) -> Vec<[f32; 4]> {
     let mut colors = Vec::with_capacity(count);
     let mut fallback = default_color(0);
     for index in 0..count {
@@ -27,7 +27,7 @@ pub(crate) fn colors_from_values(values: &[f32], count: usize) -> Vec<[f32; 4]> 
     colors
 }
 
-pub(crate) fn colors_to_values(colors: &[[f32; 4]]) -> Vec<f32> {
+pub fn colors_to_values(colors: &[[f32; 4]]) -> Vec<f32> {
     let mut values = Vec::with_capacity(colors.len() * 4);
     for color in colors {
         values.extend_from_slice(color);
@@ -35,22 +35,22 @@ pub(crate) fn colors_to_values(colors: &[[f32; 4]]) -> Vec<f32> {
     values
 }
 
-pub(crate) fn changed_point_index(old: &[[f32; 2]], new: &[[f32; 2]]) -> usize {
+pub fn changed_point_index(old: &[[f32; 2]], new: &[[f32; 2]]) -> usize {
     old.iter()
         .zip(new)
         .position(|(old, new)| old != new)
         .unwrap_or(old.len().min(new.len()))
 }
 
-pub(crate) fn inserted_color(colors: &[[f32; 4]], index: usize) -> [f32; 4] {
+pub fn inserted_color(colors: &[[f32; 4]], index: usize) -> [f32; 4] {
     match (index.checked_sub(1), colors.get(index)) {
         (Some(left), Some(right)) => {
             let left = colors[left];
             [
-                (left[0] + right[0]) * 0.5,
-                (left[1] + right[1]) * 0.5,
-                (left[2] + right[2]) * 0.5,
-                (left[3] + right[3]) * 0.5,
+                f32::midpoint(left[0], right[0]),
+                f32::midpoint(left[1], right[1]),
+                f32::midpoint(left[2], right[2]),
+                f32::midpoint(left[3], right[3]),
             ]
         }
         (Some(left), None) => colors[left],
@@ -59,13 +59,13 @@ pub(crate) fn inserted_color(colors: &[[f32; 4]], index: usize) -> [f32; 4] {
     }
 }
 
-pub(crate) fn normalized_midpoints(values: &[f32], point_count: usize) -> Vec<f32> {
+pub fn normalized_midpoints(values: &[f32], point_count: usize) -> Vec<f32> {
     (0..point_count.saturating_sub(1))
         .map(|index| values.get(index).copied().unwrap_or(0.5).clamp(0.01, 0.99))
         .collect()
 }
 
-pub(crate) fn insert_midpoint(midpoints: &mut Vec<f32>, index: usize, old_point_count: usize) {
+pub fn insert_midpoint(midpoints: &mut Vec<f32>, index: usize, old_point_count: usize) {
     if old_point_count == 0 {
         return;
     }
@@ -82,7 +82,7 @@ pub(crate) fn insert_midpoint(midpoints: &mut Vec<f32>, index: usize, old_point_
     midpoints.resize(old_point_count, 0.5);
 }
 
-pub(crate) fn remove_midpoint(midpoints: &mut Vec<f32>, index: usize, old_point_count: usize) {
+pub fn remove_midpoint(midpoints: &mut Vec<f32>, index: usize, old_point_count: usize) {
     if old_point_count <= 1 || midpoints.is_empty() {
         midpoints.clear();
         return;

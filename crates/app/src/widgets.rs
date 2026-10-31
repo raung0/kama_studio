@@ -26,11 +26,11 @@ const FORM_GAP: f32 = 12.0;
 const ACCORDION_BODY_H: f32 = 58.0;
 const OPTIONS: [&str; 3] = ["Option A", "Option B", "Option C"];
 
-pub(crate) const CONTEXT_MENU_W: f32 = 218.0;
-pub(crate) const CONTEXT_MENU_ROW_H: f32 = 26.0;
+pub const CONTEXT_MENU_W: f32 = 218.0;
+pub const CONTEXT_MENU_ROW_H: f32 = 26.0;
 
 #[derive(Clone)]
-pub(crate) struct ContextMenuItem<'a, A> {
+pub struct ContextMenuItem<'a, A> {
     pub(crate) label: &'a str,
     pub(crate) shortcut: Option<String>,
     pub(crate) icon: Option<AppIcon>,
@@ -60,8 +60,8 @@ impl<'a, A> ContextMenuItem<'a, A> {
     }
 }
 
-pub(crate) fn context_menu_rect(panel: Rect, point: [f32; 2], item_count: usize) -> Rect {
-    let height = item_count.max(1) as f32 * CONTEXT_MENU_ROW_H + 4.0;
+pub fn context_menu_rect(panel: Rect, point: [f32; 2], item_count: usize) -> Rect {
+    let height = (item_count.max(1) as f32).mul_add(CONTEXT_MENU_ROW_H, 4.0);
     Rect::new(
         (panel.x + point[0]).clamp(
             panel.x + 2.0,
@@ -76,10 +76,10 @@ pub(crate) fn context_menu_rect(panel: Rect, point: [f32; 2], item_count: usize)
     )
 }
 
-pub(crate) fn context_menu_row(rect: Rect, index: usize) -> Rect {
+pub fn context_menu_row(rect: Rect, index: usize) -> Rect {
     Rect::new(
         rect.x + 2.0,
-        rect.y + 2.0 + index as f32 * CONTEXT_MENU_ROW_H,
+        (index as f32).mul_add(CONTEXT_MENU_ROW_H, rect.y + 2.0),
         rect.width - 4.0,
         CONTEXT_MENU_ROW_H,
     )
@@ -94,13 +94,13 @@ fn context_menu_hit(rect: Rect, point: [f32; 2], item_count: usize) -> Option<us
         .then_some((local[1] / CONTEXT_MENU_ROW_H) as usize)
 }
 
-pub(crate) enum ContextMenuClick<A> {
+pub enum ContextMenuClick<A> {
     Outside,
     Disabled,
     Action(A),
 }
 
-pub(crate) fn context_menu_click<A: Clone>(
+pub fn context_menu_click<A: Clone>(
     rect: Rect,
     point: [f32; 2],
     items: &[ContextMenuItem<'_, A>],
@@ -122,7 +122,7 @@ pub(crate) fn context_menu_click<A: Clone>(
     }
 }
 
-pub(crate) fn build_context_menu<A>(
+pub fn build_context_menu<A>(
     ctx: &mut ui::BuildCtx,
     id: &str,
     rect: Rect,

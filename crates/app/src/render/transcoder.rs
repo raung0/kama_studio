@@ -569,14 +569,17 @@ mod tests {
         }
         let mut writer = CacheEncoder::new(&cache, [16, 16], 24.0, 1).unwrap();
         let mut source_frame = vec![0; 16 * 16 * 8];
-        for alpha in source_frame[16 * 16 * 6..].chunks_exact_mut(2) {
+        for alpha in source_frame[16 * 16 * 6..].as_chunks_mut::<2>().0 {
             alpha.copy_from_slice(&1023u16.to_le_bytes());
         }
         for index in 1..=7 {
-            for y in source_frame[..16 * 16 * 2].chunks_exact_mut(2) {
+            for y in source_frame[..16 * 16 * 2].as_chunks_mut::<2>().0 {
                 y.copy_from_slice(&(index * 128u16).to_le_bytes());
             }
-            for chroma in source_frame[16 * 16 * 2..16 * 16 * 6].chunks_exact_mut(2) {
+            for chroma in source_frame[16 * 16 * 2..16 * 16 * 6]
+                .as_chunks_mut::<2>()
+                .0
+            {
                 chroma.copy_from_slice(&512u16.to_le_bytes());
             }
             writer.write_all(&source_frame).unwrap();

@@ -4,16 +4,16 @@ use kama_ui::{BlockId, Color, CursorShape, Rect, ScrollState, Size};
 
 use crate::{i18n, theme};
 
-pub(crate) const SEARCH_DIALOG_PADDING: f32 = 6.0;
-pub(crate) const SEARCH_DIALOG_GAP: f32 = 3.0;
-pub(crate) const SEARCH_DIALOG_TITLE_HEIGHT: f32 = 34.0;
-pub(crate) const SEARCH_DIALOG_INPUT_HEIGHT: f32 = 30.0;
-pub(crate) const SEARCH_DIALOG_ROW_HEIGHT: f32 = 31.0;
-pub(crate) const SEARCH_DIALOG_FOOTER_HEIGHT: f32 = 18.0;
-pub(crate) const SEARCH_DIALOG_CLOSE_WIDTH: f32 = SEARCH_DIALOG_FOOTER_HEIGHT;
+pub const SEARCH_DIALOG_PADDING: f32 = 6.0;
+pub const SEARCH_DIALOG_GAP: f32 = 3.0;
+pub const SEARCH_DIALOG_TITLE_HEIGHT: f32 = 34.0;
+pub const SEARCH_DIALOG_INPUT_HEIGHT: f32 = 30.0;
+pub const SEARCH_DIALOG_ROW_HEIGHT: f32 = 31.0;
+pub const SEARCH_DIALOG_FOOTER_HEIGHT: f32 = 18.0;
+pub const SEARCH_DIALOG_CLOSE_WIDTH: f32 = SEARCH_DIALOG_FOOTER_HEIGHT;
 
 #[derive(Clone, Copy)]
-pub(crate) struct SearchSurfaceMetrics {
+pub struct SearchSurfaceMetrics {
     pub(crate) padding: f32,
     pub(crate) gap: f32,
     pub(crate) title_height: f32,
@@ -46,7 +46,7 @@ impl SearchSurfaceMetrics {
 }
 
 #[derive(Clone)]
-pub(crate) struct SearchSurfaceRects {
+pub struct SearchSurfaceRects {
     pub(crate) title: Option<Rect>,
     pub(crate) search: Rect,
     pub(crate) auxiliary: Option<Rect>,
@@ -59,7 +59,7 @@ pub(crate) struct SearchSurfaceRects {
     pub(crate) items: Arc<[Rect]>,
 }
 
-pub(crate) fn measure_search_surface(
+pub fn measure_search_surface(
     rect: Rect,
     metrics: SearchSurfaceMetrics,
     row_count: usize,
@@ -206,7 +206,7 @@ pub(crate) fn measure_search_surface(
 }
 
 #[derive(Clone)]
-pub(crate) struct SearchDialogRects {
+pub struct SearchDialogRects {
     pub(crate) title: Option<Rect>,
     pub(crate) search: Rect,
     pub(crate) rows: Rect,
@@ -218,7 +218,7 @@ pub(crate) struct SearchDialogRects {
     pub(crate) items: Arc<[Rect]>,
 }
 
-pub(crate) fn measure_search_dialog(
+pub fn measure_search_dialog(
     rect: Rect,
     has_title: bool,
     row_count: usize,
@@ -249,7 +249,7 @@ fn scrim() -> Color {
     Color::rgba8(0x00, 0x00, 0x00, 0x38)
 }
 
-pub(crate) fn build_panel_shell<K: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>(
+pub fn build_panel_shell<K: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>(
     ctx: &mut kama_ui::BuildCtx,
     panel_key: K,
     panel: Rect,
@@ -271,7 +271,7 @@ pub(crate) fn build_panel_shell<K: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>(
     });
 }
 
-pub(crate) fn build_shell<K1: Hash, K2: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>(
+pub fn build_shell<K1: Hash, K2: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>(
     ctx: &mut kama_ui::BuildCtx,
     scrim_key: K1,
     panel_key: K2,
@@ -294,7 +294,7 @@ pub(crate) fn build_shell<K1: Hash, K2: Hash, F: FnOnce(&mut kama_ui::BuildCtx)>
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_search_dialog<K1, K2, K3, F>(
+pub fn build_search_dialog<K1, K2, K3, F>(
     ctx: &mut kama_ui::BuildCtx,
     scrim_key: K1,
     panel_key: K2,

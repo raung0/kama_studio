@@ -286,14 +286,14 @@ pub fn bezier_easing_amount(out: EasingHandle, incoming: EasingHandle, x: f32) -
     let mut lo = 0.0;
     let mut hi = 1.0;
     for _ in 0..12 {
-        let u = (lo + hi) * 0.5;
+        let u = f32::midpoint(lo, hi);
         if cubic_bezier(p1x, p2x, u) < x {
             lo = u;
         } else {
             hi = u;
         }
     }
-    cubic_bezier(p1y, p2y, (lo + hi) * 0.5)
+    cubic_bezier(p1y, p2y, f32::midpoint(lo, hi))
 }
 
 #[must_use]
@@ -790,10 +790,10 @@ impl Binding {
                 };
                 for component in 0..count {
                     let arg = Some(component);
-                    if let Some(next) = value.numeric(arg) {
-                        if let Some(track) = channels.tracks.get_mut(component) {
-                            track.set_key(time, next as f32, default_interpolation(value));
-                        }
+                    if let Some(next) = value.numeric(arg)
+                        && let Some(track) = channels.tracks.get_mut(component)
+                    {
+                        track.set_key(time, next as f32, default_interpolation(value));
                     }
                 }
                 *self = Self::Components(channels);
@@ -808,10 +808,10 @@ impl Binding {
                 if track.has_key(time) {
                     let fallback = track.evaluate(time);
                     track.remove_key(time);
-                    if track.keys.is_empty() {
-                        if let Some(value) = fallback {
-                            *self = Self::Constant(value);
-                        }
+                    if track.keys.is_empty()
+                        && let Some(value) = fallback
+                    {
+                        *self = Self::Constant(value);
                     }
                 } else if let Some(value) = track.evaluate(time) {
                     track.set_key(time, value, default_interpolation(value));

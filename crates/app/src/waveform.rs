@@ -259,9 +259,10 @@ fn analyze_video(path: &Path) -> Result<VideoWaveform> {
         .context("open waveform video decoder")?;
     let source_width = decoder.width().max(1);
     let source_height = decoder.height().max(1);
-    let analysis_height =
-        ((source_height as f64 * VIDEO_ANALYSIS_WIDTH as f64 / source_width as f64).round() as u32)
-            .max(1);
+    let analysis_height = ((f64::from(source_height) * f64::from(VIDEO_ANALYSIS_WIDTH)
+        / f64::from(source_width))
+    .round() as u32)
+        .max(1);
     let mut scaler = ScalingContext::get(
         decoder.format(),
         source_width,
@@ -336,8 +337,7 @@ fn receive_video_samples(
         let timestamp = frame
             .timestamp()
             .or_else(|| frame.pts())
-            .map(|pts| pts as f64 * f64::from(time_base))
-            .unwrap_or(*next_sample_time);
+            .map_or(*next_sample_time, |pts| pts as f64 * f64::from(time_base));
         if timestamp + 1.0e-9 < *next_sample_time {
             continue;
         }
@@ -365,10 +365,16 @@ fn receive_video_samples(
         }
         colors.push(representative_lab_rgb(&packed));
         let gray = packed
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|pixel| {
-                (pixel[0] as f32 * 0.299 + pixel[1] as f32 * 0.587 + pixel[2] as f32 * 0.114)
-                    .round() as u8
+                f32::mul_add(
+                    f32::from(pixel[2]),
+                    0.114,
+                    f32::mul_add(f32::from(pixel[1]), 0.587, f32::from(pixel[0]) * 0.299),
+                )
+                .round() as u8
             })
             .collect::<Vec<_>>();
         raw_activity.push(lucas_kanade_flow_score(
@@ -397,27 +403,27 @@ fn lucas_kanade_flow_score(previous: &[u8], current: &[u8], width: usize, height
             for y in cy - 2..=cy + 2 {
                 for x in cx - 2..=cx + 2 {
                     let i = y * width + x;
-                    let ix = (current[i + 1] as f32 - current[i - 1] as f32
-                        + previous[i + 1] as f32
-                        - previous[i - 1] as f32)
+                    let ix = (f32::from(current[i + 1]) - f32::from(current[i - 1])
+                        + f32::from(previous[i + 1])
+                        - f32::from(previous[i - 1]))
                         * 0.25;
-                    let iy = (current[i + width] as f32 - current[i - width] as f32
-                        + previous[i + width] as f32
-                        - previous[i - width] as f32)
+                    let iy = (f32::from(current[i + width]) - f32::from(current[i - width])
+                        + f32::from(previous[i + width])
+                        - f32::from(previous[i - width]))
                         * 0.25;
-                    let it = current[i] as f32 - previous[i] as f32;
-                    xx += ix * ix;
-                    yy += iy * iy;
-                    xy += ix * iy;
-                    xt += ix * it;
-                    yt += iy * it;
+                    let it = f32::from(current[i]) - f32::from(previous[i]);
+                    xx = ix.mul_add(ix, xx);
+                    yy = iy.mul_add(iy, yy);
+                    xy = ix.mul_add(iy, xy);
+                    xt = ix.mul_add(it, xt);
+                    yt = iy.mul_add(it, yt);
                 }
             }
-            let determinant = xx * yy - xy * xy;
+            let determinant = f32::mul_add(xy, -xy, xx * yy);
             if determinant > 1.0e-3 {
-                let u = (xy * yt - yy * xt) / determinant;
-                let v = (xy * xt - xx * yt) / determinant;
-                magnitudes.push((u * u + v * v).sqrt());
+                let u = f32::mul_add(yy, -xt, xy * yt) / determinant;
+                let v = f32::mul_add(xx, -yt, xy * xt) / determinant;
+                magnitudes.push(u.hypot(v));
             }
         }
     }
@@ -432,11 +438,11 @@ fn lucas_kanade_flow_score(previous: &[u8], current: &[u8], width: usize, height
 fn representative_lab_rgb(pixels: &[u8]) -> [u8; 3] {
     let mut sum = [0.0f64; 3];
     let mut count = 0usize;
-    for pixel in pixels.chunks_exact(3) {
+    for pixel in pixels.as_chunks::<3>().0 {
         let [l, a, b] = rgb_to_lab(pixel[0], pixel[1], pixel[2]);
-        sum[0] += l as f64;
-        sum[1] += a as f64;
-        sum[2] += b as f64;
+        sum[0] += f64::from(l);
+        sum[1] += f64::from(a);
+        sum[2] += f64::from(b);
         count += 1;
     }
     lab_to_rgb([
@@ -448,7 +454,7 @@ fn representative_lab_rgb(pixels: &[u8]) -> [u8; 3] {
 
 fn rgb_to_lab(r: u8, g: u8, b: u8) -> [f32; 3] {
     let linear = |value: u8| {
-        let value = value as f32 / 255.0;
+        let value = f32::from(value) / 255.0;
         if value <= 0.04045 {
             value / 12.92
         } else {
@@ -458,20 +464,24 @@ fn rgb_to_lab(r: u8, g: u8, b: u8) -> [f32; 3] {
     let r = linear(r);
     let g = linear(g);
     let b = linear(b);
-    let x = (r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047;
-    let y = r * 0.2126729 + g * 0.7151522 + b * 0.072175;
-    let z = (r * 0.0193339 + g * 0.119192 + b * 0.9503041) / 1.08883;
+    let x = f32::mul_add(b, 0.1804375, f32::mul_add(g, 0.3575761, r * 0.4124564)) / 0.95047;
+    let y = f32::mul_add(b, 0.072175, f32::mul_add(g, 0.7151522, r * 0.2126729));
+    let z = f32::mul_add(b, 0.9503041, f32::mul_add(g, 0.119192, r * 0.0193339)) / 1.08883;
     let f = |value: f32| {
         if value > 0.008856 {
             value.cbrt()
         } else {
-            7.787 * value + 16.0 / 116.0
+            7.787f32.mul_add(value, 16.0 / 116.0)
         }
     };
     let fx = f(x);
     let fy = f(y);
     let fz = f(z);
-    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+    [
+        116.0f32.mul_add(fy, -16.0),
+        500.0 * (fx - fy),
+        200.0 * (fy - fz),
+    ]
 }
 
 fn lab_to_rgb(lab: [f32; 3]) -> [u8; 3] {
@@ -490,15 +500,15 @@ fn lab_to_rgb(lab: [f32; 3]) -> [u8; 3] {
     let y = inverse(fy);
     let z = inverse(fz) * 1.08883;
     let channels = [
-        x * 3.2404542 - y * 1.5371385 - z * 0.4985314,
-        -x * 0.969266 + y * 1.8760108 + z * 0.041556,
-        x * 0.0556434 - y * 0.2040259 + z * 1.0572252,
+        f32::mul_add(z, -0.4985314, f32::mul_add(y, -1.5371385, x * 3.2404542)),
+        f32::mul_add(z, 0.041556, f32::mul_add(y, 1.8760108, -x * 0.969266)),
+        f32::mul_add(z, 1.0572252, f32::mul_add(y, -0.2040259, x * 0.0556434)),
     ];
     let encode = |value: f32| {
         let value = if value <= 0.0031308 {
             12.92 * value
         } else {
-            1.055 * value.max(0.0).powf(1.0 / 2.4) - 0.055
+            1.055f32.mul_add(value.max(0.0).powf(1.0 / 2.4), -0.055)
         };
         (value.clamp(0.0, 1.0) * 255.0).round() as u8
     };
@@ -535,7 +545,11 @@ impl Biquad {
         let alpha = omega.sin() / (2.0 * q);
         let a0 = 1.0 + alpha;
         let (b0, b1, b2) = if highpass {
-            ((1.0 + cosine) * 0.5, -(1.0 + cosine), (1.0 + cosine) * 0.5)
+            (
+                f32::midpoint(1.0, cosine),
+                -(1.0 + cosine),
+                f32::midpoint(1.0, cosine),
+            )
         } else {
             ((1.0 - cosine) * 0.5, 1.0 - cosine, (1.0 - cosine) * 0.5)
         };
@@ -551,9 +565,9 @@ impl Biquad {
     }
 
     fn process(&mut self, input: f32) -> f32 {
-        let output = self.b0 * input + self.z1;
-        self.z1 = self.b1 * input - self.a1 * output + self.z2;
-        self.z2 = self.b2 * input - self.a2 * output;
+        let output = self.b0.mul_add(input, self.z1);
+        self.z1 = self.a1.mul_add(-output, self.b1 * input) + self.z2;
+        self.z2 = self.a2.mul_add(-output, self.b2 * input);
         output
     }
 }
@@ -672,7 +686,7 @@ fn histogram_percentile(histogram: &[u64; 2048], percentile: f32) -> f32 {
     if total == 0 {
         return 1.0;
     }
-    let target = (total as f64 * percentile as f64 / 100.0).ceil() as u64;
+    let target = (total as f64 * f64::from(percentile) / 100.0).ceil() as u64;
     let mut cumulative = 0u64;
     for (index, count) in histogram.iter().enumerate() {
         cumulative += count;
@@ -784,11 +798,11 @@ fn waveform_segment_pixels(
 }
 
 fn encode_linear_byte(value: u8) -> u8 {
-    let value = value as f32 / 255.0;
+    let value = f32::from(value) / 255.0;
     let encoded = if value <= 0.003_130_8 {
         value * 12.92
     } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
+        1.055f32.mul_add(value.powf(1.0 / 2.4), -0.055)
     };
     (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
 }

@@ -54,8 +54,8 @@ impl MetersState {
         });
         let padding = 10.0;
         let gap = 10.0;
-        let meter_h = (local.height - padding * 2.0).max(1.0);
-        let meter_w = (((local.width - padding * 2.0 - gap).max(2.0)) * 0.5).min(96.0);
+        let meter_h = f32::mul_add(padding, -2.0, local.height).max(1.0);
+        let meter_w = (((f32::mul_add(padding, -2.0, local.width) - gap).max(2.0)) * 0.5).min(96.0);
         let meter_parts = kama_ui::layout::row(
             local,
             &[
@@ -84,7 +84,7 @@ impl MetersState {
             } else {
                 Color::rgb8(0x48, 0xb8, 0x63)
             };
-            let peak_y = meter.bottom() - meter.height * db_amount(self.peak[channel]);
+            let peak_y = f32::mul_add(meter.height, -db_amount(self.peak[channel]), meter.bottom());
             kama_ui::ui!(ctx, {
                 Rect(("master-meter-bg", channel), meter) {
                     fill: theme::control(); border: 1; border_color: theme::line(); border_radius: 4.0;
@@ -100,7 +100,7 @@ impl MetersState {
                 )) { fill: if self.peak[channel] >= 1.0 { Color::rgb8(0xff, 0x3a, 0x32) } else { theme::accent() }; }
                 @for db in [-48.0_f32, -24.0, -12.0, -6.0, -3.0, 0.0] {
                     Rect(("master-meter-tick", channel, db.to_bits()), Rect::new(
-                        meter.x - 3.0, meter.bottom() - meter.height * ((db + 60.0) / 60.0), 3.0, 1.0,
+                        meter.x - 3.0, f32::mul_add(meter.height, -((db + 60.0) / 60.0), meter.bottom()), 3.0, 1.0,
                     )) { fill: theme::muted(); }
                 }
                 Rect(("master-meter-db", channel), meter) {

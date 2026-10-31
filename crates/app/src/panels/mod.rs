@@ -48,22 +48,50 @@ mod panels_media;
 mod panels_media_inspector;
 mod panels_project;
 mod panels_shared;
-use panels_graph::*;
-use panels_graph_cards::*;
+use panels_graph::{
+    graph_canvas_rect, graph_card_scale, graph_rects_intersect, graph_screen_to_world,
+    graph_selection_rect, graph_toolbar_layout, plugin_input_uses_host_binding,
+};
+use panels_graph_cards::{
+    graph_card_header_parts, graph_component_rect, graph_host_eq_parts, graph_host_row_rect,
+    graph_host_value_parts, graph_image_input_label_rect, graph_image_input_point,
+    graph_image_input_port, graph_image_output_point, graph_image_output_port,
+    graph_image_socket_label, graph_named_image_input_point, graph_named_image_input_port,
+    graph_output_label_rect, graph_property_label_parts, graph_property_row_rect,
+    graph_scalar_input_point, graph_scalar_input_port, graph_value_component_rect,
+    graph_value_detail_rect, graph_value_input_area, graph_value_input_component_rect,
+    graph_value_input_label_rect, graph_value_input_link_rect, graph_value_input_point,
+    graph_value_input_port, graph_value_link_rect, graph_value_output_point,
+    graph_value_output_port, graph_value_swatch_rect,
+};
 #[cfg(test)]
 use panels_graph_state::graph_stable_fallback;
 use panels_graph_state::{
     GRAPH_CARD_BASE_H, GRAPH_CARD_W, GRAPH_IMAGE_INPUT_H, GRAPH_INPUT_H, GRAPH_TOOLBAR_H,
     GraphCard, graph_host_row_height, graph_property_row_height, set_eq_band,
 };
-pub(crate) use panels_graph_state::{
+pub use panels_graph_state::{
     GraphMonitorSelection, GraphNodeTarget, GraphWire, PipelineGraphAction, PipelineGraphState,
 };
-use panels_graphic_eq::*;
-pub(crate) use panels_media::{MediaAction, MediaDragItem, MediaPanelState, MediaStream};
-use panels_media_inspector::*;
-pub(crate) use panels_project::ProjectOptionsState;
-use panels_shared::*;
+use panels_graphic_eq::{
+    BUILTIN_GRADIENT_GENERATOR, GraphicEqBuild, angle_knob, build_graphic_eq_controls,
+    color_property_row, color_swatch_rect, draw_effect_header, effect_property_rect,
+    eq_frequency_label, format_gpu_value, friendly_name, gradient_color_header_row,
+    gradient_stop_add_rect, gradient_stop_remove_rect, gradient_stop_row, graphic_eq_slider_rect,
+    graphic_eq_visible_slider, host_value_summary, node_action_rects, node_header_rect,
+    plugin_node_input, plugin_node_inputs, plugin_node_name, property_row, rotation_row_hit,
+    set_graphic_eq_band, split_angle, transform_rotation_parts, transform_vec2_row_hit, ui_color,
+};
+pub use panels_media::{MediaAction, MediaDragItem, MediaPanelState, MediaStream};
+use panels_media_inspector::{
+    MediaInspectorSections, build_media_inspector, inspector_title, media_inspector_rects,
+};
+pub use panels_project::ProjectOptionsState;
+use panels_shared::{
+    editor_property_row, editor_value_rect, font_family_property_row, plain_property_parts,
+    property_control_rect, property_label_rect, property_row_parts, selection_summary_rects,
+    selection_summary_value_rect,
+};
 const ACCORDION_H: f32 = 32.0;
 const PANEL_HEADER_H: f32 = 32.0;
 const PANEL_GAP: f32 = 7.0;
@@ -236,7 +264,7 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
         self.knob.clear_layout();
         self.numbers
             .iter_mut()
-            .for_each(|controls| controls.clear_layout());
+            .for_each(kama_ui::control_registry::ControlRegistry::clear_layout);
     }
 
     fn build(
@@ -254,13 +282,13 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
         for (index, (rect, value, settings, suffix)) in [
             (
                 parts.0,
-                turns as f64,
+                f64::from(turns),
                 ((-turn_limit, turn_limit), 1.0, 0usize, "x"),
                 "turns",
             ),
             (
                 parts.1,
-                degrees as f64,
+                f64::from(degrees),
                 ((-359.9, 359.9), 0.5, 1usize, "°"),
                 "degrees",
             ),
@@ -280,7 +308,7 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
             ctx,
             format!("{id}-knob"),
             target,
-            (parts.2, angle as f64),
+            (parts.2, f64::from(angle)),
             || angle_knob(angle),
             style,
         );
@@ -294,15 +322,25 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
     }
 
     fn is_animating(&self) -> bool {
-        self.knob.is_animating() || self.numbers.iter().any(|controls| controls.is_animating())
+        self.knob.is_animating()
+            || self
+                .numbers
+                .iter()
+                .any(kama_ui::control_registry::ControlRegistry::is_animating)
     }
 
     fn is_dragging(&self) -> bool {
-        self.knob.is_dragging() || self.numbers.iter().any(|controls| controls.is_dragging())
+        self.knob.is_dragging()
+            || self
+                .numbers
+                .iter()
+                .any(kama_ui::control_registry::ControlRegistry::is_dragging)
     }
 
     fn is_number_dragging(&self) -> bool {
-        self.numbers.iter().any(|controls| controls.is_dragging())
+        self.numbers
+            .iter()
+            .any(kama_ui::control_registry::ControlRegistry::is_dragging)
     }
 
     fn target_at(&self, panel: Rect, point: [f32; 2]) -> Option<K> {
@@ -314,7 +352,9 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
     }
 
     fn blur(&mut self) {
-        self.numbers.iter_mut().for_each(|controls| controls.blur());
+        self.numbers
+            .iter_mut()
+            .for_each(kama_ui::control_registry::NumberControlsExt::blur);
     }
 
     fn pointer_released(&mut self) -> bool {
@@ -334,9 +374,9 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
             } else {
                 value
             };
-            turns as f32 * 360.0 + degrees as f32
+            (turns as f32).mul_add(360.0, degrees as f32)
         } else {
-            turns as f32 * 360.0 + value as f32
+            (turns as f32).mul_add(360.0, value as f32)
         }
     }
 
@@ -347,7 +387,9 @@ impl<K: Clone + Eq + Hash> AngleControls<K> {
         modifiers: ModifiersState,
     ) -> Option<(K, Option<f32>)> {
         if let Some((target, value)) = self.knob.pointer_pressed(panel, point) {
-            self.numbers.iter_mut().for_each(|controls| controls.blur());
+            self.numbers
+                .iter_mut()
+                .for_each(kama_ui::control_registry::NumberControlsExt::blur);
             return Some((target, value.map(|value| value as f32)));
         }
         let (part, target, value) =
@@ -510,7 +552,11 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
 
 mod media_rows;
 
-use media_rows::*;
+use media_rows::{
+    MEDIA_ITEM_GAP, MEDIA_ROW_H, MEDIA_TRACK_H, draw_composition_row, draw_media_row,
+    draw_media_stream_row, format_duration, media_disclosure_rect, media_kind_label,
+    media_list_top, media_streams,
+};
 
 #[derive(Clone, Debug)]
 pub enum InspectorAction {
@@ -595,7 +641,7 @@ impl PluginPropertyTarget {
         match self {
             Self::Generator(input) => timeline.toggle_generator_keyframe(input),
             Self::Pipeline { node, input } => {
-                timeline.toggle_pipeline_keyframe(project, *node, input)
+                timeline.toggle_pipeline_keyframe(project, *node, input);
             }
         }
     }
@@ -774,7 +820,7 @@ enum InspectorTextField {
     PipelineName,
 }
 
-pub(crate) struct InspectorBuildContext<'a> {
+pub struct InspectorBuildContext<'a> {
     pub project: &'a Project,
     pub timeline: &'a TimelineState,
     pub media_selection: Option<(MediaId, MediaStream)>,
@@ -783,7 +829,7 @@ pub(crate) struct InspectorBuildContext<'a> {
     pub icons: Icons,
 }
 
-pub(crate) struct InspectorPointerContext<'a> {
+pub struct InspectorPointerContext<'a> {
     pub modifiers: ModifiersState,
     pub project: &'a mut Project,
     pub timeline: &'a mut TimelineState,
@@ -1142,11 +1188,11 @@ impl InspectorState {
                 true
             }
             (InspectorContextTarget::Enum(target), InspectorClipboard::Enum(index)) => {
-                if !self
+                if self
                     .controls
                     .enums
                     .get(target)
-                    .is_some_and(|control| index < control.option_count)
+                    .is_none_or(|control| index >= control.option_count)
                 {
                     return false;
                 }
@@ -1214,11 +1260,11 @@ impl InspectorState {
         match (section, clipboard) {
             (InspectorSectionTarget::Source, InspectorClipboard::Source(values)) => {
                 let mut changed = false;
-                if let Some(speed) = values.speed {
-                    if timeline.selected_speed(project).is_some() {
-                        timeline.set_selected_speed(project, speed);
-                        changed = true;
-                    }
+                if let Some(speed) = values.speed
+                    && timeline.selected_speed(project).is_some()
+                {
+                    timeline.set_selected_speed(project, speed);
+                    changed = true;
                 }
                 let destination = timeline.selected_generator().map(generator_clipboard_key);
                 if destination == values.generator && destination.is_some() {
@@ -1256,25 +1302,25 @@ impl InspectorState {
                 },
             ) => {
                 let mut changed = false;
-                if let Some(opacity) = opacity {
-                    if timeline.selected_opacity().is_some() {
-                        timeline.set_selected_opacity(opacity);
-                        changed = true;
-                    }
+                if let Some(opacity) = opacity
+                    && timeline.selected_opacity().is_some()
+                {
+                    timeline.set_selected_opacity(opacity);
+                    changed = true;
                 }
-                if let Some(index) = blend_mode {
-                    if timeline.selected_blend_mode().is_some() && index < BlendMode::ALL.len() {
-                        timeline.set_selected_blend_mode(index);
-                        changed = true;
-                    }
+                if let Some(index) = blend_mode
+                    && timeline.selected_blend_mode().is_some()
+                    && index < BlendMode::ALL.len()
+                {
+                    timeline.set_selected_blend_mode(index);
+                    changed = true;
                 }
-                if let Some(index) = alpha_blend_mode {
-                    if timeline.selected_alpha_blend_mode().is_some()
-                        && index < AlphaBlendMode::ALL.len()
-                    {
-                        timeline.set_selected_alpha_blend_mode(index);
-                        changed = true;
-                    }
+                if let Some(index) = alpha_blend_mode
+                    && timeline.selected_alpha_blend_mode().is_some()
+                    && index < AlphaBlendMode::ALL.len()
+                {
+                    timeline.set_selected_alpha_blend_mode(index);
+                    changed = true;
                 }
                 changed
             }
@@ -1375,7 +1421,7 @@ impl InspectorState {
                         input: input.into(),
                         component,
                     },
-                    value[component] as f64,
+                    f64::from(value[component]),
                 )
             },
         );
@@ -1589,9 +1635,9 @@ impl InspectorState {
             |component| {
                 let display_value = match display {
                     TransformNumberDisplay::PositionPixels => {
-                        value[component] as f64 * extent[component].max(1.0) as f64
+                        f64::from(value[component]) * f64::from(extent[component].max(1.0))
                     }
-                    TransformNumberDisplay::Percent => value[component] as f64 * 100.0,
+                    TransformNumberDisplay::Percent => f64::from(value[component]) * 100.0,
                 };
                 (
                     InspectorNumberTarget::Transform {
@@ -1699,7 +1745,7 @@ impl InspectorState {
     ) {
         match target {
             InspectorAngleTarget::Rotation => {
-                timeline.set_transform_value("rotation", GpuValue::F32(angle))
+                timeline.set_transform_value("rotation", GpuValue::F32(angle));
             }
             InspectorAngleTarget::Plugin(target) => {
                 target.set_value(project, timeline, GpuValue::F32(angle));
@@ -1740,10 +1786,10 @@ impl InspectorState {
                 }
             }
             InspectorNumberTarget::Speed => {
-                timeline.set_selected_speed(project, display_value as f32 / 100.0)
+                timeline.set_selected_speed(project, display_value as f32 / 100.0);
             }
             InspectorNumberTarget::Volume => {
-                timeline.set_selected_clip_volume(display_value as f32 / 100.0)
+                timeline.set_selected_clip_volume(display_value as f32 / 100.0);
             }
             InspectorNumberTarget::Transform {
                 input,
@@ -2069,15 +2115,15 @@ impl InspectorState {
             .iter()
             .rev()
             .find_map(|(rect, target)| rect.contains(local_point).then_some(target.clone()));
-        if let Some(number_target) = self.controls.numbers.target_at(rect, point) {
-            if self.reset_number_component(
+        if let Some(number_target) = self.controls.numbers.target_at(rect, point)
+            && self.reset_number_component(
                 &number_target,
                 row_default.as_ref(),
                 input.project,
                 input.timeline,
-            ) {
-                return true;
-            }
+            )
+        {
+            return true;
         }
         let Some(target) = row_default else {
             return false;
@@ -2308,21 +2354,21 @@ impl InspectorState {
         }) {
             ctx.with_clip(body, |ctx| {
                 let mut body_cursor = body.y;
-                if !timeline.can_assign_pipeline() {
-                    value_row(
-                        ctx,
-                        body,
-                        body_cursor,
-                        "Pipeline",
-                        "Not available for this layer",
-                    );
-                } else {
+                if timeline.can_assign_pipeline() {
                     draw_pipeline_selector(
                         ctx,
                         body,
                         body_cursor,
                         self.pipeline_id,
                         &mut self.pipeline_name,
+                    );
+                } else {
+                    value_row(
+                        ctx,
+                        body,
+                        body_cursor,
+                        "Pipeline",
+                        "Not available for this layer",
                     );
                 }
                 body_cursor += ROW_H;
@@ -2479,9 +2525,8 @@ impl InspectorState {
                                         );
                                     }
                                 } else {
-                                    let value = value
-                                        .map(format_gpu_value)
-                                        .unwrap_or_else(|| "Linked".into());
+                                    let value =
+                                        value.map_or_else(|| "Linked".into(), format_gpu_value);
                                     property_row(
                                         ctx,
                                         properties,
@@ -2647,7 +2692,7 @@ impl InspectorState {
                     ctx,
                     (body, rows[0].y, "Opacity"),
                     InspectorNumberTarget::Opacity,
-                    timeline.selected_opacity().unwrap_or(1.0) as f64 * 100.0,
+                    f64::from(timeline.selected_opacity().unwrap_or(1.0)) * 100.0,
                     ((0.0, 100.0), 0.5, 1, "%"),
                     Some(keyframe_control(
                         icons,
@@ -2794,7 +2839,7 @@ impl InspectorState {
             InputType::Color => self.build_color_property(
                 ctx,
                 (rect, y, &definition.name),
-                InspectorColorTarget::Plugin(target.clone()),
+                InspectorColorTarget::Plugin(target),
                 value
                     .and_then(GpuValue::color)
                     .unwrap_or([0.0, 0.0, 0.0, 1.0]),
@@ -3039,7 +3084,7 @@ impl InspectorState {
                 ctx,
                 (rect, row.y, "Speed"),
                 InspectorNumberTarget::Speed,
-                speed as f64 * 100.0,
+                f64::from(speed) * 100.0,
                 ((1.0, 10_000.0), 0.5, 1, "%"),
                 None,
             );
@@ -3054,7 +3099,7 @@ impl InspectorState {
                 ctx,
                 (rect, row.y, "Volume"),
                 InspectorNumberTarget::Volume,
-                volume as f64 * 100.0,
+                f64::from(volume) * 100.0,
                 ((0.0, 100.0), 0.5, 1, "%"),
                 None,
             );
@@ -3458,7 +3503,7 @@ impl InspectorState {
                 }
                 InspectorEnumTarget::BlendMode => timeline.set_selected_blend_mode(index),
                 InspectorEnumTarget::AlphaBlendMode => {
-                    timeline.set_selected_alpha_blend_mode(index)
+                    timeline.set_selected_alpha_blend_mode(index);
                 }
             }
             return true;
@@ -3511,343 +3556,334 @@ impl InspectorState {
             }
         }
 
-        if let Some(section) = layout.source {
-            if self.source_section.open_amount() > 0.98 {
-                let body = inspector_section_content(section);
-                if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
-                    let has_speed = timeline.selected_speed(project).is_some();
-                    let input_offset = if has_speed { 1 } else { 0 };
-                    let mut heights = Vec::with_capacity(inputs.len() + input_offset);
-                    if has_speed {
-                        heights.push(ROW_H);
-                    }
-                    heights.extend(
-                        inputs
-                            .iter()
-                            .map(|input| generator_input_height(timeline, input)),
-                    );
-                    let rows = kama_ui::layout::stack(body, body.y, &heights);
-                    for (input, slot) in inputs.into_iter().zip(rows.into_iter().skip(input_offset))
+        if let Some(section) = layout.source
+            && self.source_section.open_amount() > 0.98
+        {
+            let body = inspector_section_content(section);
+            if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
+                let has_speed = timeline.selected_speed(project).is_some();
+                let input_offset = usize::from(has_speed);
+                let mut heights = Vec::with_capacity(inputs.len() + input_offset);
+                if has_speed {
+                    heights.push(ROW_H);
+                }
+                heights.extend(
+                    inputs
+                        .iter()
+                        .map(|input| generator_input_height(timeline, input)),
+                );
+                let rows = kama_ui::layout::stack(body, body.y, &heights);
+                for (input, slot) in inputs.into_iter().zip(rows.into_iter().skip(input_offset)) {
+                    let y = slot.y;
+                    if input.ty == InputType::Text {
+                        let hit = row_hit(body, y);
+                        if hit.contains(point) {
+                            if keyframe_rect(body, y).contains(point) {
+                                timeline.toggle_generator_keyframe(&input.id);
+                            } else if input.id == "text" {
+                                self.pipeline_name.set_focused(false);
+                                self.controls.blur();
+                                self.text.pointer_pressed(
+                                    editor_value_rect(body, y),
+                                    point,
+                                    modifiers,
+                                );
+                            } else if input.id == "font_family" {
+                                self.clear_editor_focus();
+                                let field = editor_value_rect(body, y);
+                                if field.contains(point) {
+                                    self.pending_action = Some(InspectorAction::ChooseFont(field));
+                                }
+                            }
+                            return true;
+                        }
+                    } else if is_selected_gradient_generator(timeline)
+                        && input.id == "colors"
+                        && input.ty == InputType::F32List
                     {
-                        let y = slot.y;
-                        if input.ty == InputType::Text {
-                            let hit = row_hit(body, y);
+                        let colors = selected_gradient_stop_colors(timeline);
+                        let stop_rows =
+                            kama_ui::layout::stack(slot, slot.y, &vec![ROW_H; colors.len() + 1]);
+                        let header_y = stop_rows[0].y;
+                        let header = row_hit(body, header_y);
+                        if header.contains(point) {
+                            if keyframe_rect(body, header_y).contains(point) {
+                                timeline.toggle_generator_keyframe("colors");
+                            } else if gradient_stop_add_rect(body, header_y).contains(point) {
+                                add_selected_gradient_stop(timeline);
+                            } else if gradient_stop_remove_rect(body, header_y).contains(point)
+                                && remove_selected_gradient_stop(timeline)
+                            {
+                                self.controls.color_picker.close();
+                                self.controls.color_target = None;
+                                self.controls.color_rect = None;
+                            }
+                            return true;
+                        }
+                        for (index, (color, stop_row)) in colors
+                            .into_iter()
+                            .zip(stop_rows.into_iter().skip(1))
+                            .enumerate()
+                        {
+                            let hit = row_hit(body, stop_row.y);
                             if hit.contains(point) {
-                                if keyframe_rect(body, y).contains(point) {
-                                    timeline.toggle_generator_keyframe(&input.id);
-                                } else if input.id == "text" {
-                                    self.pipeline_name.set_focused(false);
-                                    self.controls.blur();
-                                    self.text.pointer_pressed(
-                                        editor_value_rect(body, y),
+                                let swatch = color_swatch_rect(body, stop_row.y);
+                                if swatch.contains(point) {
+                                    self.open_color_picker(
+                                        rect,
+                                        swatch,
+                                        InspectorColorTarget::GradientStop(index),
+                                        color,
                                         point,
                                         modifiers,
                                     );
-                                } else if input.id == "font_family" {
-                                    self.clear_editor_focus();
-                                    let field = editor_value_rect(body, y);
-                                    if field.contains(point) {
-                                        self.pending_action =
-                                            Some(InspectorAction::ChooseFont(field));
-                                    }
                                 }
                                 return true;
                             }
-                        } else if is_selected_gradient_generator(timeline)
-                            && input.id == "colors"
-                            && input.ty == InputType::F32List
-                        {
-                            let colors = selected_gradient_stop_colors(timeline);
-                            let stop_rows = kama_ui::layout::stack(
-                                slot,
-                                slot.y,
-                                &vec![ROW_H; colors.len() + 1],
-                            );
-                            let header_y = stop_rows[0].y;
-                            let header = row_hit(body, header_y);
-                            if header.contains(point) {
-                                if keyframe_rect(body, header_y).contains(point) {
-                                    timeline.toggle_generator_keyframe("colors");
-                                } else if gradient_stop_add_rect(body, header_y).contains(point) {
-                                    add_selected_gradient_stop(timeline);
-                                } else if gradient_stop_remove_rect(body, header_y).contains(point)
-                                    && remove_selected_gradient_stop(timeline)
+                        }
+                    } else if self.plugin_property_pointer(
+                        (rect, body, y),
+                        (input.ty, PluginPropertyTarget::Generator(input.id.clone())),
+                        (point, modifiers),
+                        project,
+                        timeline,
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if let Some(section) = layout.pipeline
+            && self.pipeline_section.open_amount() > 0.98
+        {
+            let body = inspector_section_content(section);
+            let y = body.y;
+            if row_hit(body, y).contains(point) {
+                if !timeline.can_assign_pipeline() {
+                    return true;
+                }
+                let (_, name, choose, plus) = pipeline_selector_parts(body, y);
+                if self.pipeline_id.is_some() && name.contains(point) {
+                    self.text.set_focused(false);
+                    self.controls.blur();
+                    self.pipeline_name.pointer_pressed(name, point, modifiers);
+                } else if plus.contains(point) {
+                    self.pending_action = Some(InspectorAction::CreatePipeline);
+                } else if choose.contains(point) || name.contains(point) {
+                    self.pending_action = Some(InspectorAction::ChoosePipeline(Rect::new(
+                        name.x,
+                        name.y,
+                        choose.right() - name.x,
+                        name.height,
+                    )));
+                }
+                return true;
+            }
+            if timeline.can_assign_pipeline() {
+                let buttons = inspector_pipeline_buttons(body, y + ROW_H);
+                if let Some(index) = buttons.iter().position(|button| button.contains(point)) {
+                    self.pending_action = Some(match index {
+                        0 => InspectorAction::AddEffect,
+                        1 => InspectorAction::MakeIndependent,
+                        _ => InspectorAction::OpenGraph,
+                    });
+                    return true;
+                }
+            }
+        }
+
+        if let Some(section) = layout.effects
+            && self.controls_section.open_amount() > 0.98
+        {
+            enum EffectHit {
+                Move(u64, i32),
+                ToggleEnabled(u64),
+                ToggleKeyframe(u64),
+                Remove(u64),
+                ToggleSection(u64),
+                GraphicEq(u64, bool),
+                Property(f32, InputType, PluginPropertyTarget),
+                Consumed,
+            }
+
+            let body = inspector_section_content(section);
+            let properties = effect_property_rect(body);
+            let hit = timeline
+                .selected_pipeline()
+                .and_then(|instance| instance.pipeline)
+                .and_then(|id| project.pipeline(id))
+                .and_then(|shared| {
+                    effect_control_rows(
+                        body.width,
+                        shared,
+                        plugins,
+                        project,
+                        timeline,
+                        &self.effect_sections,
+                    )
+                    .0
+                    .into_iter()
+                    .find_map(|(offset, row)| {
+                        let row_y = body.y + offset;
+                        match row {
+                            EffectControlRow::Header { node, .. } => {
+                                if let Some(index) = node_action_rects(body, row_y)
+                                    .iter()
+                                    .position(|action| action.contains(point))
                                 {
-                                    self.controls.color_picker.close();
-                                    self.controls.color_target = None;
-                                    self.controls.color_rect = None;
+                                    return Some(match index {
+                                        0 => EffectHit::Move(node.id, -1),
+                                        1 => EffectHit::Move(node.id, 1),
+                                        2 => EffectHit::ToggleEnabled(node.id),
+                                        3 => EffectHit::ToggleKeyframe(node.id),
+                                        _ => EffectHit::Remove(node.id),
+                                    });
                                 }
-                                return true;
+                                node_header_rect(body, row_y)
+                                    .contains(point)
+                                    .then_some(EffectHit::ToggleSection(node.id))
                             }
-                            for (index, (color, stop_row)) in colors
-                                .into_iter()
-                                .zip(stop_rows.into_iter().skip(1))
-                                .enumerate()
-                            {
-                                let hit = row_hit(body, stop_row.y);
-                                if hit.contains(point) {
-                                    let swatch = color_swatch_rect(body, stop_row.y);
-                                    if swatch.contains(point) {
-                                        self.open_color_picker(
-                                            rect,
-                                            swatch,
-                                            InspectorColorTarget::GradientStop(index),
-                                            color,
-                                            point,
-                                            modifiers,
-                                        );
-                                    }
-                                    return true;
+                            EffectControlRow::GraphicEq { node } => Some(EffectHit::GraphicEq(
+                                node.id,
+                                keyframe_rect(properties, row_y).contains(point),
+                            )),
+                            EffectControlRow::Input { node, input } => {
+                                let target = PluginPropertyTarget::Pipeline {
+                                    node: node.id,
+                                    input: input.into(),
+                                };
+                                if let Some(definition) =
+                                    plugin_node_input(plugins, &node.node_type, input)
+                                {
+                                    let row = if definition.ty == InputType::Angle {
+                                        rotation_row_hit(properties, row_y)
+                                    } else {
+                                        row_hit(properties, row_y)
+                                    };
+                                    row.contains(point).then_some(EffectHit::Property(
+                                        row_y,
+                                        definition.ty,
+                                        target,
+                                    ))
+                                } else {
+                                    row_hit(properties, row_y)
+                                        .contains(point)
+                                        .then_some(EffectHit::Consumed)
                                 }
                             }
-                        } else if self.plugin_property_pointer(
-                            (rect, body, y),
-                            (input.ty, PluginPropertyTarget::Generator(input.id.clone())),
+                            _ => None,
+                        }
+                    })
+                });
+
+            if let Some(hit) = hit {
+                match hit {
+                    EffectHit::Move(node, direction) => {
+                        self.pending_action = Some(InspectorAction::MoveEffect(node, direction));
+                    }
+                    EffectHit::ToggleEnabled(node) => {
+                        let enabled = timeline
+                            .pipeline_input_value(project, node, "enabled")
+                            .and_then(GpuValue::bool)
+                            .unwrap_or(true);
+                        timeline.set_pipeline_input_value(
+                            project,
+                            node,
+                            "enabled",
+                            GpuValue::Bool(!enabled),
+                        );
+                    }
+                    EffectHit::ToggleKeyframe(node) => {
+                        timeline.toggle_pipeline_keyframe(project, node, "enabled");
+                    }
+                    EffectHit::Remove(node) => {
+                        self.pending_action = Some(InspectorAction::RemoveEffect(node));
+                    }
+                    EffectHit::ToggleSection(node) => {
+                        if let Some(section) = self.effect_sections.get_mut(&node) {
+                            section.toggle();
+                        }
+                    }
+                    EffectHit::GraphicEq(node, true) => {
+                        timeline.toggle_pipeline_host_keyframe(project, node, "band_values");
+                    }
+                    EffectHit::Property(row_y, ty, target) => {
+                        self.plugin_property_pointer(
+                            (rect, properties, row_y),
+                            (ty, target),
                             (point, modifiers),
                             project,
                             timeline,
-                        ) {
-                            return true;
-                        }
+                        );
                     }
+                    EffectHit::GraphicEq(_, false) | EffectHit::Consumed => {}
                 }
+                return true;
             }
         }
 
-        if let Some(section) = layout.pipeline {
-            if self.pipeline_section.open_amount() > 0.98 {
-                let body = inspector_section_content(section);
-                let y = body.y;
-                if row_hit(body, y).contains(point) {
-                    if !timeline.can_assign_pipeline() {
-                        return true;
-                    }
-                    let (_, name, choose, plus) = pipeline_selector_parts(body, y);
-                    if self.pipeline_id.is_some() && name.contains(point) {
-                        self.text.set_focused(false);
-                        self.controls.blur();
-                        self.pipeline_name.pointer_pressed(name, point, modifiers);
-                    } else if plus.contains(point) {
-                        self.pending_action = Some(InspectorAction::CreatePipeline);
-                    } else if choose.contains(point) || name.contains(point) {
-                        self.pending_action = Some(InspectorAction::ChoosePipeline(Rect::new(
-                            name.x,
-                            name.y,
-                            choose.right() - name.x,
-                            name.height,
-                        )));
-                    }
-                    return true;
-                }
-                if timeline.can_assign_pipeline() {
-                    let buttons = inspector_pipeline_buttons(body, y + ROW_H);
-                    if let Some(index) = buttons.iter().position(|button| button.contains(point)) {
-                        self.pending_action = Some(match index {
-                            0 => InspectorAction::AddEffect,
-                            1 => InspectorAction::MakeIndependent,
-                            _ => InspectorAction::OpenGraph,
-                        });
-                        return true;
-                    }
-                }
-            }
-        }
-
-        if let Some(section) = layout.effects {
-            if self.controls_section.open_amount() > 0.98 {
-                enum EffectHit {
-                    Move(u64, i32),
-                    ToggleEnabled(u64),
-                    ToggleKeyframe(u64),
-                    Remove(u64),
-                    ToggleSection(u64),
-                    GraphicEq(u64, bool),
-                    Property(f32, InputType, PluginPropertyTarget),
-                    Consumed,
-                }
-
-                let body = inspector_section_content(section);
-                let properties = effect_property_rect(body);
-                let hit = timeline
-                    .selected_pipeline()
-                    .and_then(|instance| instance.pipeline)
-                    .and_then(|id| project.pipeline(id))
-                    .and_then(|shared| {
-                        effect_control_rows(
-                            body.width,
-                            shared,
-                            plugins,
-                            project,
-                            timeline,
-                            &self.effect_sections,
-                        )
-                        .0
-                        .into_iter()
-                        .find_map(|(offset, row)| {
-                            let row_y = body.y + offset;
-                            match row {
-                                EffectControlRow::Header { node, .. } => {
-                                    if let Some(index) = node_action_rects(body, row_y)
-                                        .iter()
-                                        .position(|action| action.contains(point))
-                                    {
-                                        return Some(match index {
-                                            0 => EffectHit::Move(node.id, -1),
-                                            1 => EffectHit::Move(node.id, 1),
-                                            2 => EffectHit::ToggleEnabled(node.id),
-                                            3 => EffectHit::ToggleKeyframe(node.id),
-                                            _ => EffectHit::Remove(node.id),
-                                        });
-                                    }
-                                    node_header_rect(body, row_y)
-                                        .contains(point)
-                                        .then_some(EffectHit::ToggleSection(node.id))
-                                }
-                                EffectControlRow::GraphicEq { node } => Some(EffectHit::GraphicEq(
-                                    node.id,
-                                    keyframe_rect(properties, row_y).contains(point),
-                                )),
-                                EffectControlRow::Input { node, input } => {
-                                    let target = PluginPropertyTarget::Pipeline {
-                                        node: node.id,
-                                        input: input.into(),
-                                    };
-                                    if let Some(definition) =
-                                        plugin_node_input(plugins, &node.node_type, input)
-                                    {
-                                        let row = if definition.ty == InputType::Angle {
-                                            rotation_row_hit(properties, row_y)
-                                        } else {
-                                            row_hit(properties, row_y)
-                                        };
-                                        row.contains(point).then_some(EffectHit::Property(
-                                            row_y,
-                                            definition.ty,
-                                            target,
-                                        ))
-                                    } else {
-                                        row_hit(properties, row_y)
-                                            .contains(point)
-                                            .then_some(EffectHit::Consumed)
-                                    }
-                                }
-                                _ => None,
-                            }
-                        })
-                    });
-
-                if let Some(hit) = hit {
-                    match hit {
-                        EffectHit::Move(node, direction) => {
-                            self.pending_action =
-                                Some(InspectorAction::MoveEffect(node, direction));
-                        }
-                        EffectHit::ToggleEnabled(node) => {
-                            let enabled = timeline
-                                .pipeline_input_value(project, node, "enabled")
-                                .and_then(GpuValue::bool)
-                                .unwrap_or(true);
-                            timeline.set_pipeline_input_value(
-                                project,
-                                node,
-                                "enabled",
-                                GpuValue::Bool(!enabled),
-                            );
-                        }
-                        EffectHit::ToggleKeyframe(node) => {
-                            timeline.toggle_pipeline_keyframe(project, node, "enabled");
-                        }
-                        EffectHit::Remove(node) => {
-                            self.pending_action = Some(InspectorAction::RemoveEffect(node));
-                        }
-                        EffectHit::ToggleSection(node) => {
-                            if let Some(section) = self.effect_sections.get_mut(&node) {
-                                section.toggle();
-                            }
-                        }
-                        EffectHit::GraphicEq(node, true) => {
-                            timeline.toggle_pipeline_host_keyframe(project, node, "band_values");
-                        }
-                        EffectHit::Property(row_y, ty, target) => {
-                            self.plugin_property_pointer(
-                                (rect, properties, row_y),
-                                (ty, target),
-                                (point, modifiers),
-                                project,
-                                timeline,
-                            );
-                        }
-                        EffectHit::GraphicEq(_, false) | EffectHit::Consumed => {}
+        if let Some(section) = layout.model3d
+            && self.model3d_clip_section.open_amount() > 0.98
+        {
+            let body = inspector_section_content(section);
+            let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
+            for (input, row) in ["size", "position", "rotation", "scale"]
+                .into_iter()
+                .zip(rows.into_iter().take(4))
+            {
+                if row_hit(body, row.y).contains(point) {
+                    if keyframe_rect(body, row.y).contains(point) {
+                        timeline.toggle_selected_model3d_keyframe(project, input);
                     }
                     return true;
                 }
             }
         }
 
-        if let Some(section) = layout.model3d {
-            if self.model3d_clip_section.open_amount() > 0.98 {
-                let body = inspector_section_content(section);
-                let rows =
-                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ROW_H, ROW_H]);
-                for (input, row) in ["size", "position", "rotation", "scale"]
-                    .into_iter()
-                    .zip(rows.into_iter().take(4))
-                {
-                    if row_hit(body, row.y).contains(point) {
-                        if keyframe_rect(body, row.y).contains(point) {
-                            timeline.toggle_selected_model3d_keyframe(project, input);
-                        }
-                        return true;
-                    }
-                }
-            }
-        }
-
-        if let Some(section) = layout.transform {
-            if self.transform_section.open_amount() > 0.98 {
-                let body = inspector_section_content(section);
-                let rows =
-                    kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
-                for ((_, input, _), row) in
-                    TRANSFORM_VECTOR_ROWS.into_iter().zip(rows.iter().copied())
-                {
-                    if transform_vec2_row_hit(body, row.y, point, timeline, input) {
-                        return true;
-                    }
-                }
-                let rotation_y = rows[3].y;
-                if keyframe_rect(body, rotation_y).contains(point) {
-                    timeline.toggle_transform_keyframe("rotation");
-                    return true;
-                }
-                if rotation_row_hit(body, rotation_y).contains(point) {
+        if let Some(section) = layout.transform
+            && self.transform_section.open_amount() > 0.98
+        {
+            let body = inspector_section_content(section);
+            let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
+            for ((_, input, _), row) in TRANSFORM_VECTOR_ROWS.into_iter().zip(rows.iter().copied())
+            {
+                if transform_vec2_row_hit(body, row.y, point, timeline, input) {
                     return true;
                 }
             }
+            let rotation_y = rows[3].y;
+            if keyframe_rect(body, rotation_y).contains(point) {
+                timeline.toggle_transform_keyframe("rotation");
+                return true;
+            }
+            if rotation_row_hit(body, rotation_y).contains(point) {
+                return true;
+            }
         }
 
-        if let Some(section) = layout.compositing {
-            if self.compositing_section.open_amount() > 0.98 {
-                let body = inspector_section_content(section);
-                let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
-                if row_hit(body, rows[0].y).contains(point) {
-                    if keyframe_rect(body, rows[0].y).contains(point) {
-                        timeline.toggle_selected_opacity_keyframe();
-                    }
-                    return true;
+        if let Some(section) = layout.compositing
+            && self.compositing_section.open_amount() > 0.98
+        {
+            let body = inspector_section_content(section);
+            let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H]);
+            if row_hit(body, rows[0].y).contains(point) {
+                if keyframe_rect(body, rows[0].y).contains(point) {
+                    timeline.toggle_selected_opacity_keyframe();
                 }
-                if row_hit(body, rows[1].y).contains(point) {
-                    if keyframe_rect(body, rows[1].y).contains(point) {
-                        timeline.toggle_selected_blend_mode_keyframe();
-                    }
-                    return true;
+                return true;
+            }
+            if row_hit(body, rows[1].y).contains(point) {
+                if keyframe_rect(body, rows[1].y).contains(point) {
+                    timeline.toggle_selected_blend_mode_keyframe();
                 }
-                if row_hit(body, rows[2].y).contains(point) {
-                    if keyframe_rect(body, rows[2].y).contains(point) {
-                        timeline.toggle_selected_alpha_blend_mode_keyframe();
-                    }
-                    return true;
+                return true;
+            }
+            if row_hit(body, rows[2].y).contains(point) {
+                if keyframe_rect(body, rows[2].y).contains(point) {
+                    timeline.toggle_selected_alpha_blend_mode_keyframe();
                 }
+                return true;
             }
         }
 
@@ -3874,15 +3910,15 @@ impl InspectorState {
             modifiers,
         );
         if handled {
-            if self.controls.color_picker.linear() != before {
-                if let Some(target) = self.controls.color_target.as_ref() {
-                    return apply_color_target(
-                        target,
-                        project,
-                        timeline,
-                        self.controls.color_picker.linear(),
-                    );
-                }
+            if self.controls.color_picker.linear() != before
+                && let Some(target) = self.controls.color_target.as_ref()
+            {
+                return apply_color_target(
+                    target,
+                    project,
+                    timeline,
+                    self.controls.color_picker.linear(),
+                );
             }
             return true;
         }
@@ -3937,19 +3973,18 @@ impl InspectorState {
                     let absolute = offset_rect(*local, rect.x, rect.y);
                     absolute.contains(point).then_some((*node, *max))
                 })
+            && max_scroll > 0.0
         {
-            if max_scroll > 0.0 {
-                let axis = if delta[0].abs() > delta[1].abs() {
-                    delta[0]
-                } else {
-                    delta[1]
-                };
-                let scroll = self.eq_scroll.entry(node).or_insert(0.0);
-                let next = (*scroll - axis).clamp(0.0, max_scroll);
-                if (next - *scroll).abs() > 0.001 {
-                    *scroll = next;
-                    return true;
-                }
+            let axis = if delta[0].abs() > delta[1].abs() {
+                delta[0]
+            } else {
+                delta[1]
+            };
+            let scroll = self.eq_scroll.entry(node).or_insert(0.0);
+            let next = (*scroll - axis).clamp(0.0, max_scroll);
+            if (next - *scroll).abs() > 0.001 {
+                *scroll = next;
+                return true;
             }
         }
         let viewport = rect.height.max(1.0);
@@ -4072,7 +4107,7 @@ impl InspectorState {
             if response.changed {
                 match kind {
                     InspectorTextField::Text => {
-                        timeline.set_selected_text(field.text().to_string())
+                        timeline.set_selected_text(field.text().to_string());
                     }
                     InspectorTextField::ClipStart => {
                         if let Some(value) = parse_timecode(
@@ -4143,14 +4178,13 @@ impl InspectorState {
         if let Some(caret) = self.controls.caret_rect(rect) {
             return Some(caret);
         }
-        if let Some(swatch) = self.controls.color_rect {
-            if let Some(caret) = self
+        if let Some(swatch) = self.controls.color_rect
+            && let Some(caret) = self
                 .controls
                 .color_picker
                 .caret_rect_in(swatch, self.controls.popup_bounds)
-            {
-                return Some(offset_rect(caret, rect.x, rect.y));
-            }
+        {
+            return Some(offset_rect(caret, rect.x, rect.y));
         }
         let layout = self.rects(rect, project, timeline, plugins);
         if timeline.selected_clip().is_some() {
@@ -4166,41 +4200,38 @@ impl InspectorState {
                 }
             }
         }
-        if self.source_section.is_open() {
-            if let Some(section) = layout.source {
-                let body = inspector_section_content(section);
-                if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
-                    let has_speed = timeline.selected_speed(project).is_some();
-                    let input_offset = if has_speed { 1 } else { 0 };
-                    let mut heights = Vec::with_capacity(inputs.len() + input_offset);
-                    if has_speed {
-                        heights.push(ROW_H);
-                    }
-                    heights.extend(
-                        inputs
-                            .iter()
-                            .map(|input| generator_input_height(timeline, input)),
-                    );
-                    let rows = kama_ui::layout::stack(body, body.y, &heights);
-                    for (input, row) in inputs.into_iter().zip(rows.into_iter().skip(input_offset))
-                    {
-                        if input.ty == InputType::Text
-                            && input.id == "text"
-                            && self.text.is_focused()
-                        {
-                            return Some(self.text.caret_rect(editor_value_rect(body, row.y)));
-                        }
+        if self.source_section.is_open()
+            && let Some(section) = layout.source
+        {
+            let body = inspector_section_content(section);
+            if let Some(inputs) = visible_generator_inputs(timeline, plugins) {
+                let has_speed = timeline.selected_speed(project).is_some();
+                let input_offset = usize::from(has_speed);
+                let mut heights = Vec::with_capacity(inputs.len() + input_offset);
+                if has_speed {
+                    heights.push(ROW_H);
+                }
+                heights.extend(
+                    inputs
+                        .iter()
+                        .map(|input| generator_input_height(timeline, input)),
+                );
+                let rows = kama_ui::layout::stack(body, body.y, &heights);
+                for (input, row) in inputs.into_iter().zip(rows.into_iter().skip(input_offset)) {
+                    if input.ty == InputType::Text && input.id == "text" && self.text.is_focused() {
+                        return Some(self.text.caret_rect(editor_value_rect(body, row.y)));
                     }
                 }
             }
         }
 
-        if self.pipeline_section.is_open() && self.pipeline_name.is_focused() {
-            if let Some(section) = layout.pipeline {
-                let body = inspector_section_content(section);
-                let (_, name, _, _) = pipeline_selector_parts(body, body.y);
-                return Some(self.pipeline_name.caret_rect(name));
-            }
+        if self.pipeline_section.is_open()
+            && self.pipeline_name.is_focused()
+            && let Some(section) = layout.pipeline
+        {
+            let body = inspector_section_content(section);
+            let (_, name, _, _) = pipeline_selector_parts(body, body.y);
+            return Some(self.pipeline_name.caret_rect(name));
         }
         None
     }
@@ -4421,13 +4452,15 @@ fn source_section_rows(
 ) -> Vec<f32> {
     let mut rows = match timeline.selected_generator() {
         Some(GeneratorSource::Plugin { .. }) => visible_generator_inputs(timeline, plugins)
-            .map(|inputs| {
-                inputs
-                    .iter()
-                    .map(|input| generator_input_height(timeline, input))
-                    .collect()
-            })
-            .unwrap_or_else(|| vec![ROW_H]),
+            .map_or_else(
+                || vec![ROW_H],
+                |inputs| {
+                    inputs
+                        .iter()
+                        .map(|input| generator_input_height(timeline, input))
+                        .collect()
+                },
+            ),
         Some(GeneratorSource::Wasm { .. }) => vec![ROW_H; 3],
         None => Vec::new(),
     };
@@ -4483,7 +4516,7 @@ fn generator_input_height(timeline: &TimelineState, input: &PluginInput) -> f32 
         && input.id == "colors"
         && input.ty == InputType::F32List
     {
-        ROW_H + selected_gradient_stop_points(timeline).len() as f32 * ROW_H
+        (selected_gradient_stop_points(timeline).len() as f32).mul_add(ROW_H, ROW_H)
     } else {
         input_control_height(input.ty)
     }
@@ -5134,8 +5167,8 @@ mod graph_canvas_tests {
         let zoom = 1.75;
         let world = [-96.0, 144.0];
         let screen = [
-            canvas.x + pan[0] + world[0] * zoom,
-            canvas.y + pan[1] + world[1] * zoom,
+            f32::mul_add(world[0], zoom, canvas.x + pan[0]),
+            f32::mul_add(world[1], zoom, canvas.y + pan[1]),
         ];
         let resolved = graph_screen_to_world(canvas, pan, zoom, screen);
         assert!((resolved[0] - world[0]).abs() < 0.0001);

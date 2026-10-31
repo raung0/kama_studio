@@ -1,9 +1,17 @@
 use kama_ui::components::ProgressBar;
 
-use super::*;
+use super::{
+    AboutLogos, ActionDialog, AppIcon, Color, CommandRegistry, EditorCommand, GeneratorChoice,
+    Hash, Icons, Instant, LayoutSaveDialog, MediaKind, MissingMediaDialog, Modal,
+    NewCompositionDialog, PaletteAction, PaletteEntry, PaletteKind, PaletteState, PaletteTarget,
+    PanelKind, PipelineKind, PluginRegistry, Project, RADIUS_SM, Rect, RenderPhase, ScrollState,
+    SimpleDialog, Size, SpeedDurationDialog, SpeedDurationMode, TextEdit, TrackKind, UpdateDialog,
+    UpdateDialogState, ValueNodeKind, component_style, dialog, fuzzy_score, i18n, theme, ui,
+    version,
+};
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_active_modal(
+pub fn build_active_modal(
     ctx: &mut ui::BuildCtx,
     width: f32,
     height: f32,
@@ -27,7 +35,7 @@ pub(super) fn build_active_modal(
     }
 }
 
-pub(super) fn centered_dialog_rect(
+pub fn centered_dialog_rect(
     viewport_width: f32,
     viewport_height: f32,
     width: f32,
@@ -61,7 +69,7 @@ fn dialog_content_row(row: Rect) -> Rect {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum ModalButtonRole {
+pub enum ModalButtonRole {
     Secondary,
     Primary,
     Danger,
@@ -187,15 +195,15 @@ fn about_dialog_rects(viewport: Rect) -> (Rect, Rect) {
     )
 }
 
-pub(super) fn about_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
+pub fn about_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
     about_dialog_rects(Rect::new(0.0, 0.0, viewport_width, viewport_height)).0
 }
 
-pub(super) fn about_dialog_button_rect(dialog: Rect) -> Rect {
+pub fn about_dialog_button_rect(dialog: Rect) -> Rect {
     about_dialog_rects(dialog).1
 }
 
-pub(super) fn build_about_dialog(
+pub fn build_about_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -221,7 +229,7 @@ pub(super) fn build_about_dialog(
     );
 }
 
-pub(super) fn build_modal<K1: Hash, K2: Hash, F: FnOnce(&mut ui::BuildCtx)>(
+pub fn build_modal<K1: Hash, K2: Hash, F: FnOnce(&mut ui::BuildCtx)>(
     ctx: &mut ui::BuildCtx,
     scrim_key: K1,
     card_key: K2,
@@ -233,11 +241,11 @@ pub(super) fn build_modal<K1: Hash, K2: Hash, F: FnOnce(&mut ui::BuildCtx)>(
     dialog::build_shell(ctx, scrim_key, card_key, viewport, rect, opacity, children);
 }
 
-pub(super) fn build_modal_title<K: Hash>(ctx: &mut ui::BuildCtx, key: K, rect: Rect, text: &str) {
+pub fn build_modal_title<K: Hash>(ctx: &mut ui::BuildCtx, key: K, rect: Rect, text: &str) {
     ui_text!(ctx, key, rect, 12.0, theme::popup_text(), text);
 }
 
-pub(super) fn build_modal_button<K: Hash>(
+pub fn build_modal_button<K: Hash>(
     ctx: &mut ui::BuildCtx,
     key: K,
     rect: Rect,
@@ -262,7 +270,7 @@ pub(super) fn build_modal_button<K: Hash>(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ActionModalSpec {
+pub struct ActionModalSpec {
     id: &'static str,
     title_key: &'static str,
     size: [f32; 2],
@@ -291,14 +299,14 @@ const BUSY_MODAL: ActionModalSpec = ActionModalSpec {
     secondary_offset: 206.0,
 };
 
-pub(super) fn action_dialog_rect(
+pub fn action_dialog_rect(
     viewport_width: f32,
     viewport_height: f32,
     spec: ActionModalSpec,
 ) -> Rect {
     centered_dialog_rect(viewport_width, viewport_height, spec.size[0], spec.size[1])
 }
-pub(super) fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, [Rect; 2]) {
+pub fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect, Rect, [Rect; 2]) {
     let rows = kama_ui::layout::column(
         dialog,
         &[
@@ -334,23 +342,23 @@ pub(super) fn action_dialog_parts(dialog: Rect, spec: ActionModalSpec) -> (Rect,
     (title, description, [buttons[1], buttons[3]])
 }
 
-pub(super) fn action_button_rect(dialog: Rect, primary: bool, spec: ActionModalSpec) -> Rect {
-    action_dialog_parts(dialog, spec).2[primary as usize]
+pub fn action_button_rect(dialog: Rect, primary: bool, spec: ActionModalSpec) -> Rect {
+    action_dialog_parts(dialog, spec).2[usize::from(primary)]
 }
-pub(super) fn discard_dialog_rect(width: f32, height: f32) -> Rect {
+pub fn discard_dialog_rect(width: f32, height: f32) -> Rect {
     action_dialog_rect(width, height, DISCARD_MODAL)
 }
-pub(super) fn discard_button_rect(dialog: Rect, primary: bool) -> Rect {
+pub fn discard_button_rect(dialog: Rect, primary: bool) -> Rect {
     action_button_rect(dialog, primary, DISCARD_MODAL)
 }
-pub(super) fn busy_project_dialog_rect(width: f32, height: f32) -> Rect {
+pub fn busy_project_dialog_rect(width: f32, height: f32) -> Rect {
     action_dialog_rect(width, height, BUSY_MODAL)
 }
-pub(super) fn busy_project_button_rect(dialog: Rect, primary: bool) -> Rect {
+pub fn busy_project_button_rect(dialog: Rect, primary: bool) -> Rect {
     action_button_rect(dialog, primary, BUSY_MODAL)
 }
 
-pub(super) fn build_action_dialog(
+pub fn build_action_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -401,7 +409,7 @@ pub(super) fn build_action_dialog(
     );
 }
 
-pub(super) fn build_discard_dialog(
+pub fn build_discard_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -417,7 +425,7 @@ pub(super) fn build_discard_dialog(
     );
 }
 
-pub(super) fn build_busy_project_dialog(
+pub fn build_busy_project_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -452,12 +460,12 @@ fn missing_media_list_content_height(missing: usize) -> f32 {
     if missing == 0 {
         0.0
     } else {
-        missing as f32 * MISSING_MEDIA_ROW_H
-            + missing.saturating_sub(1) as f32 * MISSING_MEDIA_ROW_GAP
+        (missing.saturating_sub(1) as f32)
+            .mul_add(MISSING_MEDIA_ROW_GAP, missing as f32 * MISSING_MEDIA_ROW_H)
     }
 }
 
-pub(super) fn missing_media_dialog_rect(
+pub fn missing_media_dialog_rect(
     viewport_width: f32,
     viewport_height: f32,
     missing: usize,
@@ -473,7 +481,7 @@ pub(super) fn missing_media_dialog_rect(
     )
 }
 
-pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
+pub fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
     let rows = kama_ui::layout::column(
         dialog,
         &[
@@ -511,20 +519,20 @@ pub(super) fn missing_media_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Re
     (title, message, list, [buttons[1], buttons[3]])
 }
 
-pub(super) fn missing_media_button_rect(dialog: Rect, confirm: bool) -> Rect {
-    missing_media_dialog_parts(dialog).3[confirm as usize]
+pub fn missing_media_button_rect(dialog: Rect, confirm: bool) -> Rect {
+    missing_media_dialog_parts(dialog).3[usize::from(confirm)]
 }
 
-pub(super) fn missing_media_max_scroll(dialog: Rect, missing: usize) -> f32 {
+pub fn missing_media_max_scroll(dialog: Rect, missing: usize) -> f32 {
     let list = missing_media_dialog_parts(dialog).2;
     (missing_media_list_content_height(missing) - list.height).max(0.0)
 }
 
-pub(super) fn missing_media_picker_rect(dialog: Rect, index: usize, scroll: f32) -> Rect {
+pub fn missing_media_picker_rect(dialog: Rect, index: usize, scroll: f32) -> Rect {
     let list = missing_media_dialog_parts(dialog).2;
     let row = Rect::new(
         list.x,
-        list.y + index as f32 * (MISSING_MEDIA_ROW_H + MISSING_MEDIA_ROW_GAP) - scroll,
+        (index as f32).mul_add(MISSING_MEDIA_ROW_H + MISSING_MEDIA_ROW_GAP, list.y) - scroll,
         list.width,
         MISSING_MEDIA_ROW_H,
     );
@@ -541,7 +549,7 @@ pub(super) fn missing_media_picker_rect(dialog: Rect, index: usize, scroll: f32)
     )[2]
 }
 
-pub(super) fn build_missing_media_dialog(
+pub fn build_missing_media_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -676,7 +684,7 @@ pub(super) fn build_missing_media_dialog(
 const UPDATE_DIALOG_W: f32 = 440.0;
 const UPDATE_DIALOG_H: f32 = 190.0;
 
-pub(super) fn update_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
+pub fn update_dialog_rect(viewport_width: f32, viewport_height: f32) -> Rect {
     centered_dialog_rect(
         viewport_width,
         viewport_height,
@@ -723,8 +731,8 @@ fn update_dialog_parts(dialog: Rect) -> (Rect, Rect, Rect, [Rect; 2]) {
     (title, body, progress, [buttons[1], buttons[3]])
 }
 
-pub(super) fn update_dialog_button_rect(dialog: Rect, primary: bool) -> Rect {
-    update_dialog_parts(dialog).3[primary as usize]
+pub fn update_dialog_button_rect(dialog: Rect, primary: bool) -> Rect {
+    update_dialog_parts(dialog).3[usize::from(primary)]
 }
 
 fn update_dialog_title(dialog: &UpdateDialog) -> &'static str {
@@ -763,7 +771,7 @@ fn update_dialog_message(dialog: &UpdateDialog) -> String {
     }
 }
 
-pub(super) fn build_update_dialog(
+pub fn build_update_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -798,7 +806,7 @@ pub(super) fn build_update_dialog(
                     component_style(),
                 ),
                 UpdateDialogState::Installed => {
-                    ProgressBar::build(ctx, "update-progress", progress, 1.0, component_style())
+                    ProgressBar::build(ctx, "update-progress", progress, 1.0, component_style());
                 }
                 UpdateDialogState::Available | UpdateDialogState::Failed(_) => {}
             }
@@ -850,7 +858,7 @@ pub(super) fn build_update_dialog(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct TextModalSpec {
+pub struct TextModalSpec {
     id: &'static str,
     size: [f32; 2],
     input_y: f32,
@@ -945,21 +953,21 @@ impl TextModalSpec {
     }
 }
 
-pub(super) const NEW_COMPOSITION_MODAL: TextModalSpec = TextModalSpec {
+pub const NEW_COMPOSITION_MODAL: TextModalSpec = TextModalSpec {
     id: "new-composition",
     size: [360.0, 112.0],
     input_y: 34.0,
     placeholder_key: "dialog-composition-name",
     confirm: "dialog-create",
 };
-pub(super) const SPEED_DURATION_MODAL: TextModalSpec = TextModalSpec {
+pub const SPEED_DURATION_MODAL: TextModalSpec = TextModalSpec {
     id: "speed-duration",
     size: [420.0, 176.0],
     input_y: 82.0,
     placeholder_key: "dialog-value",
     confirm: "dialog-apply",
 };
-pub(super) const LAYOUT_SAVE_MODAL: TextModalSpec = TextModalSpec {
+pub const LAYOUT_SAVE_MODAL: TextModalSpec = TextModalSpec {
     id: "layout-save",
     size: [340.0, 112.0],
     input_y: 34.0,
@@ -967,7 +975,7 @@ pub(super) const LAYOUT_SAVE_MODAL: TextModalSpec = TextModalSpec {
     confirm: "dialog-save",
 };
 
-pub(super) fn build_text_modal(
+pub fn build_text_modal(
     ctx: &mut ui::BuildCtx,
     viewport: [f32; 2],
     dialog: &mut TextEdit,
@@ -1018,7 +1026,7 @@ pub(super) fn build_text_modal(
     );
 }
 
-pub(super) fn build_new_composition_dialog(
+pub fn build_new_composition_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -1037,7 +1045,7 @@ pub(super) fn build_new_composition_dialog(
     );
 }
 
-pub(super) fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
+pub fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
     let rows = kama_ui::layout::column(
         dialog,
         &[
@@ -1067,7 +1075,7 @@ pub(super) fn speed_duration_mode_rect(dialog: Rect, index: usize) -> Rect {
     )[1 + index * 2]
 }
 
-pub(super) fn build_speed_duration_dialog(
+pub fn build_speed_duration_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -1107,7 +1115,7 @@ pub(super) fn build_speed_duration_dialog(
     );
 }
 
-pub(super) fn build_layout_save_dialog(
+pub fn build_layout_save_dialog(
     ctx: &mut ui::BuildCtx,
     viewport_width: f32,
     viewport_height: f32,
@@ -1126,7 +1134,7 @@ pub(super) fn build_layout_save_dialog(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct PaletteMetrics {
+pub struct PaletteMetrics {
     width: f32,
     title_h: f32,
     input_h: f32,
@@ -1139,7 +1147,7 @@ pub(super) struct PaletteMetrics {
 const PALETTE_VIEWPORT_MAX_FRACTION: f32 = 0.8;
 const ADD_MENU_MAX_HEIGHT: f32 = 600.0;
 
-pub(super) fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
+pub fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
     let add_menu = state.kind.is_some_and(PaletteKind::is_add_menu);
     let font_menu = matches!(state.kind, Some(PaletteKind::FontFamily));
     let searching = !state.query.text().trim().is_empty();
@@ -1194,7 +1202,7 @@ pub(super) fn palette_metrics(state: &PaletteState) -> PaletteMetrics {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct PaletteRects {
+pub struct PaletteRects {
     title: Option<Rect>,
     input: Rect,
     back: Option<Rect>,
@@ -1238,7 +1246,7 @@ fn measure_palette_rects(
     )
 }
 
-pub(super) fn palette_natural_height(state: &PaletteState, visible_rows: usize) -> f32 {
+pub fn palette_natural_height(state: &PaletteState, visible_rows: usize) -> f32 {
     let metrics = palette_metrics(state);
     measure_palette_rects(
         Rect::new(0.0, 0.0, metrics.width, 1.0),
@@ -1250,8 +1258,10 @@ pub(super) fn palette_natural_height(state: &PaletteState, visible_rows: usize) 
     .height
 }
 
-pub(super) fn palette_max_height(state: &PaletteState, viewport_height: f32) -> f32 {
-    let viewport_limit = (viewport_height - dialog::SEARCH_DIALOG_PADDING * 2.0).max(1.0);
+pub fn palette_max_height(state: &PaletteState, viewport_height: f32) -> f32 {
+    let viewport_limit = dialog::SEARCH_DIALOG_PADDING
+        .mul_add(-2.0, viewport_height)
+        .max(1.0);
     if state.kind.is_some_and(PaletteKind::is_add_menu) {
         ADD_MENU_MAX_HEIGHT.min(viewport_limit)
     } else {
@@ -1261,11 +1271,7 @@ pub(super) fn palette_max_height(state: &PaletteState, viewport_height: f32) -> 
     }
 }
 
-pub(super) fn palette_visible_rows(
-    state: &PaletteState,
-    entries: usize,
-    viewport_height: f32,
-) -> usize {
+pub fn palette_visible_rows(state: &PaletteState, entries: usize, viewport_height: f32) -> usize {
     if entries == 0 {
         return 0;
     }
@@ -1276,7 +1282,7 @@ pub(super) fn palette_visible_rows(
         .unwrap_or(1)
 }
 
-pub(super) fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> Vec<Rect> {
+pub fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> Vec<Rect> {
     if entries == 0 {
         return Vec::new();
     }
@@ -1292,7 +1298,7 @@ pub(super) fn palette_unscrolled_rows(state: &PaletteState, entries: usize) -> V
     .1
 }
 
-pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_rows: usize) -> f32 {
+pub fn palette_max_scroll(state: &PaletteState, entries: usize, visible_rows: usize) -> f32 {
     if entries <= visible_rows || visible_rows == 0 {
         return 0.0;
     }
@@ -1305,8 +1311,7 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
     let (scroll, measured) = kama_ui::measure_layout(
         Rect::new(0.0, 0.0, metrics.width, visible_height.max(1.0)),
         |ctx| {
-            let root = ctx
-                .new()
+            ctx.new()
                 .column()
                 .width(Size::Fill)
                 .height(Size::Fill)
@@ -1321,8 +1326,7 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
                             .build();
                     }
                 })
-                .build();
-            root
+                .build()
         },
     );
     measured
@@ -1331,11 +1335,7 @@ pub(super) fn palette_max_scroll(state: &PaletteState, entries: usize, visible_r
         .vertical
 }
 
-pub(super) fn palette_rects(
-    popup: Rect,
-    state: &PaletteState,
-    visible_rows: usize,
-) -> PaletteRects {
+pub fn palette_rects(popup: Rect, state: &PaletteState, visible_rows: usize) -> PaletteRects {
     if matches!(state.kind, Some(PaletteKind::Commands)) && state.anchor.is_none() {
         let layout =
             dialog::measure_search_dialog(popup, false, visible_rows, ScrollState::default());
@@ -1350,7 +1350,7 @@ pub(super) fn palette_rects(
     measure_palette_rects(popup, state, visible_rows, true).0
 }
 
-pub(super) fn palette_rect(
+pub fn palette_rect(
     viewport_width: f32,
     viewport_height: f32,
     state: &PaletteState,
@@ -1397,19 +1397,19 @@ pub(super) fn palette_rect(
     .1[0]
 }
 
-pub(super) fn palette_input_rect(popup: Rect, state: &PaletteState) -> Rect {
+pub fn palette_input_rect(popup: Rect, state: &PaletteState) -> Rect {
     palette_rects(popup, state, 0).input
 }
 
-pub(super) fn palette_back_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
+pub fn palette_back_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
     palette_rects(popup, state, 0).back
 }
 
-pub(super) fn palette_body_rect(popup: Rect, state: &PaletteState, visible_rows: usize) -> Rect {
+pub fn palette_body_rect(popup: Rect, state: &PaletteState, visible_rows: usize) -> Rect {
     palette_rects(popup, state, visible_rows).body
 }
 
-pub(super) fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
+pub fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Option<Rect> {
     let title = palette_rects(popup, state, 0).title?;
     Some(
         kama_ui::layout::row(
@@ -1425,7 +1425,7 @@ pub(super) fn palette_header_close_rect(popup: Rect, state: &PaletteState) -> Op
     )
 }
 
-pub(super) fn palette_footer_close_rect(
+pub fn palette_footer_close_rect(
     popup: Rect,
     state: &PaletteState,
     visible_rows: usize,
@@ -1450,7 +1450,7 @@ pub(super) fn palette_footer_close_rect(
     )
 }
 
-pub(super) fn palette_virtual_rows(body: Rect, state: &PaletteState, entries: usize) -> Vec<Rect> {
+pub fn palette_virtual_rows(body: Rect, state: &PaletteState, entries: usize) -> Vec<Rect> {
     let metrics = palette_metrics(state);
     kama_ui::layout::column(
         body,
@@ -1462,7 +1462,7 @@ pub(super) fn palette_virtual_rows(body: Rect, state: &PaletteState, entries: us
     )
 }
 
-pub(super) fn palette_row_at(
+pub fn palette_row_at(
     popup: Rect,
     state: &PaletteState,
     point: [f32; 2],
@@ -1571,7 +1571,7 @@ fn build_command_palette_dialog(
     );
 }
 
-pub(super) fn build_palette(
+pub fn build_palette(
     ctx: &mut ui::Ui<'_>,
     viewport_width: f32,
     viewport_height: f32,
@@ -1683,7 +1683,7 @@ pub(super) fn build_palette(
                         Rect::new(
                             0.0,
                             0.0,
-                            (width - dialog::SEARCH_DIALOG_PADDING * 2.0).max(0.0),
+                            dialog::SEARCH_DIALOG_PADDING.mul_add(-2.0, width).max(0.0),
                             metrics.input_h,
                         ),
                         &match state.kind {
@@ -1888,7 +1888,7 @@ pub(super) fn build_palette(
     });
 }
 
-pub(super) fn plugin_menu_name(id: &str) -> String {
+pub fn plugin_menu_name(id: &str) -> String {
     if id == "builtin" {
         "builtins".into()
     } else {
@@ -1896,7 +1896,7 @@ pub(super) fn plugin_menu_name(id: &str) -> String {
     }
 }
 
-pub(super) fn category_menu_path(category: &str) -> Vec<String> {
+pub fn category_menu_path(category: &str) -> Vec<String> {
     let path = category
         .split('▶')
         .map(str::trim)
@@ -1910,27 +1910,31 @@ pub(super) fn category_menu_path(category: &str) -> Vec<String> {
     }
 }
 
-pub(super) fn plugin_menu_path(plugin_id: &str) -> Vec<String> {
+pub fn plugin_menu_path(plugin_id: &str) -> Vec<String> {
     vec!["Plugins".into(), plugin_menu_name(plugin_id)]
 }
 
-pub(super) fn effect_menu_path(effect: &crate::plugin::EffectDefinition) -> Vec<String> {
+pub fn effect_menu_path(effect: &crate::plugin::EffectDefinition) -> Vec<String> {
     category_menu_path(&effect.category)
 }
 
-pub(super) fn audio_effect_menu_path(effect: &crate::plugin::AudioEffectDefinition) -> Vec<String> {
+pub fn audio_effect_menu_path(effect: &crate::plugin::AudioEffectDefinition) -> Vec<String> {
     let mut path = vec!["Audio Effects".into()];
     path.extend(category_menu_path(&effect.category));
     path
 }
 
-pub(super) fn audio_effect_plugin_path(key: &str) -> Vec<String> {
+pub fn audio_effect_plugin_path(key: &str) -> Vec<String> {
     let plugin = key.split('.').next().unwrap_or("plugin");
     plugin_menu_path(plugin)
 }
 
-pub(super) fn value_node_menu_path(kind: ValueNodeKind) -> Vec<String> {
-    use ValueNodeKind::*;
+pub fn value_node_menu_path(kind: ValueNodeKind) -> Vec<String> {
+    use ValueNodeKind::{
+        Abs, Add, Ceil, Clamp, Color, Cos, Divide, Float, Floor, Fract, FrameCount, FrameRate,
+        Lerp, LocalFrame, LocalTimestamp, Max, Min, Modulo, Multiply, Negate, Pi, Power, Round,
+        Sin, Sqrt, Subtract, Tan, Tau, Timestamp, Vec2,
+    };
     match kind {
         Float | Vec2 | Color => vec!["General".into(), "Input".into()],
         Timestamp | LocalTimestamp | FrameCount | LocalFrame | FrameRate => {
@@ -1945,7 +1949,7 @@ pub(super) fn value_node_menu_path(kind: ValueNodeKind) -> Vec<String> {
     }
 }
 
-pub(super) fn organize_add_menu_entries(
+pub fn organize_add_menu_entries(
     state: &PaletteState,
     entries: Vec<PaletteEntry>,
     query: &str,
@@ -2011,7 +2015,7 @@ pub(super) fn organize_add_menu_entries(
     visible
 }
 
-pub(super) fn palette_add(
+pub fn palette_add(
     label: &str,
     detail: impl Into<String>,
     path: Vec<String>,
@@ -2028,7 +2032,7 @@ pub(super) fn palette_add(
     }
 }
 
-pub(super) fn add_video_palette_entries(
+pub fn add_video_palette_entries(
     entries: &mut Vec<PaletteEntry>,
     project: &Project,
     plugins: &PluginRegistry,
@@ -2091,7 +2095,7 @@ pub(super) fn add_video_palette_entries(
     }
 }
 
-pub(super) fn add_effect_clip_palette_entries(
+pub fn add_effect_clip_palette_entries(
     entries: &mut Vec<PaletteEntry>,
     project: &Project,
     track: u32,
@@ -2139,7 +2143,7 @@ pub(super) fn add_effect_clip_palette_entries(
     );
 }
 
-pub(super) fn asset_track_counts(asset: &crate::project::MediaAsset) -> (usize, usize) {
+pub fn asset_track_counts(asset: &crate::project::MediaAsset) -> (usize, usize) {
     use crate::project::MediaTrackKind;
     let video = if matches!(asset.kind, MediaKind::Image { .. } | MediaKind::Model3d) {
         1
@@ -2158,7 +2162,7 @@ pub(super) fn asset_track_counts(asset: &crate::project::MediaAsset) -> (usize, 
     (video, audio)
 }
 
-pub(super) fn palette_entries(
+pub fn palette_entries(
     state: &PaletteState,
     project: &Project,
     plugins: &PluginRegistry,
@@ -2207,11 +2211,11 @@ pub(super) fn palette_entries(
             }
         }
         Some(PaletteKind::TimelineAdd { track, time, kind }) => {
-            if kind == TrackKind::Video {
-                if let Some(query) = raw_query.strip_prefix('@') {
-                    filter_query = query.trim();
-                    media_only = true;
-                }
+            if kind == TrackKind::Video
+                && let Some(query) = raw_query.strip_prefix('@')
+            {
+                filter_query = query.trim();
+                media_only = true;
             }
             match kind {
                 TrackKind::Video => {

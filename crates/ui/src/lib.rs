@@ -310,7 +310,7 @@ pub fn place_popup_with_direction(
     gap: f32,
 ) -> PopupPlacement {
     let margin = 6.0;
-    let width = size[0].min((viewport.width - margin * 2.0).max(1.0));
+    let width = size[0].min(f32::mul_add(margin, -2.0, viewport.width).max(1.0));
     let desired_height = size[1].max(1.0);
     let below_y = anchor.bottom() + gap;
     let available_below = (viewport.bottom() - margin - below_y).max(0.0);
@@ -1545,11 +1545,11 @@ fn resolve_main(spec: Size, fill: f32, intrinsic: f32) -> f32 {
 }
 
 fn push_clip(clips: &mut Vec<ClipShape>, clip: ClipShape) {
-    if clip.radius <= 0.001 {
-        if let Some(flat) = clips.iter_mut().find(|existing| existing.radius <= 0.001) {
-            flat.rect = flat.rect.intersect(clip.rect);
-            return;
-        }
+    if clip.radius <= 0.001
+        && let Some(flat) = clips.iter_mut().find(|existing| existing.radius <= 0.001)
+    {
+        flat.rect = flat.rect.intersect(clip.rect);
+        return;
     }
 
     if clips.iter().any(|existing| {
@@ -1712,7 +1712,9 @@ fn block_contains(block: &Block, point: [f32; 2]) -> bool {
     };
     let local = [point[0] - block.rect.x, point[1] - block.rect.y];
     vertices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .any(|triangle| point_in_triangle_2d(local, triangle[0], triangle[1], triangle[2]))
 }
 
@@ -1744,7 +1746,7 @@ fn rounded_rect_contains(rect: Rect, radius: f32, point: [f32; 2]) -> bool {
     let nearest_y = point[1].clamp(center_y - inner_y, center_y + inner_y);
     let dx = point[0] - nearest_x;
     let dy = point[1] - nearest_y;
-    dx * dx + dy * dy <= radius * radius
+    dy.mul_add(dy, dx * dx) <= radius * radius
 }
 
 fn find_block_mut(blocks: &mut [Block], id: BlockId) -> Option<&mut Block> {
@@ -2197,7 +2199,9 @@ fn swash_to_rgba(content: SwashContent, data: &[u8], width: u32, height: u32) ->
             .flat_map(|alpha| [255, 255, 255, *alpha])
             .collect(),
         SwashContent::SubpixelMask => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .take(count)
             .flat_map(|rgba| [255, 255, 255, rgba[0].max(rgba[1]).max(rgba[2])])
             .collect(),
@@ -2515,8 +2519,7 @@ mod layout_tests {
     #[test]
     fn scroll_range_comes_from_laid_out_content() {
         let (scroll, measured) = measure_layout(Rect::new(0.0, 0.0, 120.0, 70.0), |ctx| {
-            let _ = ctx
-                .new()
+            ctx.new()
                 .column()
                 .width(Size::Fill)
                 .height(Size::Fill)
@@ -2531,7 +2534,7 @@ mod layout_tests {
                             .build();
                     }
                 })
-                .build();
+                .build()
         });
 
         assert_eq!(

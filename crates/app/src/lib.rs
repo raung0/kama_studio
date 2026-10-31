@@ -86,8 +86,8 @@ mod updater;
 mod version;
 mod waveform;
 mod widgets;
-use app_menu::*;
-use app_modal::*;
+use app_menu::{NativeMenu, app_menu_height, dock_tab_close_rect};
+use app_modal::{ActionDialog, LayoutSaveDialog, PopupAnimation, SimpleDialog};
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -98,9 +98,23 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use app_events::*;
-use app_shared::*;
-use app_ui_helpers::*;
+use app_events::{
+    AppEvent, FileCommand, LayoutCommand, layout_data_dir, recent_projects, saved_layouts,
+};
+use app_shared::{
+    default_dock, edge_drop, external_media_preview_spec, missing_project_media,
+    sanitize_file_name, startup_project_path,
+};
+use app_ui_helpers::{
+    LAYOUT_SAVE_MODAL, NEW_COMPOSITION_MODAL, SPEED_DURATION_MODAL, about_dialog_button_rect,
+    about_dialog_rect, build_active_modal, build_palette, busy_project_button_rect,
+    busy_project_dialog_rect, discard_button_rect, discard_dialog_rect, missing_media_button_rect,
+    missing_media_dialog_parts, missing_media_dialog_rect, missing_media_max_scroll,
+    missing_media_picker_rect, palette_back_rect, palette_body_rect, palette_entries,
+    palette_footer_close_rect, palette_header_close_rect, palette_input_rect, palette_max_scroll,
+    palette_rect, palette_row_at, palette_unscrolled_rows, palette_visible_rows,
+    speed_duration_mode_rect, update_dialog_button_rect, update_dialog_rect,
+};
 use assets::{AboutLogos, AppIcon, Icons};
 use audio::AudioPlayback;
 use command::{
@@ -224,9 +238,7 @@ panel_info! {
 }
 
 fn dock_tab_title(title: &str) -> String {
-    PanelKind::from_title(title)
-        .map(PanelKind::display_title)
-        .unwrap_or_else(|| title.to_owned())
+    PanelKind::from_title(title).map_or_else(|| title.to_owned(), PanelKind::display_title)
 }
 
 impl PanelKind {
@@ -361,7 +373,7 @@ impl PaletteState {
     fn opacity(&self, now: Instant) -> f32 {
         fn eased(elapsed: Duration) -> f32 {
             let t = (elapsed.as_secs_f32() / POPUP_FADE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
+            t * t * 2.0f32.mul_add(-t, 3.0)
         }
 
         if let Some((started, start_opacity)) = self.closing {
@@ -779,7 +791,7 @@ impl UpdateDialog {
 
     fn tick(&mut self, dt: f32) {
         if self.installing() {
-            self.progress_phase = (self.progress_phase + dt * 0.85).rem_euclid(1.0);
+            self.progress_phase = dt.mul_add(0.85, self.progress_phase).rem_euclid(1.0);
         }
     }
 
@@ -975,13 +987,13 @@ impl EditorWindowState {
         let monitor = MonitorState::default();
         let mut playback = FrameRenderer::new(&renderer, effects, plugins);
         for asset in &project.media {
-            if matches!(asset.kind, MediaKind::WasmPlugin) {
-                if let Err(error) = playback.precompile_wasm(&asset.path) {
-                    messages::error(
-                        "WASM plugin",
-                        format!("precompile failed for {}: {error:#}", asset.path.display()),
-                    );
-                }
+            if matches!(asset.kind, MediaKind::WasmPlugin)
+                && let Err(error) = playback.precompile_wasm(&asset.path)
+            {
+                messages::error(
+                    "WASM plugin",
+                    format!("precompile failed for {}: {error:#}", asset.path.display()),
+                );
             }
         }
         Ok(Self {
@@ -1145,13 +1157,13 @@ impl EditorApp {
         let monitor = MonitorState::default();
         let mut playback = FrameRenderer::new(&renderer, &effects, &plugins);
         for asset in &project.media {
-            if matches!(asset.kind, MediaKind::WasmPlugin) {
-                if let Err(error) = playback.precompile_wasm(&asset.path) {
-                    messages::error(
-                        "WASM plugin",
-                        format!("precompile failed for {}: {error:#}", asset.path.display()),
-                    );
-                }
+            if matches!(asset.kind, MediaKind::WasmPlugin)
+                && let Err(error) = playback.precompile_wasm(&asset.path)
+            {
+                messages::error(
+                    "WASM plugin",
+                    format!("precompile failed for {}: {error:#}", asset.path.display()),
+                );
             }
         }
         let render_panel = RenderPanelState::new(&project, &timeline);
@@ -1216,13 +1228,13 @@ impl EditorApp {
             secondary_windows: HashMap::new(),
         };
         editor_app.update_window_title();
-        if let Some(path) = startup_project {
-            if let Err(error) = editor_app.load_project_unchecked(&path) {
-                messages::error(
-                    "Project",
-                    format!("could not open {}: {error:#}", path.display()),
-                );
-            }
+        if let Some(path) = startup_project
+            && let Err(error) = editor_app.load_project_unchecked(&path)
+        {
+            messages::error(
+                "Project",
+                format!("could not open {}: {error:#}", path.display()),
+            );
         }
         Ok(editor_app)
     }
@@ -1354,8 +1366,8 @@ impl EditorApp {
     fn cursor_screen_physical(&self) -> Option<[f64; 2]> {
         let origin = self.window.inner_position().ok()?;
         Some([
-            origin.x as f64 + self.cursor_physical[0],
-            origin.y as f64 + self.cursor_physical[1],
+            f64::from(origin.x) + self.cursor_physical[0],
+            f64::from(origin.y) + self.cursor_physical[1],
         ])
     }
 
@@ -1363,8 +1375,8 @@ impl EditorApp {
         let size = self.window.inner_size();
         self.cursor_physical[0] >= 0.0
             && self.cursor_physical[1] >= 0.0
-            && self.cursor_physical[0] < size.width as f64
-            && self.cursor_physical[1] < size.height as f64
+            && self.cursor_physical[0] < f64::from(size.width)
+            && self.cursor_physical[1] < f64::from(size.height)
     }
 
     fn logical_point_for_window(
@@ -1373,12 +1385,14 @@ impl EditorApp {
         position: PhysicalPosition<f64>,
     ) -> Option<[f32; 2]> {
         let scale = if self.window.id() == window_id {
-            self.renderer.scale_factor() as f64
+            f64::from(self.renderer.scale_factor())
         } else {
-            self.secondary_windows
-                .get(&window_id)?
-                .renderer
-                .scale_factor() as f64
+            f64::from(
+                self.secondary_windows
+                    .get(&window_id)?
+                    .renderer
+                    .scale_factor(),
+            )
         };
         Some([(position.x / scale) as f32, (position.y / scale) as f32])
     }
@@ -1394,15 +1408,21 @@ impl EditorApp {
             &self.secondary_windows.get(&window_id)?.window
         };
         let origin = window.inner_position().ok()?;
-        Some([origin.x as f64 + position.x, origin.y as f64 + position.y])
+        Some([
+            f64::from(origin.x) + position.x,
+            f64::from(origin.y) + position.y,
+        ])
     }
 
     fn set_active_cursor_from_screen(&mut self, screen: [f64; 2]) {
         let Ok(origin) = self.window.inner_position() else {
             return;
         };
-        self.cursor_physical = [screen[0] - origin.x as f64, screen[1] - origin.y as f64];
-        let scale = self.renderer.scale_factor() as f64;
+        self.cursor_physical = [
+            screen[0] - f64::from(origin.x),
+            screen[1] - f64::from(origin.y),
+        ];
+        let scale = f64::from(self.renderer.scale_factor());
         self.cursor = [
             (self.cursor_physical[0] / scale) as f32,
             (self.cursor_physical[1] / scale) as f32,
@@ -1445,12 +1465,12 @@ impl EditorApp {
             }
             let origin = state.window.inner_position().ok()?;
             let size = state.window.inner_size();
-            let x = screen[0] - origin.x as f64;
-            let y = screen[1] - origin.y as f64;
-            if x < 0.0 || y < 0.0 || x >= size.width as f64 || y >= size.height as f64 {
+            let x = screen[0] - f64::from(origin.x);
+            let y = screen[1] - f64::from(origin.y);
+            if x < 0.0 || y < 0.0 || x >= f64::from(size.width) || y >= f64::from(size.height) {
                 return None;
             }
-            let scale = state.renderer.scale_factor() as f64;
+            let scale = f64::from(state.renderer.scale_factor());
             Some((id, [(x / scale) as f32, (y / scale) as f32]))
         })
     }
@@ -1720,7 +1740,7 @@ impl EditorApp {
                 0.0
             };
             let level = self.focus_levels.entry(stack.stack.id).or_insert(target);
-            *level += (target - *level) * focus_step;
+            *level = (target - *level).mul_add(focus_step, *level);
             if (*level - target).abs() < 0.002 {
                 *level = target;
             } else {
@@ -1755,10 +1775,10 @@ impl EditorApp {
         };
         let animated_drop_preview = if let Some(target) = preview_target {
             let current = self.animated_drop_preview.get_or_insert(target);
-            current.x += (target.x - current.x) * 0.20;
-            current.y += (target.y - current.y) * 0.20;
-            current.width += (target.width - current.width) * 0.20;
-            current.height += (target.height - current.height) * 0.20;
+            current.x = (target.x - current.x).mul_add(0.20, current.x);
+            current.y = (target.y - current.y).mul_add(0.20, current.y);
+            current.width = (target.width - current.width).mul_add(0.20, current.width);
+            current.height = (target.height - current.height).mul_add(0.20, current.height);
             Some(*current)
         } else {
             self.animated_drop_preview = None;
@@ -2078,7 +2098,7 @@ impl EditorApp {
                     bounds: (
                         cursor[0] + 10.0,
                         cursor[1] + 12.0,
-                        (title.chars().count() as f32 * 7.0 + 28.0).clamp(96.0, 210.0),
+                        (title.chars().count() as f32).mul_add(7.0, 28.0).clamp(96.0, 210.0),
                         25.0,
                     );
                     fill: theme::floating_bg();
@@ -2114,7 +2134,7 @@ impl EditorApp {
                 Block {
                     id: "media-drag-ghost";
                     overlay;
-                    bounds: (cursor[0] + 12.0, cursor[1] + 12.0, (title.chars().count() as f32 * 7.0 + 30.0).clamp(120.0, 260.0), 27.0);
+                    bounds: (cursor[0] + 12.0, cursor[1] + 12.0, (title.chars().count() as f32).mul_add(7.0, 30.0).clamp(120.0, 260.0), 27.0);
                     fill: theme::floating_bg();
                     border: 1;
                     border_color: theme::accent();
@@ -2783,7 +2803,7 @@ impl EditorApp {
                 .window
                 .set_cursor_position(PhysicalPosition::new(anchor[0], anchor[1]));
             self.cursor_physical = anchor;
-            let scale = self.renderer.scale_factor() as f64;
+            let scale = f64::from(self.renderer.scale_factor());
             self.cursor = [(anchor[0] / scale) as f32, (anchor[1] / scale) as f32];
             self.input.cursor = self.cursor;
         }
@@ -2807,7 +2827,7 @@ impl EditorApp {
         if dx.abs() < 0.5 && dy.abs() < 0.5 {
             return;
         }
-        let scale = self.renderer.scale_factor() as f64;
+        let scale = f64::from(self.renderer.scale_factor());
         self.cursor[0] += (dx / scale) as f32;
         self.cursor[1] += (dy / scale) as f32;
         self.input.cursor = self.cursor;
@@ -2830,10 +2850,10 @@ impl EditorApp {
         }
         self.begin_history_gesture();
         self.pointer_pressed_inner();
-        if self.focused_kind() == Some(PanelKind::Timeline) {
-            if let Some(label) = self.editor.timeline.history_gesture_label() {
-                self.set_history_gesture_label(label);
-            }
+        if self.focused_kind() == Some(PanelKind::Timeline)
+            && let Some(label) = self.editor.timeline.history_gesture_label()
+        {
+            self.set_history_gesture_label(label);
         }
     }
 
@@ -2953,43 +2973,43 @@ impl EditorApp {
                 }
             }
             Some((stack, PanelKind::Inspector)) => {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.press_inspector(content) {
-                        return;
-                    }
+                if let Some(content) = self.panel_content(stack)
+                    && self.press_inspector(content)
+                {
+                    return;
                 }
             }
             Some((stack, PanelKind::ProjectOptions)) => {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.press_project_options(content) {
-                        return;
-                    }
+                if let Some(content) = self.panel_content(stack)
+                    && self.press_project_options(content)
+                {
+                    return;
                 }
             }
             Some((stack, PanelKind::Render)) => {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.render_panel.pointer_pressed(
+                if let Some(content) = self.panel_content(stack)
+                    && self.render_panel.pointer_pressed(
                         content,
                         self.cursor,
                         self.modifiers,
                         &self.editor.project,
                         &self.editor.timeline,
-                    ) {
-                        return;
-                    }
+                    )
+                {
+                    return;
                 }
             }
             Some((stack, PanelKind::History)) => {
-                if let Some(content) = self.panel_content(stack) {
-                    if let Some(snapshot) = self.history_panel.pointer_pressed(
+                if let Some(content) = self.panel_content(stack)
+                    && let Some(snapshot) = self.history_panel.pointer_pressed(
                         &mut self.editor.history,
                         content,
                         self.cursor,
-                    ) {
-                        self.command_queue
-                            .push(EditorCommand::restore_history(snapshot));
-                        return;
-                    }
+                    )
+                {
+                    self.command_queue
+                        .push(EditorCommand::restore_history(snapshot));
+                    return;
                 }
             }
             Some((stack, PanelKind::Pipeline)) => {
@@ -3010,15 +3030,15 @@ impl EditorApp {
                 }
             }
             Some((stack, PanelKind::Widgets)) => {
-                if let Some(layout) = self.snapshot.stack(stack) {
-                    if self.widgets.pointer_pressed(
+                if let Some(layout) = self.snapshot.stack(stack)
+                    && self.widgets.pointer_pressed(
                         stack,
                         layout.content,
                         self.cursor,
                         self.modifiers,
-                    ) {
-                        return;
-                    }
+                    )
+                {
+                    return;
                 }
             }
             Some((stack, PanelKind::Monitor)) => {
@@ -3183,10 +3203,10 @@ impl EditorApp {
                 }
             }
             Some((stack, PanelKind::Monitor)) => {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.monitor.pointer_middle_pressed(content, self.cursor) {
-                        return;
-                    }
+                if let Some(content) = self.panel_content(stack)
+                    && self.monitor.pointer_middle_pressed(content, self.cursor)
+                {
+                    return;
                 }
             }
             _ => {}
@@ -3267,19 +3287,19 @@ impl EditorApp {
         if let Some(drag) = self.drag.as_mut() {
             match drag {
                 DragState::Splitter { id, parent_rect } => {
-                    self.dock.set_split_ratio(*id, self.cursor, *parent_rect)
+                    self.dock.set_split_ratio(*id, self.cursor, *parent_rect);
                 }
                 DragState::Media { motion, .. } => {
                     motion.current = self.cursor;
                     let dx = self.cursor[0] - motion.start[0];
                     let dy = self.cursor[1] - motion.start[1];
-                    motion.dragging |= dx * dx + dy * dy > 16.0;
+                    motion.dragging |= dy.mul_add(dy, dx * dx) > 16.0;
                 }
                 DragState::Dock { item, motion } => {
                     motion.current = self.cursor;
                     let dx = self.cursor[0] - motion.start[0];
                     let dy = self.cursor[1] - motion.start[1];
-                    motion.dragging |= dx * dx + dy * dy > 36.0;
+                    motion.dragging |= dy.mul_add(dy, dx * dx) > 36.0;
                     if !motion.dragging {
                         return;
                     }
@@ -3337,14 +3357,12 @@ impl EditorApp {
         if self.widgets.pointer_moved(self.cursor) {
             return;
         }
-        if media_focused {
-            if let Some((stack, _)) = self.focused_panel() {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.media.pointer_moved(content, self.cursor) {
-                        return;
-                    }
-                }
-            }
+        if media_focused
+            && let Some((stack, _)) = self.focused_panel()
+            && let Some(content) = self.panel_content(stack)
+            && self.media.pointer_moved(content, self.cursor)
+        {
+            return;
         }
         if inspector_focused {
             if let Some(composition) = self.media.selected_composition() {
@@ -3392,23 +3410,20 @@ impl EditorApp {
             self.playback.invalidate();
             return;
         }
-        if render_focused {
-            if let Some((stack, _)) = self.focused_panel() {
-                if let Some(content) = self.panel_content(stack) {
-                    if self.render_panel.pointer_moved(content, self.cursor) {
-                        return;
-                    }
-                }
-            }
+        if render_focused
+            && let Some((stack, _)) = self.focused_panel()
+            && let Some(content) = self.panel_content(stack)
+            && self.render_panel.pointer_moved(content, self.cursor)
+        {
+            return;
         }
-        if graph_focused {
-            if let Some((stack, _)) = self.focused_panel() {
-                if let Some(content) = self.panel_content(stack) {
-                    let action = self.pipeline_graph.pointer_moved(content, self.cursor);
-                    if !matches!(&action, PipelineGraphAction::None) {
-                        self.handle_pipeline_graph_action(action);
-                    }
-                }
+        if graph_focused
+            && let Some((stack, _)) = self.focused_panel()
+            && let Some(content) = self.panel_content(stack)
+        {
+            let action = self.pipeline_graph.pointer_moved(content, self.cursor);
+            if !matches!(&action, PipelineGraphAction::None) {
+                self.handle_pipeline_graph_action(action);
             }
         }
     }
@@ -3429,21 +3444,20 @@ impl EditorApp {
             return true;
         }
         let point = motion.current;
-        if !motion.detached {
-            if let DockDrag::Tab {
+        if !motion.detached
+            && let DockDrag::Tab {
                 tab, source_stack, ..
             } = &item
-            {
-                let index = insertion_index(&self.snapshot, *source_stack, *tab, point[0]);
-                self.dock.drop_tab(
-                    *tab,
-                    *source_stack,
-                    *source_stack,
-                    DropZone::Center,
-                    Some(index),
-                );
-                return true;
-            }
+        {
+            let index = insertion_index(&self.snapshot, *source_stack, *tab, point[0]);
+            self.dock.drop_tab(
+                *tab,
+                *source_stack,
+                *source_stack,
+                DropZone::Center,
+                Some(index),
+            );
+            return true;
         }
         if let Some((zone, _)) = edge_drop(self.workspace_rect(), point) {
             match item {
@@ -3540,29 +3554,27 @@ impl EditorApp {
             return;
         }
 
-        if button == MouseButton::Left {
-            if let Some(DragState::Media {
+        if button == MouseButton::Left
+            && let Some(DragState::Media {
                 items,
                 motion,
                 open_on_click,
             }) = self.drag.take()
-            {
-                if motion.dragging {
-                    if let Some((track, time)) = self
-                        .editor
-                        .timeline
-                        .media_drop_anchor(&self.snapshot, self.cursor)
-                    {
-                        if self.insert_media_drag_items(&items, track, time) {
-                            self.media.clear_selection();
-                            self.playback.invalidate();
-                        }
-                    }
-                } else if let Some(composition) = open_on_click {
-                    self.switch_composition(composition);
+        {
+            if motion.dragging {
+                if let Some((track, time)) = self
+                    .editor
+                    .timeline
+                    .media_drop_anchor(&self.snapshot, self.cursor)
+                    && self.insert_media_drag_items(&items, track, time)
+                {
+                    self.media.clear_selection();
+                    self.playback.invalidate();
                 }
-                return;
+            } else if let Some(composition) = open_on_click {
+                self.switch_composition(composition);
             }
+            return;
         }
 
         let timeline_focused = self.focused_kind() == Some(PanelKind::Timeline);
@@ -3596,18 +3608,18 @@ impl EditorApp {
         }
         if graph_focused && matches!(button, MouseButton::Left | MouseButton::Middle) {
             let was_dragging = self.pipeline_graph.is_dragging();
-            if let Some((stack, _)) = self.focused_panel() {
-                if let Some(content) = self.panel_content(stack) {
-                    let action = self.pipeline_graph.pointer_released(
-                        content,
-                        self.cursor,
-                        &self.editor.project,
-                        &self.editor.timeline,
-                        &self.plugins,
-                    );
-                    if !matches!(&action, PipelineGraphAction::None) {
-                        self.handle_pipeline_graph_action(action);
-                    }
+            if let Some((stack, _)) = self.focused_panel()
+                && let Some(content) = self.panel_content(stack)
+            {
+                let action = self.pipeline_graph.pointer_released(
+                    content,
+                    self.cursor,
+                    &self.editor.project,
+                    &self.editor.timeline,
+                    &self.plugins,
+                );
+                if !matches!(&action, PipelineGraphAction::None) {
+                    self.handle_pipeline_graph_action(action);
                 }
             }
             if was_dragging {
@@ -3710,10 +3722,8 @@ impl EditorApp {
             }
             Modal::MissingMedia(dialog) if !dialog.is_closing() => match event.logical_key {
                 Key::Named(NamedKey::Escape) if dialog.is_project_load() => dialog.close(),
-                Key::Named(NamedKey::Enter) => {
-                    if self.apply_missing_media_dialog(dialog) {
-                        dialog.close();
-                    }
+                Key::Named(NamedKey::Enter) if self.apply_missing_media_dialog(dialog) => {
+                    dialog.close();
                 }
                 _ => {}
             },
@@ -3801,21 +3811,19 @@ impl EditorApp {
             if matches!(
                 event.logical_key,
                 Key::Named(NamedKey::Delete | NamedKey::Backspace)
-            ) {
-                if let Some(content) = self.focused_content(PanelKind::Monitor) {
-                    let graph_selection =
-                        self.pipeline_graph.monitor_selection(&self.editor.timeline);
-                    if self.monitor.delete_selected_pen_point(
-                        content,
-                        &mut self.editor.project,
-                        &mut self.editor.timeline,
-                        &self.plugins,
-                        graph_selection,
-                        self.playback.preview_output().source_geometry,
-                    ) {
-                        self.playback.invalidate();
-                        return;
-                    }
+            ) && let Some(content) = self.focused_content(PanelKind::Monitor)
+            {
+                let graph_selection = self.pipeline_graph.monitor_selection(&self.editor.timeline);
+                if self.monitor.delete_selected_pen_point(
+                    content,
+                    &mut self.editor.project,
+                    &mut self.editor.timeline,
+                    &self.plugins,
+                    graph_selection,
+                    self.playback.preview_output().source_geometry,
+                ) {
+                    self.playback.invalidate();
+                    return;
                 }
             }
         }
@@ -3831,14 +3839,14 @@ impl EditorApp {
                 event.logical_key,
                 Key::Named(NamedKey::Delete | NamedKey::Backspace)
             );
-        if !text_editing && !graph_delete_key {
-            if let Some(command) =
+        if !text_editing
+            && !graph_delete_key
+            && let Some(command) =
                 self.command_registry
                     .command_for_key(event, self.modifiers, command_scope)
-            {
-                self.command_queue.push(command);
-                return;
-            }
+        {
+            self.command_queue.push(command);
+            return;
         }
 
         let command_modifier = self.modifiers.super_key() || self.modifiers.control_key();
@@ -3876,8 +3884,8 @@ impl EditorApp {
             return;
         }
 
-        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-            if let Some(DragState::Dock {
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && let Some(DragState::Dock {
                 item:
                     DockDrag::Tab {
                         tab,
@@ -3886,19 +3894,18 @@ impl EditorApp {
                     },
                 ..
             }) = self.drag.as_ref()
-            {
-                let (tab, source_stack, original_index) = (*tab, *source_stack, *original_index);
-                self.drag = None;
-                self.dock.drop_tab(
-                    tab,
-                    source_stack,
-                    source_stack,
-                    DropZone::Center,
-                    Some(original_index),
-                );
-                self.animated_drop_preview = None;
-                return;
-            }
+        {
+            let (tab, source_stack, original_index) = (*tab, *source_stack, *original_index);
+            self.drag = None;
+            self.dock.drop_tab(
+                tab,
+                source_stack,
+                source_stack,
+                DropZone::Center,
+                Some(original_index),
+            );
+            self.animated_drop_preview = None;
+            return;
         }
 
         let command_modifier = self.modifiers.super_key() || self.modifiers.control_key();
@@ -3909,15 +3916,13 @@ impl EditorApp {
             {
                 return;
             }
-            if focused_panel == Some(PanelKind::Media) {
-                if let Some(content) = self.focused_content(PanelKind::Media) {
-                    if self
-                        .media
-                        .handle_key(content, event, self.modifiers, &self.editor.project)
-                    {
-                        return;
-                    }
-                }
+            if focused_panel == Some(PanelKind::Media)
+                && let Some(content) = self.focused_content(PanelKind::Media)
+                && self
+                    .media
+                    .handle_key(content, event, self.modifiers, &self.editor.project)
+            {
+                return;
             }
             if focused_panel == Some(PanelKind::Inspector) {
                 let handled = if let Some(composition) = self.media.selected_composition() {
@@ -3976,19 +3981,16 @@ impl EditorApp {
             if focused_panel == Some(PanelKind::Pipeline)
                 && !command_modifier
                 && matches!(&event.logical_key, Key::Character(text) if text.as_str().eq_ignore_ascii_case("f"))
+                && let Some((stack, _)) = self.focused_panel()
+                && let Some(content) = self.panel_content(stack)
+                && self.pipeline_graph.frame_all(
+                    content,
+                    &self.editor.project,
+                    &self.editor.timeline,
+                    &self.plugins,
+                )
             {
-                if let Some((stack, _)) = self.focused_panel() {
-                    if let Some(content) = self.panel_content(stack) {
-                        if self.pipeline_graph.frame_all(
-                            content,
-                            &self.editor.project,
-                            &self.editor.timeline,
-                            &self.plugins,
-                        ) {
-                            return;
-                        }
-                    }
-                }
+                return;
             }
             if focused_panel == Some(PanelKind::Timeline)
                 && self
@@ -4045,24 +4047,23 @@ impl EditorApp {
                         if graph_changed {
                             self.sync_effect_runtime();
                         }
-                        if let Some((stack, _)) = self.focused_panel() {
-                            if let Some(content) = self.panel_content(stack) {
-                                let point = if content.contains(self.cursor) {
-                                    self.cursor
-                                } else {
-                                    [
-                                        content.x + content.width * 0.5,
-                                        content.y + content.height * 0.5,
-                                    ]
-                                };
-                                let position =
-                                    self.pipeline_graph.insertion_position(content, point);
-                                self.palette.pending_open = Some((
-                                    PaletteKind::NodeInsert { pipeline, position },
-                                    Some(Rect::new(point[0], point[1], 1.0, 1.0)),
-                                ));
-                                return;
-                            }
+                        if let Some((stack, _)) = self.focused_panel()
+                            && let Some(content) = self.panel_content(stack)
+                        {
+                            let point = if content.contains(self.cursor) {
+                                self.cursor
+                            } else {
+                                [
+                                    f32::mul_add(content.width, 0.5, content.x),
+                                    f32::mul_add(content.height, 0.5, content.y),
+                                ]
+                            };
+                            let position = self.pipeline_graph.insertion_position(content, point);
+                            self.palette.pending_open = Some((
+                                PaletteKind::NodeInsert { pipeline, position },
+                                Some(Rect::new(point[0], point[1], 1.0, 1.0)),
+                            ));
+                            return;
                         }
                     }
                     _ => {}
@@ -4089,9 +4090,7 @@ impl EditorApp {
             Key::Named(NamedKey::ArrowRight) if add_menu && empty_query => {
                 self.open_selected_palette_submenu();
             }
-            Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Backspace)
-                if add_menu && empty_query =>
-            {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::Backspace) if add_menu && empty_query => {
                 self.palette_back();
             }
             Key::Named(NamedKey::Enter) => self.accept_palette(),
@@ -4291,8 +4290,11 @@ impl EditorApp {
         }
         if let Some(area) = update.area {
             self.window.set_ime_cursor_area(
-                LogicalPosition::new(area.x as f64, area.y as f64),
-                LogicalSize::new(area.width.max(1.0) as f64, area.height.max(1.0) as f64),
+                LogicalPosition::new(f64::from(area.x), f64::from(area.y)),
+                LogicalSize::new(
+                    f64::from(area.width.max(1.0)),
+                    f64::from(area.height.max(1.0)),
+                ),
             );
         }
     }
@@ -4445,8 +4447,7 @@ impl EditorApp {
             .project_path
             .as_ref()
             .and_then(|path| path.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or(std::env::current_dir()?);
+            .map_or(std::env::current_dir()?, Path::to_path_buf);
         let imported = root.join("Imported");
         std::fs::create_dir_all(&imported)
             .with_context(|| format!("create {}", imported.display()))?;
@@ -4501,12 +4502,11 @@ impl EditorApp {
                         .project_path
                         .as_ref()
                         .and_then(|path| path.parent())
-                        .map(Path::to_path_buf)
-                        .unwrap_or(std::env::current_dir()?);
+                        .map_or(std::env::current_dir()?, Path::to_path_buf);
                     let captures = root.join("Captures");
                     std::fs::create_dir_all(&captures)?;
                     let fps = self.editor.project.active_settings().frame_rate.max(1.0);
-                    let frame = (playhead.max(0.0) as f64 * fps).round() as u64;
+                    let frame = (f64::from(playhead.max(0.0)) * fps).round() as u64;
                     let stem = sanitize_file_name(&self.editor.project.active_composition().name);
                     let base = format!("{stem}-frame-{frame:06}");
                     let mut path = captures.join(format!("{base}.png"));
@@ -4516,7 +4516,9 @@ impl EditorApp {
                         suffix = suffix.saturating_add(1);
                     }
                     let samples = pixels
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
                         .collect::<Vec<_>>();
                     let image = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
@@ -4543,7 +4545,7 @@ impl EditorApp {
                         );
                     }
                     Err(error) => {
-                        messages::error("Frame capture", format!("save failed: {error:#}"))
+                        messages::error("Frame capture", format!("save failed: {error:#}"));
                     }
                 }
             }
@@ -4633,10 +4635,11 @@ impl EditorApp {
             return;
         }
         let size = self.window.inner_size();
-        self.cursor_physical[0] = (self.cursor_physical[0] + delta.0).clamp(0.0, size.width as f64);
+        self.cursor_physical[0] =
+            (self.cursor_physical[0] + delta.0).clamp(0.0, f64::from(size.width));
         self.cursor_physical[1] =
-            (self.cursor_physical[1] + delta.1).clamp(0.0, size.height as f64);
-        let scale = self.renderer.scale_factor() as f64;
+            (self.cursor_physical[1] + delta.1).clamp(0.0, f64::from(size.height));
+        let scale = f64::from(self.renderer.scale_factor());
         self.cursor = [
             (self.cursor_physical[0] / scale) as f32,
             (self.cursor_physical[1] / scale) as f32,
@@ -4726,7 +4729,7 @@ impl EditorApp {
                     stream: MediaStream::All,
                 }),
                 Err(error) => {
-                    messages::warning("Import media", format!("{}: {error:#}", path.display()))
+                    messages::warning("Import media", format!("{}: {error:#}", path.display()));
                 }
             }
         }
@@ -5183,7 +5186,7 @@ impl EditorApp {
                 self.audio.clear();
             }
             PaletteAction::AssignPipeline(pipeline) => {
-                self.editor.timeline.set_selected_pipeline(pipeline)
+                self.editor.timeline.set_selected_pipeline(pipeline);
             }
             PaletteAction::CreateAndAssignPipeline(kind) => {
                 let pipeline = self.editor.project.create_pipeline_kind(kind);
@@ -5255,15 +5258,14 @@ impl EditorApp {
                 generator_type,
                 position,
             } => {
-                if let Some(definition) = self.plugins.generator(&generator_type) {
-                    if self
+                if let Some(definition) = self.plugins.generator(&generator_type)
+                    && self
                         .editor
                         .project
                         .add_generator_node_at(pipeline, definition, Some(position))
                         .is_some()
-                    {
-                        graph_changed = true;
-                    }
+                {
+                    graph_changed = true;
                 }
             }
             PaletteAction::AddGraphValue {
@@ -5647,10 +5649,10 @@ fn build_stack(
                                     icons,
                                     project,
                                     waveform_textures,
-                                )
+                                );
                             }
                             PanelKind::Widgets => {
-                                widgets.build(ctx, stack.id, layout.content, icons, popup_bounds)
+                                widgets.build(ctx, stack.id, layout.content, icons, popup_bounds);
                             }
                             PanelKind::Meters => meters.build(ctx, layout.content),
                             PanelKind::Messages => messages.build(ctx, layout.content),
@@ -5848,51 +5850,49 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
 
-        if let Some(owner) = self.dock_drag_owner {
-            if owner != window_id {
-                if let WindowEvent::CursorMoved { position, .. } = &event {
-                    self.dock_drag_target = self
-                        .editor_app
-                        .as_ref()
-                        .and_then(|app| app.logical_point_for_window(window_id, *position))
-                        .map(|point| (window_id, point));
-                    if let (Some(editor_app), Some(screen)) =
-                        (self.editor_app.as_mut(), self.last_pointer_screen)
-                    {
-                        if editor_app.activate_window(owner) {
-                            editor_app.set_active_cursor_from_screen(screen);
-                            editor_app.window.request_redraw();
-                        }
-                    }
-                    if let Some(editor_app) = self.editor_app.as_ref() {
-                        if let Some(state) = editor_app.secondary_windows.get(&window_id) {
-                            state.window.request_redraw();
-                        }
-                    }
-                    return;
+        if let Some(owner) = self.dock_drag_owner
+            && owner != window_id
+        {
+            if let WindowEvent::CursorMoved { position, .. } = &event {
+                self.dock_drag_target = self
+                    .editor_app
+                    .as_ref()
+                    .and_then(|app| app.logical_point_for_window(window_id, *position))
+                    .map(|point| (window_id, point));
+                if let (Some(editor_app), Some(screen)) =
+                    (self.editor_app.as_mut(), self.last_pointer_screen)
+                    && editor_app.activate_window(owner)
+                {
+                    editor_app.set_active_cursor_from_screen(screen);
+                    editor_app.window.request_redraw();
                 }
-                if matches!(
-                    &event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                        ..
-                    }
-                ) {
-                    if let Some(editor_app) = self.editor_app.as_mut() {
-                        if editor_app.activate_window(owner) {
-                            if let Some(screen) = self.last_pointer_screen {
-                                editor_app.set_active_cursor_from_screen(screen);
-                            }
-                        }
-                    }
-                    self.finish_dock_drag_release(event_loop);
-                    if let Some(editor_app) = self.editor_app.as_mut() {
-                        editor_app.drain_commands();
-                        editor_app.sync_ime();
-                    }
-                    return;
+                if let Some(editor_app) = self.editor_app.as_ref()
+                    && let Some(state) = editor_app.secondary_windows.get(&window_id)
+                {
+                    state.window.request_redraw();
                 }
+                return;
+            }
+            if matches!(
+                &event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                if let Some(editor_app) = self.editor_app.as_mut()
+                    && editor_app.activate_window(owner)
+                    && let Some(screen) = self.last_pointer_screen
+                {
+                    editor_app.set_active_cursor_from_screen(screen);
+                }
+                self.finish_dock_drag_release(event_loop);
+                if let Some(editor_app) = self.editor_app.as_mut() {
+                    editor_app.drain_commands();
+                    editor_app.sync_ime();
+                }
+                return;
             }
         }
 
@@ -5958,7 +5958,7 @@ impl ApplicationHandler<AppEvent> for App {
                 editor_app
                     .renderer
                     .resize(editor_app.window.inner_size(), scale_factor);
-                let scale = editor_app.renderer.scale_factor() as f64;
+                let scale = f64::from(editor_app.renderer.scale_factor());
                 editor_app.cursor = [
                     (editor_app.cursor_physical[0] / scale) as f32,
                     (editor_app.cursor_physical[1] / scale) as f32,
@@ -5985,7 +5985,7 @@ impl ApplicationHandler<AppEvent> for App {
                         editor_app.external_drag_uses_window_cursor = true;
                     }
                     editor_app.cursor_physical = [position.x, position.y];
-                    let scale = editor_app.renderer.scale_factor() as f64;
+                    let scale = f64::from(editor_app.renderer.scale_factor());
                     editor_app.cursor = [(position.x / scale) as f32, (position.y / scale) as f32];
                     editor_app.input.cursor = editor_app.cursor;
                     editor_app.pointer_moved();
@@ -6113,14 +6113,11 @@ impl ApplicationHandler<AppEvent> for App {
                                     .snapshot
                                     .stack(stack)
                                     .map(|layout| layout.content)
+                                    && editor_app.media.selected_composition().is_none()
                                 {
-                                    if editor_app.media.selected_composition().is_none() {
-                                        editor_app.inspector.scroll(
-                                            content,
-                                            editor_app.cursor,
-                                            delta,
-                                        );
-                                    }
+                                    editor_app
+                                        .inspector
+                                        .scroll(content, editor_app.cursor, delta);
                                 }
                             }
                             Some((stack, PanelKind::Render)) => {
@@ -6313,10 +6310,10 @@ impl ApplicationHandler<AppEvent> for App {
                         editor_app.sync_value_drag_cursor(event_loop);
                     }
                     (MouseButton::Middle, ElementState::Pressed) if editor_app.modal.is_none() => {
-                        editor_app.pointer_middle_pressed()
+                        editor_app.pointer_middle_pressed();
                     }
                     (MouseButton::Middle, ElementState::Released) => {
-                        editor_app.pointer_released(button)
+                        editor_app.pointer_released(button);
                     }
                     (MouseButton::Right, ElementState::Pressed)
                         if editor_app.modal.is_none() && editor_app.palette.kind.is_none() =>
@@ -6424,10 +6421,10 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(target) = target {
             let _ = editor_app.activate_window(target);
         }
-        if let DeviceEvent::MouseMotion { delta } = event {
-            if !editor_app.value_drag_cursor_locked {
-                editor_app.move_external_drag_cursor_raw(delta);
-            }
+        if let DeviceEvent::MouseMotion { delta } = event
+            && !editor_app.value_drag_cursor_locked
+        {
+            editor_app.move_external_drag_cursor_raw(delta);
         }
     }
 

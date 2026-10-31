@@ -1003,7 +1003,7 @@ fn wheel_handles(
     opacity: f32,
 ) {
     let geometry = wheel_geometry(rect, hue);
-    let hue_radius = (geometry.inner_radius + geometry.outer_radius) * 0.5;
+    let hue_radius = f32::midpoint(geometry.inner_radius, geometry.outer_radius);
     let hue_point = point_on_circle(
         geometry.center,
         hue_radius,

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use kama_ui::{IconId, Renderer, TextureId};
 
-pub(crate) const ICON_SIZE: u32 = 80;
+pub const ICON_SIZE: u32 = 80;
 const ICON_BYTES: usize = (ICON_SIZE * ICON_SIZE * 4) as usize;
 const ICON_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icons.rgba"));
 
@@ -53,7 +53,7 @@ fn load_texture(renderer: &mut Renderer, bytes: &[u8]) -> Result<TextureId> {
     renderer.register_texture_rgba8(image.width(), image.height(), image.as_raw())
 }
 
-pub(crate) fn icon_rgba(icon: AppIcon) -> &'static [u8] {
+pub fn icon_rgba(icon: AppIcon) -> &'static [u8] {
     let start = icon as usize * ICON_BYTES;
     &ICON_DATA[start..start + ICON_BYTES]
 }

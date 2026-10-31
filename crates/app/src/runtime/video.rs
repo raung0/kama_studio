@@ -76,7 +76,7 @@ impl UniformUploadArena {
         label: &str,
         bytes: &[u8],
     ) -> UniformAllocation {
-        debug_assert!(!bytes.is_empty());
+        debug_assert!(matches!(bytes, [_, ..]));
         let size = bytes.len() as u64;
         loop {
             if self.chunk_index == self.chunks.len() {
@@ -859,14 +859,14 @@ impl VideoGpuRuntime {
     ) -> GpuFrame {
         let width = width.max(1);
         let height = height.max(1);
-        if let Some(bucket) = self.frame_pool.get_mut(&(width, height)) {
-            if let Some(frame) = bucket.pop() {
-                self.frame_pool_len = self.frame_pool_len.saturating_sub(1);
-                self.frame_pool_bytes = self
-                    .frame_pool_bytes
-                    .saturating_sub(width as u64 * height as u64 * 8);
-                return frame;
-            }
+        if let Some(bucket) = self.frame_pool.get_mut(&(width, height))
+            && let Some(frame) = bucket.pop()
+        {
+            self.frame_pool_len = self.frame_pool_len.saturating_sub(1);
+            self.frame_pool_bytes = self
+                .frame_pool_bytes
+                .saturating_sub(u64::from(width) * u64::from(height) * 8);
+            return frame;
         }
         GpuFrame::new(device, width, height, label)
     }
@@ -876,7 +876,7 @@ impl VideoGpuRuntime {
             return;
         }
 
-        let frame_bytes = frame.width as u64 * frame.height as u64 * 8;
+        let frame_bytes = u64::from(frame.width) * u64::from(frame.height) * 8;
         if Arc::strong_count(&frame.texture) == 1
             && self.frame_pool_len < GPU_FRAME_POOL_CAPACITY
             && self.frame_pool_bytes.saturating_add(frame_bytes) <= GPU_FRAME_POOL_MAX_BYTES
@@ -901,7 +901,7 @@ impl VideoGpuRuntime {
             .frame_pool
             .iter()
             .map(|(&(width, height), frames)| {
-                width as u64 * height as u64 * 8 * frames.len() as u64
+                u64::from(width) * u64::from(height) * 8 * frames.len() as u64
             })
             .sum();
     }
@@ -1052,150 +1052,147 @@ impl VideoGpuRuntime {
         device: &wgpu::Device,
         frame: &VideoFrame,
     ) -> VideoUploadSurface {
-        match frame.native_layout() {
-            Some(layout) => {
-                let bit_depth = frame.native_bit_depth().unwrap_or(8);
-                let chroma_width = if layout.packed_ayuv() {
-                    1
-                } else {
-                    layout.chroma_width(frame.source_width.max(1))
-                };
-                let chroma_height = if layout.packed_ayuv() {
-                    1
-                } else {
-                    layout.chroma_height(frame.source_height.max(1))
-                };
-                let planar_format = if bit_depth > 8 {
-                    wgpu::TextureFormat::R16Unorm
-                } else {
-                    wgpu::TextureFormat::R8Unorm
-                };
-                let y = video_staging_texture(
-                    device,
-                    "kama native video Y plane",
-                    frame.source_width,
-                    frame.source_height,
-                    if layout.packed_ayuv() {
-                        if bit_depth > 8 {
-                            wgpu::TextureFormat::Rgba16Unorm
-                        } else {
-                            wgpu::TextureFormat::Rgba8Unorm
-                        }
+        if let Some(layout) = frame.native_layout() {
+            let bit_depth = frame.native_bit_depth().unwrap_or(8);
+            let chroma_width = if layout.packed_ayuv() {
+                1
+            } else {
+                layout.chroma_width(frame.source_width.max(1))
+            };
+            let chroma_height = if layout.packed_ayuv() {
+                1
+            } else {
+                layout.chroma_height(frame.source_height.max(1))
+            };
+            let planar_format = if bit_depth > 8 {
+                wgpu::TextureFormat::R16Unorm
+            } else {
+                wgpu::TextureFormat::R8Unorm
+            };
+            let y = video_staging_texture(
+                device,
+                "kama native video Y plane",
+                frame.source_width,
+                frame.source_height,
+                if layout.packed_ayuv() {
+                    if bit_depth > 8 {
+                        wgpu::TextureFormat::Rgba16Unorm
                     } else {
-                        planar_format
-                    },
-                );
-                let u_or_uv = video_staging_texture(
-                    device,
-                    "kama native video U/UV plane",
-                    chroma_width,
-                    chroma_height,
-                    if layout.interleaved_uv() {
-                        if bit_depth > 8 {
-                            wgpu::TextureFormat::Rg16Unorm
-                        } else {
-                            wgpu::TextureFormat::Rg8Unorm
-                        }
+                        wgpu::TextureFormat::Rgba8Unorm
+                    }
+                } else {
+                    planar_format
+                },
+            );
+            let u_or_uv = video_staging_texture(
+                device,
+                "kama native video U/UV plane",
+                chroma_width,
+                chroma_height,
+                if layout.interleaved_uv() {
+                    if bit_depth > 8 {
+                        wgpu::TextureFormat::Rg16Unorm
                     } else {
-                        planar_format
-                    },
-                );
-                let v = video_staging_texture(
-                    device,
-                    "kama native video V plane",
-                    chroma_width,
-                    chroma_height,
-                    planar_format,
-                );
-                let alpha = video_staging_texture(
-                    device,
-                    "kama native video alpha plane",
-                    frame.source_width,
-                    frame.source_height,
-                    planar_format,
-                );
-                let output = GpuFrame::new(
-                    device,
-                    frame.width,
-                    frame.height,
-                    "kama native decoded video RGBA16F",
-                );
-                let color_uniform =
-                    video_color_buffer(device, frame, "kama native video color metadata");
-                let layout_desc = self.upload_yuv_video.get_bind_group_layout(0);
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("kama native YUV upload bind group"),
-                    layout: &layout_desc,
-                    entries: &[
-                        texture_entry(0, &y.create_view(&wgpu::TextureViewDescriptor::default())),
-                        texture_entry(
-                            1,
-                            &u_or_uv.create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
-                        texture_entry(2, &v.create_view(&wgpu::TextureViewDescriptor::default())),
-                        texture_entry(
-                            3,
-                            &alpha.create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
-                        storage_entry(4, output.view()),
-                        buffer_entry(5, &color_uniform),
-                    ],
-                });
-                VideoUploadSurface {
-                    inner: VideoUploadSurfaceInner::NativeYuv(Box::new(NativeVideoUploadSurface {
-                        layout,
-                        bit_depth,
-                        source_width: frame.source_width,
-                        source_height: frame.source_height,
-                        y,
-                        u_or_uv,
-                        v,
-                        alpha,
-                        output,
-                        color_uniform,
-                        bind_group,
-                    })),
-                }
+                        wgpu::TextureFormat::Rg8Unorm
+                    }
+                } else {
+                    planar_format
+                },
+            );
+            let v = video_staging_texture(
+                device,
+                "kama native video V plane",
+                chroma_width,
+                chroma_height,
+                planar_format,
+            );
+            let alpha = video_staging_texture(
+                device,
+                "kama native video alpha plane",
+                frame.source_width,
+                frame.source_height,
+                planar_format,
+            );
+            let output = GpuFrame::new(
+                device,
+                frame.width,
+                frame.height,
+                "kama native decoded video RGBA16F",
+            );
+            let color_uniform =
+                video_color_buffer(device, frame, "kama native video color metadata");
+            let layout_desc = self.upload_yuv_video.get_bind_group_layout(0);
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("kama native YUV upload bind group"),
+                layout: &layout_desc,
+                entries: &[
+                    texture_entry(0, &y.create_view(&wgpu::TextureViewDescriptor::default())),
+                    texture_entry(
+                        1,
+                        &u_or_uv.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                    texture_entry(2, &v.create_view(&wgpu::TextureViewDescriptor::default())),
+                    texture_entry(
+                        3,
+                        &alpha.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                    storage_entry(4, output.view()),
+                    buffer_entry(5, &color_uniform),
+                ],
+            });
+            VideoUploadSurface {
+                inner: VideoUploadSurfaceInner::NativeYuv(Box::new(NativeVideoUploadSurface {
+                    layout,
+                    bit_depth,
+                    source_width: frame.source_width,
+                    source_height: frame.source_height,
+                    y,
+                    u_or_uv,
+                    v,
+                    alpha,
+                    output,
+                    color_uniform,
+                    bind_group,
+                })),
             }
-            None => {
-                let source = video_staging_texture(
-                    device,
-                    "kama packed RGBA16 video staging",
-                    frame.source_width,
-                    frame.source_height,
-                    wgpu::TextureFormat::Rgba16Uint,
-                );
-                let output = GpuFrame::new(
-                    device,
-                    frame.width.max(1),
-                    frame.height.max(1),
-                    "kama decoded video RGBA16F",
-                );
-                let color_uniform =
-                    video_color_buffer(device, frame, "kama decoded video color metadata");
-                let layout = self.upload_video.get_bind_group_layout(0);
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("kama packed video upload bind group"),
-                    layout: &layout,
-                    entries: &[
-                        texture_entry(
-                            0,
-                            &source.create_view(&wgpu::TextureViewDescriptor::default()),
-                        ),
-                        storage_entry(1, output.view()),
-                        buffer_entry(2, &color_uniform),
-                    ],
-                });
-                VideoUploadSurface {
-                    inner: VideoUploadSurfaceInner::Packed(Box::new(PackedVideoUploadSurface {
-                        source_width: frame.source_width,
-                        source_height: frame.source_height,
-                        source,
-                        output,
-                        color_uniform,
-                        bind_group,
-                    })),
-                }
+        } else {
+            let source = video_staging_texture(
+                device,
+                "kama packed RGBA16 video staging",
+                frame.source_width,
+                frame.source_height,
+                wgpu::TextureFormat::Rgba16Uint,
+            );
+            let output = GpuFrame::new(
+                device,
+                frame.width.max(1),
+                frame.height.max(1),
+                "kama decoded video RGBA16F",
+            );
+            let color_uniform =
+                video_color_buffer(device, frame, "kama decoded video color metadata");
+            let layout = self.upload_video.get_bind_group_layout(0);
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("kama packed video upload bind group"),
+                layout: &layout,
+                entries: &[
+                    texture_entry(
+                        0,
+                        &source.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                    storage_entry(1, output.view()),
+                    buffer_entry(2, &color_uniform),
+                ],
+            });
+            VideoUploadSurface {
+                inner: VideoUploadSurfaceInner::Packed(Box::new(PackedVideoUploadSurface {
+                    source_width: frame.source_width,
+                    source_height: frame.source_height,
+                    source,
+                    output,
+                    color_uniform,
+                    bind_group,
+                })),
             }
         }
     }
@@ -1759,7 +1756,7 @@ impl VideoGpuRuntime {
             return input;
         }
 
-        let knee = (threshold * 0.2 + 0.04).max(0.08);
+        let knee = threshold.mul_add(0.2, 0.04).max(0.08);
         let (horizontal, glow) = self.gaussian_blur(
             device,
             queue,
@@ -2410,7 +2407,7 @@ fn generator_parameters(
                 value
             }
         });
-        values.push(resolved.map(pack_gpu_value).unwrap_or([0.0; 4]));
+        values.push(resolved.map_or([0.0; 4], pack_gpu_value));
     }
     if values.is_empty() {
         values.push([0.0; 4]);
@@ -3106,7 +3103,7 @@ fn dynamic_offset(allocation: &UniformAllocation) -> wgpu::DynamicOffset {
 }
 
 fn pipeline_identity(pipeline: &wgpu::ComputePipeline) -> usize {
-    pipeline as *const wgpu::ComputePipeline as usize
+    std::ptr::from_ref::<wgpu::ComputePipeline>(pipeline) as usize
 }
 
 fn blend_mode_index(mode: BlendMode) -> u32 {
@@ -3144,14 +3141,14 @@ fn alpha_blend_mode_index(mode: AlphaBlendMode) -> u32 {
 }
 
 fn export_shader(body: &str, yuv: bool) -> String {
-    let prelude = r#"
+    let prelude = r"
 fn linear_to_bt709(value: f32) -> f32 {
     let v = max(value, 0.0);
     return select(1.099 * pow(v, 0.45) - 0.099, v * 4.5, v < 0.018);
 }
-"#;
+";
     let yuv = if yuv {
-        r#"
+        r"
 fn bt709_yuv(rgb: vec3<f32>) -> vec3<f32> {
     let y = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     let cb = (rgb.b - y) / 1.8556;
@@ -3169,7 +3166,7 @@ fn unpremul_bt709(premul: vec4<f32>) -> vec3<f32> {
         clamp(linear_to_bt709(straight.b), 0.0, 1.0),
     );
 }
-"#
+"
     } else {
         ""
     };
@@ -3180,13 +3177,13 @@ fn export_buffer_shader(body: &str, encoder: &str) -> String {
     export_shader(&format!("{EXPORT_BUFFER_HEADER_WGSL}{encoder}{body}"), true)
 }
 
-const EXPORT_BUFFER_HEADER_WGSL: &str = r#"
+const EXPORT_BUFFER_HEADER_WGSL: &str = r"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 struct OutputWords { words: array<u32>, }
 @group(0) @binding(1) var<storage, read_write> output: OutputWords;
-"#;
+";
 
-const EXPORT_8BIT_YUV_ENCODER_WGSL: &str = r#"
+const EXPORT_8BIT_YUV_ENCODER_WGSL: &str = r"
 fn encoded_yuv(pixel: vec2<u32>) -> vec3<u32> {
     let dimensions = textureDimensions(input_texture);
     let clamped = min(pixel, dimensions - vec2<u32>(1u));
@@ -3197,9 +3194,9 @@ fn encoded_yuv(pixel: vec2<u32>) -> vec3<u32> {
         vec3<f32>(0.0), vec3<f32>(255.0)
     )));
 }
-"#;
+";
 
-const EXPORT_10BIT_YUV_ENCODER_WGSL: &str = r#"
+const EXPORT_10BIT_YUV_ENCODER_WGSL: &str = r"
 fn encoded_yuv(pixel: vec2<u32>) -> vec3<u32> {
     let dimensions = textureDimensions(input_texture);
     let clamped = min(pixel, dimensions - vec2<u32>(1u));
@@ -3210,9 +3207,9 @@ fn encoded_yuv(pixel: vec2<u32>) -> vec3<u32> {
         vec3<f32>(0.0), vec3<f32>(1023.0)
     ))) << vec3<u32>(6u);
 }
-"#;
+";
 
-const EXPORT_10BIT_YUVA_ENCODER_WGSL: &str = r#"
+const EXPORT_10BIT_YUVA_ENCODER_WGSL: &str = r"
 fn encode_pixel(pixel: vec2<u32>) -> vec4<u32> {
     let premul = textureLoad(input_texture, vec2<i32>(pixel), 0);
     let yuv = bt709_yuv(unpremul_bt709(premul));
@@ -3222,9 +3219,9 @@ fn encode_pixel(pixel: vec2<u32>) -> vec4<u32> {
     )));
     return vec4<u32>(encoded, u32(round(clamp(premul.a, 0.0, 1.0) * 1023.0)));
 }
-"#;
+";
 
-const EXPORT_RGBA16_WGSL: &str = r#"
+const EXPORT_RGBA16_WGSL: &str = r"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba16uint, write>;
 
@@ -3244,9 +3241,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
     textureStore(output_texture, vec2<i32>(gid.xy), vec4<u32>(round(encoded * 65535.0)));
 }
-"#;
+";
 
-const EXPORT_AYUV64_WGSL: &str = r#"
+const EXPORT_AYUV64_WGSL: &str = r"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba16uint, write>;
 
@@ -3265,9 +3262,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         u32(round(alpha * 65535.0)), u32(round(y)), u32(round(u)), u32(round(v))
     ));
 }
-"#;
+";
 
-const EXPORT_YUVA10_WGSL: &str = r#"
+const EXPORT_YUVA10_WGSL: &str = r"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var y_texture: texture_storage_2d<r16uint, write>;
 @group(0) @binding(2) var u_texture: texture_storage_2d<r16uint, write>;
@@ -3291,9 +3288,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     textureStore(v_texture, vec2<i32>(gid.xy), vec4<u32>(v, 0u, 0u, 0u));
     textureStore(a_texture, vec2<i32>(gid.xy), vec4<u32>(a, 0u, 0u, 0u));
 }
-"#;
+";
 
-const EXPORT_NV12_BUFFER_WGSL: &str = r#"
+const EXPORT_NV12_BUFFER_WGSL: &str = r"
 fn pack4(a: u32, b: u32, c: u32, d: u32) -> u32 {
     return a | (b << 8u) | (c << 16u) | (d << 24u);
 }
@@ -3327,9 +3324,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y_words = word_width * dimensions.y;
     output.words[y_words + gid.y * word_width + gid.x] = pack4(u0, v0, u1, v1);
 }
-"#;
+";
 
-const EXPORT_P010_BUFFER_WGSL: &str = r#"
+const EXPORT_P010_BUFFER_WGSL: &str = r"
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dimensions = textureDimensions(input_texture);
@@ -3352,9 +3349,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y_words = row_words * dimensions.y;
     output.words[y_words + gid.y * row_words + gid.x] = u | (v << 16u);
 }
-"#;
+";
 
-const EXPORT_P210_BUFFER_WGSL: &str = r#"
+const EXPORT_P210_BUFFER_WGSL: &str = r"
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dimensions = textureDimensions(input_texture);
@@ -3373,8 +3370,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v = ((yuv0.z >> 6u) + (yuv1.z >> 6u) + 1u) / 2u << 6u;
     output.words[y_words + pair_index] = u | (v << 16u);
 }
-"#;
-const EXPORT_AYUV64_BUFFER_WGSL: &str = r#"
+";
+const EXPORT_AYUV64_BUFFER_WGSL: &str = r"
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dimensions = textureDimensions(input_texture);
@@ -3391,9 +3388,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output.words[pixel * 2u] = a | (y << 16u);
     output.words[pixel * 2u + 1u] = u | (v << 16u);
 }
-"#;
+";
 
-const EXPORT_YUVA10_BUFFER_WGSL: &str = r#"
+const EXPORT_YUVA10_BUFFER_WGSL: &str = r"
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dimensions = textureDimensions(input_texture);
@@ -3409,7 +3406,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output.words[plane_words * 2u + pair_index] = first.z | (second.z << 16u);
     output.words[plane_words * 3u + pair_index] = first.w | (second.w << 16u);
 }
-"#;
+";
 
 #[cfg(test)]
 #[test]
@@ -3429,7 +3426,7 @@ fn export_shaders_are_valid_wgsl() {
     });
 }
 
-const VIDEO_COLOR_INFO_WGSL: &str = r#"
+const VIDEO_COLOR_INFO_WGSL: &str = r"
 struct ColorInfo {
     transfer: u32,
     bt2020_primaries: u32,
@@ -3444,9 +3441,9 @@ struct ColorInfo {
     bit_depth: u32,
     _padding: u32,
 }
-"#;
+";
 
-const VIDEO_COLOR_CONVERSION_WGSL: &str = r#"fn decode_channel(value: f32, transfer: u32) -> f32 {
+const VIDEO_COLOR_CONVERSION_WGSL: &str = r"fn decode_channel(value: f32, transfer: u32) -> f32 {
     if (transfer == 0u) { return value; }
     if (transfer == 1u) {
         return select(value / 12.92, pow((value + 0.055) / 1.055, 2.4), value > 0.04045);
@@ -3489,9 +3486,9 @@ fn to_working_rgb(encoded: vec3<f32>) -> vec3<f32> {
     return linear;
 }
 
-"#;
+";
 
-const YUV_VIDEO_UPLOAD_HEADER_WGSL: &str = r#"
+const YUV_VIDEO_UPLOAD_HEADER_WGSL: &str = r"
 @group(0) @binding(0) var y_texture: texture_2d<f32>;
 @group(0) @binding(1) var u_or_uv_texture: texture_2d<f32>;
 @group(0) @binding(2) var v_texture: texture_2d<f32>;
@@ -3499,9 +3496,9 @@ const YUV_VIDEO_UPLOAD_HEADER_WGSL: &str = r#"
 @group(0) @binding(4) var output_texture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var<uniform> color_info: ColorInfo;
 
-"#;
+";
 
-const YUV_VIDEO_UPLOAD_MAIN_WGSL: &str = r#"fn native_code(raw: f32) -> f32 {
+const YUV_VIDEO_UPLOAD_MAIN_WGSL: &str = r"fn native_code(raw: f32) -> f32 {
     if (color_info.bit_depth <= 8u) { return raw; }
     let max_code = f32((1u << color_info.bit_depth) - 1u);
     if (color_info.native_layout == 6u || color_info.native_layout == 7u) {
@@ -3600,16 +3597,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let linear = to_working_rgb(encoded);
     textureStore(output_texture, vec2<i32>(gid.xy), vec4<f32>(linear * alpha, alpha));
 }
-"#;
+";
 
-const VIDEO_UPLOAD_HEADER_WGSL: &str = r#"
+const VIDEO_UPLOAD_HEADER_WGSL: &str = r"
 @group(0) @binding(0) var source_texture: texture_2d<u32>;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> color_info: ColorInfo;
 
-"#;
+";
 
-const VIDEO_UPLOAD_MAIN_WGSL: &str = r#"@compute @workgroup_size(8, 8, 1)
+const VIDEO_UPLOAD_MAIN_WGSL: &str = r"@compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_dim = textureDimensions(output_texture);
     if (gid.x >= out_dim.x || gid.y >= out_dim.y) { return; }
@@ -3635,9 +3632,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let linear = to_working_rgb(encoded.rgb);
     textureStore(output_texture, vec2<i32>(gid.xy), vec4<f32>(linear * alpha, alpha));
 }
-"#;
+";
 
-const GAUSSIAN_BLUR_WGSL: &str = r#"
+const GAUSSIAN_BLUR_WGSL: &str = r"
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba16float, write>;
 
@@ -3691,9 +3688,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     textureStore(output_tex, pixel, sum / max(weight_sum, 0.000001));
 }
-"#;
+";
 
-const BLOOM_COMBINE_WGSL: &str = r#"
+const BLOOM_COMBINE_WGSL: &str = r"
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var glow_tex: texture_2d<f32>;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
@@ -3713,9 +3710,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let alpha = clamp(source.a + glow.a * intensity, 0.0, 1.0);
     textureStore(output_tex, pixel, vec4<f32>(rgb, alpha));
 }
-"#;
+";
 
-const CLEAR_WGSL: &str = r#"
+const CLEAR_WGSL: &str = r"
 @group(0) @binding(0) var output_texture: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8, 1)
@@ -3724,9 +3721,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= dimensions.x || gid.y >= dimensions.y) { return; }
     textureStore(output_texture, vec2<i32>(gid.xy), vec4<f32>(0.0));
 }
-"#;
+";
 
-const SOLID_WGSL: &str = r#"
+const SOLID_WGSL: &str = r"
 struct Params { value: vec4<f32>, }
 @group(0) @binding(0) var output_texture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -3737,9 +3734,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= dimensions.x || gid.y >= dimensions.y) { return; }
     textureStore(output_texture, vec2<i32>(gid.xy), params.value);
 }
-"#;
+";
 
-const COMPOSITE_WGSL: &str = r#"
+const COMPOSITE_WGSL: &str = r"
 struct Params { value: vec4<f32>, }
 @group(0) @binding(0) var destination_texture: texture_2d<f32>;
 @group(0) @binding(1) var source_texture: texture_2d<f32>;
@@ -3855,9 +3852,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_rgb = straight_rgb * out_alpha;
     textureStore(output_texture, p, vec4<f32>(out_rgb, out_alpha));
 }
-"#;
+";
 
-const PRESENT_WGSL: &str = r#"
+const PRESENT_WGSL: &str = r"
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba16float, write>;
 
@@ -3875,4 +3872,4 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
     textureStore(output_texture, p, vec4<f32>(straight_linear, alpha));
 }
-"#;
+";

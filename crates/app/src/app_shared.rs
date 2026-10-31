@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct BoundedCache<K, V> {
+pub struct BoundedCache<K, V> {
     entries: VecDeque<(K, V)>,
 }
 
@@ -84,7 +84,7 @@ impl<K: Eq, V> BoundedCache<K, V> {
     }
 }
 
-pub(super) fn default_dock() -> DockState {
+pub fn default_dock() -> DockState {
     let top = DockLayoutSpec::split(
         Axis::Horizontal,
         0.20,
@@ -117,7 +117,7 @@ pub(super) fn default_dock() -> DockState {
     ))
 }
 
-pub(super) fn missing_project_media(project: &Project) -> Vec<(MediaId, PathBuf)> {
+pub fn missing_project_media(project: &Project) -> Vec<(MediaId, PathBuf)> {
     project
         .media
         .iter()
@@ -126,7 +126,7 @@ pub(super) fn missing_project_media(project: &Project) -> Vec<(MediaId, PathBuf)
         .collect()
 }
 
-pub(super) fn startup_project_path() -> Option<PathBuf> {
+pub fn startup_project_path() -> Option<PathBuf> {
     std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -137,7 +137,7 @@ pub(super) fn startup_project_path() -> Option<PathBuf> {
         })
 }
 
-pub(super) fn document_content_signature(project: &Project, timeline: &TimelineState) -> Vec<u8> {
+pub fn document_content_signature(project: &Project, timeline: &TimelineState) -> Vec<u8> {
     let mut document = project.clone();
     document.sync_active_timeline(timeline.document());
     for composition in &mut document.compositions {
@@ -146,7 +146,7 @@ pub(super) fn document_content_signature(project: &Project, timeline: &TimelineS
     document.authored_signature()
 }
 
-pub(super) fn document_view_signature(project: &Project, timeline: &TimelineState) -> Vec<u8> {
+pub fn document_view_signature(project: &Project, timeline: &TimelineState) -> Vec<u8> {
     let active = project.active_composition;
     let active_view = timeline.document().view;
     let views = project
@@ -166,7 +166,7 @@ pub(super) fn document_view_signature(project: &Project, timeline: &TimelineStat
     serde_json::to_vec(&views).unwrap_or_default()
 }
 
-pub(super) fn external_media_preview_spec(path: &Path) -> Option<MediaDropPreviewSpec> {
+pub fn external_media_preview_spec(path: &Path) -> Option<MediaDropPreviewSpec> {
     if !path.is_file() {
         return None;
     }
@@ -188,24 +188,24 @@ pub(super) fn external_media_preview_spec(path: &Path) -> Option<MediaDropPrevie
             duration: 5.0,
         });
     }
-    if let Ok(probe) = runtime::media::probe_av_media(path) {
-        if probe.has_video || probe.has_audio {
-            let video_tracks = probe
-                .tracks
-                .iter()
-                .filter(|track| track.kind == crate::project::MediaTrackKind::Video)
-                .count();
-            let audio_tracks = probe
-                .tracks
-                .iter()
-                .filter(|track| track.kind == crate::project::MediaTrackKind::Audio)
-                .count();
-            return Some(MediaDropPreviewSpec {
-                video_tracks: video_tracks.max(usize::from(probe.has_video)),
-                audio_tracks: audio_tracks.max(usize::from(probe.has_audio)),
-                duration: probe.duration.unwrap_or(5.0).clamp(0.1, 24.0 * 60.0 * 60.0) as f32,
-            });
-        }
+    if let Ok(probe) = runtime::media::probe_av_media(path)
+        && (probe.has_video || probe.has_audio)
+    {
+        let video_tracks = probe
+            .tracks
+            .iter()
+            .filter(|track| track.kind == crate::project::MediaTrackKind::Video)
+            .count();
+        let audio_tracks = probe
+            .tracks
+            .iter()
+            .filter(|track| track.kind == crate::project::MediaTrackKind::Audio)
+            .count();
+        return Some(MediaDropPreviewSpec {
+            video_tracks: video_tracks.max(usize::from(probe.has_video)),
+            audio_tracks: audio_tracks.max(usize::from(probe.has_audio)),
+            duration: probe.duration.unwrap_or(5.0).clamp(0.1, 24.0 * 60.0 * 60.0) as f32,
+        });
     }
     let audio = matches!(
         extension.as_str(),
@@ -218,7 +218,7 @@ pub(super) fn external_media_preview_spec(path: &Path) -> Option<MediaDropPrevie
     })
 }
 
-pub(super) fn sanitize_file_name(name: &str) -> String {
+pub fn sanitize_file_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
         .map(|character| {
@@ -240,7 +240,7 @@ pub(super) fn sanitize_file_name(name: &str) -> String {
     }
 }
 
-pub(super) fn edge_drop(rect: Rect, point: [f32; 2]) -> Option<(DropZone, Rect)> {
+pub fn edge_drop(rect: Rect, point: [f32; 2]) -> Option<(DropZone, Rect)> {
     let edges = [
         ((point[0] - rect.x).abs(), DropZone::Left),
         ((rect.right() - point[0]).abs(), DropZone::Right),
@@ -255,12 +255,12 @@ pub(super) fn edge_drop(rect: Rect, point: [f32; 2]) -> Option<(DropZone, Rect)>
     match zone {
         DropZone::Left => preview.width *= 0.28,
         DropZone::Right => {
-            preview.x += preview.width * 0.72;
+            preview.x = preview.width.mul_add(0.72, preview.x);
             preview.width *= 0.28;
         }
         DropZone::Top => preview.height *= 0.28,
         DropZone::Bottom => {
-            preview.y += preview.height * 0.72;
+            preview.y = preview.height.mul_add(0.72, preview.y);
             preview.height *= 0.28;
         }
         DropZone::Center => unreachable!(),

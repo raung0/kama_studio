@@ -1214,7 +1214,7 @@ fn layout_stack(stack: &Stack, rect: Rect, context: &mut LayoutContext<'_>) {
         *context.animating |= (*animated_offset - target_offset).abs() > 0.1;
         let tab_rect = Rect::new(
             tab_bar.x + *animated_offset,
-            (1.0 - open_eased).mul_add(12.0, target_rect.y) + close_eased * 16.0,
+            close_eased.mul_add(16.0, (1.0 - open_eased).mul_add(12.0, target_rect.y)),
             actual,
             target_rect.height,
         );

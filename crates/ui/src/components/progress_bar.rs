@@ -41,7 +41,7 @@ impl ProgressBar {
         let track = Self::track(rect, track_height);
         let segment_width = track.width * SEGMENT_WIDTH_RATIO;
         let travel = track.width + segment_width;
-        let x = track.x - segment_width + travel * phase.rem_euclid(1.0);
+        let x = travel.mul_add(phase.rem_euclid(1.0), track.x - segment_width);
         let left = x.max(track.x);
         let right = (x + segment_width).min(track.right());
         let segment = Rect::new(left, track.y, (right - left).max(0.0), track.height);
@@ -61,7 +61,7 @@ impl ProgressBar {
     fn track(rect: Rect, height: f32) -> Rect {
         Rect::new(
             rect.x,
-            height.mul_add(-0.5, rect.y + rect.height * 0.5),
+            height.mul_add(-0.5, rect.height.mul_add(0.5, rect.y)),
             rect.width,
             height,
         )

@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::version::VERSION;
 
 #[derive(Clone, Debug)]
-pub(super) struct AvailableUpdate {
+pub struct AvailableUpdate {
     pub(super) version: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum ReleaseChannel {
+pub enum ReleaseChannel {
     Alpha,
     Beta,
     Rc,
@@ -79,7 +79,7 @@ fn release_channel_from_version(value: &str) -> Option<ReleaseChannel> {
     KamaVersion::parse(value).map(|version| version.channel)
 }
 
-pub(crate) fn default_release_channel() -> ReleaseChannel {
+pub fn default_release_channel() -> ReleaseChannel {
     release_channel_from_version(VERSION).unwrap_or(ReleaseChannel::Stable)
 }
 
@@ -87,12 +87,12 @@ fn release_channel_storage() -> &'static AtomicU8 {
     RELEASE_CHANNEL.get_or_init(|| AtomicU8::new(default_release_channel().as_u8()))
 }
 
-pub(crate) fn release_channel() -> ReleaseChannel {
+pub fn release_channel() -> ReleaseChannel {
     ReleaseChannel::from_u8(release_channel_storage().load(Ordering::Relaxed))
         .unwrap_or_else(default_release_channel)
 }
 
-pub(crate) fn set_release_channel(channel: ReleaseChannel) {
+pub fn set_release_channel(channel: ReleaseChannel) {
     release_channel_storage().store(channel.as_u8(), Ordering::Relaxed);
 }
 
@@ -104,11 +104,11 @@ fn is_allowed_update(
     candidate.channel >= channel && candidate > current
 }
 
-pub(super) fn enabled() -> bool {
+pub fn enabled() -> bool {
     !VERSION.ends_with("-dev") && repository().is_some() && platform().is_some()
 }
 
-pub(super) fn check() -> Result<Option<AvailableUpdate>> {
+pub fn check() -> Result<Option<AvailableUpdate>> {
     if !enabled() {
         return Ok(None);
     }
@@ -133,7 +133,7 @@ pub(super) fn check() -> Result<Option<AvailableUpdate>> {
     Ok(latest.map(|(_, version)| AvailableUpdate { version }))
 }
 
-pub(super) fn install(version: &str) -> Result<()> {
+pub fn install(version: &str) -> Result<()> {
     let (owner, repository) = repository().context("missing update repository")?;
     let Some((identifier, bin_path)) = platform() else {
         bail!("this platform does not have a Kama release updater");

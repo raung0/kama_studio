@@ -4,7 +4,7 @@ use kama_ui::Color;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum ThemePreset {
+pub enum ThemePreset {
     System,
     Light,
     #[default]
@@ -59,17 +59,17 @@ fn set_theme_mix(value: f32) {
     THEME_MIX_BITS.store(value.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-pub(crate) fn set_theme(theme: ThemePreset) {
+pub fn set_theme(theme: ThemePreset) {
     store_theme(theme);
 }
 
-pub(crate) fn set_theme_immediate(theme: ThemePreset) {
+pub fn set_theme_immediate(theme: ThemePreset) {
     store_theme(theme);
     set_theme_mix(theme_target(theme));
     sync_kama_ui_theme();
 }
 
-pub(crate) fn theme() -> ThemePreset {
+pub fn theme() -> ThemePreset {
     match THEME.load(Ordering::Relaxed) {
         0 => ThemePreset::System,
         1 => ThemePreset::Light,
@@ -77,22 +77,22 @@ pub(crate) fn theme() -> ThemePreset {
     }
 }
 
-pub(crate) fn effective_theme() -> ThemePreset {
+pub fn effective_theme() -> ThemePreset {
     resolved_theme(theme())
 }
 
-pub(crate) fn set_system_appearance(light: bool) {
+pub fn set_system_appearance(light: bool) {
     SYSTEM_LIGHT.store(u8::from(light), Ordering::Relaxed);
     if theme() == ThemePreset::System {
         sync_kama_ui_theme();
     }
 }
 
-pub(crate) fn tick(dt: f32) -> bool {
+pub fn tick(dt: f32) -> bool {
     let target = theme_target(theme());
     let current = theme_mix();
     let step = 1.0 - (-10.0 * dt.max(0.0)).exp();
-    let mut next = current + (target - current) * step;
+    let mut next = (target - current).mul_add(step, current);
     let animating = (target - next).abs() > 0.001;
     if !animating {
         next = target;
@@ -104,21 +104,21 @@ pub(crate) fn tick(dt: f32) -> bool {
     animating
 }
 
-pub(crate) fn set_dark_accent_rgba8(rgba: [u8; 4]) {
+pub fn set_dark_accent_rgba8(rgba: [u8; 4]) {
     DARK_ACCENT_RGBA.store(u32::from_be_bytes(rgba), Ordering::Relaxed);
     sync_kama_ui_theme();
 }
 
-pub(crate) fn set_light_accent_rgba8(rgba: [u8; 4]) {
+pub fn set_light_accent_rgba8(rgba: [u8; 4]) {
     LIGHT_ACCENT_RGBA.store(u32::from_be_bytes(rgba), Ordering::Relaxed);
     sync_kama_ui_theme();
 }
 
-pub(crate) fn dark_accent_rgba8() -> [u8; 4] {
+pub fn dark_accent_rgba8() -> [u8; 4] {
     DARK_ACCENT_RGBA.load(Ordering::Relaxed).to_be_bytes()
 }
 
-pub(crate) fn light_accent_rgba8() -> [u8; 4] {
+pub fn light_accent_rgba8() -> [u8; 4] {
     LIGHT_ACCENT_RGBA.load(Ordering::Relaxed).to_be_bytes()
 }
 
@@ -126,14 +126,16 @@ fn rgba8_color(rgba: [u8; 4]) -> Color {
     Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3])
 }
 
-pub(crate) fn accent() -> Color {
+pub fn accent() -> Color {
     rgba8_color(dark_accent_rgba8()).mix(rgba8_color(light_accent_rgba8()), theme_mix())
 }
 
-pub(crate) fn accent_text() -> Color {
+pub fn accent_text() -> Color {
     let accent = accent();
 
-    let luminance = accent.r * 0.2126 + accent.g * 0.7152 + accent.b * 0.0722;
+    let luminance = accent
+        .b
+        .mul_add(0.0722, accent.g.mul_add(0.7152, accent.r * 0.2126));
     if luminance >= 0.56 {
         Color::BLACK
     } else {
@@ -141,7 +143,7 @@ pub(crate) fn accent_text() -> Color {
     }
 }
 
-pub(crate) fn set_brightness(value: f32) {
+pub fn set_brightness(value: f32) {
     let value = if value.is_finite() {
         value.clamp(0.0, 1.0)
     } else {
@@ -151,11 +153,11 @@ pub(crate) fn set_brightness(value: f32) {
     sync_kama_ui_theme();
 }
 
-pub(crate) fn brightness() -> f32 {
+pub fn brightness() -> f32 {
     f32::from_bits(BRIGHTNESS_BITS.load(Ordering::Relaxed)).clamp(0.0, 1.0)
 }
 
-pub(crate) fn set_accent_mixing(value: f32) {
+pub fn set_accent_mixing(value: f32) {
     let value = if value.is_finite() {
         value.clamp(0.0, 1.0)
     } else {
@@ -165,19 +167,19 @@ pub(crate) fn set_accent_mixing(value: f32) {
     sync_kama_ui_theme();
 }
 
-pub(crate) fn accent_mixing() -> f32 {
+pub fn accent_mixing() -> f32 {
     f32::from_bits(ACCENT_MIXING_BITS.load(Ordering::Relaxed)).clamp(0.0, 1.0)
 }
 
 fn rgb_to_hsl(color: Color) -> [f32; 3] {
     let max = color.r.max(color.g).max(color.b);
     let min = color.r.min(color.g).min(color.b);
-    let lightness = (max + min) * 0.5;
+    let lightness = f32::midpoint(max, min);
     let delta = max - min;
     if delta <= 1e-6 {
         return [0.0, 0.0, lightness];
     }
-    let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs()).max(1e-6);
+    let saturation = delta / (1.0 - 2.0f32.mul_add(lightness, -1.0).abs()).max(1e-6);
     let hue_sector = if max == color.r {
         ((color.g - color.b) / delta).rem_euclid(6.0)
     } else if max == color.g {
@@ -199,7 +201,7 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32, alpha: f32) -> Color {
     if saturation <= 1e-6 {
         return Color::rgba(lightness, lightness, lightness, alpha);
     }
-    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let chroma = (1.0 - 2.0f32.mul_add(lightness, -1.0).abs()) * saturation;
     let sector = hue * 6.0;
     let x = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
     let (r, g, b) = match sector.floor() as i32 {
@@ -210,20 +212,22 @@ fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32, alpha: f32) -> Color {
         4 => (x, 0.0, chroma),
         _ => (chroma, 0.0, x),
     };
-    let offset = lightness - chroma * 0.5;
+    let offset = chroma.mul_add(-0.5, lightness);
     Color::rgba(r + offset, g + offset, b + offset, alpha)
 }
 
 fn appearance_lightness(base: f32) -> f32 {
     let mix = theme_mix();
 
-    let target = brightness() + (1.0 - 2.0 * brightness()) * mix;
+    let target = 2.0f32
+        .mul_add(-brightness(), 1.0)
+        .mul_add(mix, brightness());
 
-    let reference = 0.122 + (0.973 - 0.122) * mix;
+    let reference = f32::mul_add(0.973 - 0.122, mix, 0.122);
     if target < reference {
         base * (target / reference.max(1e-4))
     } else {
-        base + (1.0 - base) * ((target - reference) / (1.0 - reference).max(1e-4))
+        (1.0 - base).mul_add((target - reference) / (1.0 - reference).max(1e-4), base)
     }
 }
 
@@ -233,7 +237,7 @@ fn surface_color(base: Color) -> Color {
     let mixing = accent_mixing();
 
     let hue = if mixing <= 1e-6 { base_hue } else { accent_hue };
-    let saturation = base_saturation + (0.62 - base_saturation) * mixing;
+    let saturation = f32::mul_add(0.62 - base_saturation, mixing, base_saturation);
     hsl_to_rgb(
         hue,
         saturation,
@@ -247,10 +251,10 @@ fn interaction_overlay(alpha: f32) -> Color {
     Color::rgba(level, level, level, alpha)
 }
 
-pub(crate) fn accent_hover() -> Color {
+pub fn accent_hover() -> Color {
     let mix = theme_mix();
     let target = Color::WHITE.mix(Color::BLACK, mix);
-    let amount = 0.24 + (0.12 - 0.24) * mix;
+    let amount = f32::mul_add(0.12 - 0.24, mix, 0.24);
     accent().mix(target, amount)
 }
 
@@ -327,7 +331,7 @@ macro_rules! surface_accessors {
     ($($name:ident),+ $(,)?) => {
         $(
             #[inline]
-            pub(crate) fn $name() -> Color {
+            pub fn $name() -> Color {
                 surface_color(palette_color(DARK.$name, LIGHT.$name))
             }
         )+
@@ -338,7 +342,7 @@ macro_rules! palette_accessors {
     ($($name:ident),+ $(,)?) => {
         $(
             #[inline]
-            pub(crate) fn $name() -> Color {
+            pub fn $name() -> Color {
                 palette_color(DARK.$name, LIGHT.$name)
             }
         )+
@@ -362,7 +366,7 @@ surface_accessors!(
 );
 palette_accessors!(text, muted, timeline_grid, timeline_text, timeline_muted);
 
-pub(crate) fn toggle_icon_color(active: bool) -> Color {
+pub fn toggle_icon_color(active: bool) -> Color {
     if active {
         palette_color(DARK.timeline_bg, LIGHT.text)
     } else {
@@ -370,29 +374,29 @@ pub(crate) fn toggle_icon_color(active: bool) -> Color {
     }
 }
 
-pub(crate) fn floating_bg() -> Color {
+pub fn floating_bg() -> Color {
     let base = panel();
     Color::rgba(base.r, base.g, base.b, 0.94)
 }
 
-pub(crate) fn popup_tint() -> Color {
+pub fn popup_tint() -> Color {
     let base = panel();
     Color::rgba(base.r, base.g, base.b, 0.66)
 }
 
-pub(crate) fn popup_text() -> Color {
+pub fn popup_text() -> Color {
     text()
 }
 
-pub(crate) fn popup_muted() -> Color {
+pub fn popup_muted() -> Color {
     muted()
 }
 
-pub(crate) fn popup_dim() -> Color {
+pub fn popup_dim() -> Color {
     muted().mix(panel(), 0.38)
 }
 
-pub(crate) fn popup_hover() -> Color {
+pub fn popup_hover() -> Color {
     interaction_overlay(0.08)
 }
 

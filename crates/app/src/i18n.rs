@@ -15,11 +15,11 @@ use unic_langid::LanguageIdentifier;
 #[folder = "i18n/"]
 struct Localizations;
 
-pub(crate) fn initialize(language: Option<&str>) -> Result<()> {
+pub fn initialize(language: Option<&str>) -> Result<()> {
     set_language(language)
 }
 
-pub(crate) fn set_language(language: Option<&str>) -> Result<()> {
+pub fn set_language(language: Option<&str>) -> Result<()> {
     let requested_languages = match language {
         Some(language) => vec![
             language
@@ -36,28 +36,28 @@ pub(crate) fn set_language(language: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn preference() -> Option<String> {
+pub fn preference() -> Option<String> {
     language_preference()
         .lock()
         .expect("language preference lock")
         .clone()
 }
 
-pub(crate) fn text(message_id: &str) -> String {
+pub fn text(message_id: &str) -> String {
     loader().get(message_id)
 }
 
-pub(crate) fn text_with_name(message_id: &str, name: &str) -> String {
+pub fn text_with_name(message_id: &str, name: &str) -> String {
     loader().get_args(message_id, HashMap::from([("name", name)]))
 }
 
 #[derive(Clone)]
-pub(crate) struct LanguageOption {
+pub struct LanguageOption {
     pub(crate) language: Option<String>,
     pub(crate) label: String,
 }
 
-pub(crate) fn language_options() -> Vec<LanguageOption> {
+pub fn language_options() -> Vec<LanguageOption> {
     let mut languages = Localizations::iter()
         .filter_map(|path| path.split('/').next()?.parse::<LanguageIdentifier>().ok())
         .collect::<BTreeSet<_>>()
@@ -121,7 +121,10 @@ mod tests {
             text("menu-file").as_str(),
             "File" | "Fișier" | "ファイル"
         ));
-        assert!(!loader().current_languages().is_empty());
+        assert_ne!(
+            loader().current_languages(),
+            [] as [unic_langid::LanguageIdentifier; 0]
+        );
 
         let options = language_options();
         assert!(options.iter().any(|option| option.label == "English"));

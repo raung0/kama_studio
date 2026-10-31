@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use rust_embed::RustEmbed;
 use vfs::{EmbeddedFS, VfsPath};
 
-pub(crate) const BUILTIN_PLUGIN_ROOT: &str = "builtin:/plugins";
+pub const BUILTIN_PLUGIN_ROOT: &str = "builtin:/plugins";
 const BUILTIN_PLUGIN_PREFIX: &str = "builtin:/plugins/";
 
 #[derive(Debug, RustEmbed)]
@@ -38,7 +38,7 @@ fn virtual_path(path: &VfsPath) -> PathBuf {
     PathBuf::from(format!("{BUILTIN_PLUGIN_ROOT}{}", path.as_str()))
 }
 
-pub(crate) fn read(path: &Path) -> Result<Option<Vec<u8>>> {
+pub fn read(path: &Path) -> Result<Option<Vec<u8>>> {
     let Some(path) = embedded_path(path)? else {
         return Ok(None);
     };
@@ -53,7 +53,7 @@ pub(crate) fn read(path: &Path) -> Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-pub(crate) fn read_to_string(path: &Path) -> Result<Option<String>> {
+pub fn read_to_string(path: &Path) -> Result<Option<String>> {
     let Some(path) = embedded_path(path)? else {
         return Ok(None);
     };
@@ -66,7 +66,7 @@ pub(crate) fn read_to_string(path: &Path) -> Result<Option<String>> {
     ))
 }
 
-pub(crate) fn fingerprint(path: &Path) -> Option<u64> {
+pub fn fingerprint(path: &Path) -> Option<u64> {
     let bytes = read(path).ok().flatten()?;
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -76,7 +76,7 @@ pub(crate) fn fingerprint(path: &Path) -> Option<u64> {
     Some(hash)
 }
 
-pub(crate) fn plugin_manifests(path: &Path) -> Result<Option<Vec<PathBuf>>> {
+pub fn plugin_manifests(path: &Path) -> Result<Option<Vec<PathBuf>>> {
     if normalize(path) != BUILTIN_PLUGIN_ROOT {
         return Ok(None);
     }

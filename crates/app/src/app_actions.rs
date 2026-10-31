@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    CompositionId, EditorApp, EditorCommand, GraphNodeTarget, HashSet, InspectorAction, Instant,
+    MEDIA_PRESENCE_CHECK_INTERVAL, MediaAction, MediaAsset, MediaDragItem, MediaInsertionCursor,
+    MediaKind, MediaStream, MissingMediaDialog, Modal, NewCompositionDialog, NewCompositionMode,
+    PaletteAction, PaletteKind, PanelKind, Path, PipelineGraphAction, PipelineKind, Project, Rect,
+    SpeedDurationDialog, TimelineAction, TimelineState, effects, messages, missing_project_media,
+    panels, project, sync_missing_media_entries,
+};
 
 impl EditorApp {
     pub(super) fn handle_inspector_action(&mut self, action: InspectorAction) {
@@ -47,14 +54,12 @@ impl EditorApp {
                     .timeline
                     .selected_pipeline()
                     .and_then(|instance| instance.pipeline)
-                {
-                    if self
+                    && self
                         .editor
                         .project
                         .move_pipeline_node(pipeline, node, direction)
-                    {
-                        self.sync_effect_runtime();
-                    }
+                {
+                    self.sync_effect_runtime();
                 }
             }
             InspectorAction::RemoveEffect(node) => {
@@ -63,13 +68,12 @@ impl EditorApp {
                     .timeline
                     .selected_pipeline()
                     .and_then(|instance| instance.pipeline)
+                    && self.editor.project.remove_pipeline_node(pipeline, node)
                 {
-                    if self.editor.project.remove_pipeline_node(pipeline, node) {
-                        self.editor
-                            .timeline
-                            .reconcile_pipeline_overrides(&self.editor.project);
-                        self.sync_effect_runtime();
-                    }
+                    self.editor
+                        .timeline
+                        .reconcile_pipeline_overrides(&self.editor.project);
+                    self.sync_effect_runtime();
                 }
             }
             InspectorAction::MakeIndependent => {
@@ -78,13 +82,12 @@ impl EditorApp {
                     .timeline
                     .selected_pipeline()
                     .and_then(|instance| instance.pipeline)
+                    && let Some(duplicate) = self.editor.project.duplicate_pipeline(pipeline)
                 {
-                    if let Some(duplicate) = self.editor.project.duplicate_pipeline(pipeline) {
-                        self.editor
-                            .timeline
-                            .set_selected_pipeline_preserving_overrides(duplicate);
-                        self.sync_effect_runtime();
-                    }
+                    self.editor
+                        .timeline
+                        .set_selected_pipeline_preserving_overrides(duplicate);
+                    self.sync_effect_runtime();
                 }
             }
             InspectorAction::OpenGraph => {
@@ -541,13 +544,12 @@ impl EditorApp {
                             .extension()
                             .and_then(|extension| extension.to_str())
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
+                            && let Err(error) = self.playback.precompile_wasm(&path)
                         {
-                            if let Err(error) = self.playback.precompile_wasm(&path) {
-                                messages::warning(
-                                    "Replace media",
-                                    format!("CPU/WASM plugin precompile failed: {error:#}"),
-                                );
-                            }
+                            messages::warning(
+                                "Replace media",
+                                format!("CPU/WASM plugin precompile failed: {error:#}"),
+                            );
                         }
                         self.audio.clear();
                         self.playback.invalidate();
@@ -979,8 +981,8 @@ impl EditorApp {
                             self.cursor
                         } else {
                             [
-                                layout.content.x + layout.content.width * 0.5,
-                                layout.content.y + layout.content.height * 0.5,
+                                f32::mul_add(layout.content.width, 0.5, layout.content.x),
+                                f32::mul_add(layout.content.height, 0.5, layout.content.y),
                             ]
                         };
                         (
@@ -1124,14 +1126,13 @@ impl EditorApp {
                 value,
                 linked,
             } => {
-                if let Some(pipeline) = self.graph_pipeline() {
-                    if self
+                if let Some(pipeline) = self.graph_pipeline()
+                    && self
                         .editor
                         .project
                         .set_value_node_component(pipeline, node, component, value, linked)
-                    {
-                        self.playback.invalidate();
-                    }
+                {
+                    self.playback.invalidate();
                 }
                 return;
             }
@@ -1167,20 +1168,20 @@ impl EditorApp {
                         );
                     }
                     GraphNodeTarget::Value(node) => {
-                        if let Some(pipeline) = self.graph_pipeline() {
-                            if self.editor.project.set_value_node_input_component(
+                        if let Some(pipeline) = self.graph_pipeline()
+                            && self.editor.project.set_value_node_input_component(
                                 pipeline, node, &input, component, value, linked,
-                            ) {
-                                self.playback.invalidate();
-                            }
+                            )
+                        {
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Input => {
-                        if let Some(current) = self.editor.timeline.generator_value(&input) {
-                            if let Some(next) = current.with_component(component, value, linked) {
-                                self.editor.timeline.set_generator_value(&input, next);
-                                self.playback.invalidate();
-                            }
+                        if let Some(current) = self.editor.timeline.generator_value(&input)
+                            && let Some(next) = current.with_component(component, value, linked)
+                        {
+                            self.editor.timeline.set_generator_value(&input, next);
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Output => {}
@@ -1215,14 +1216,13 @@ impl EditorApp {
                         );
                     }
                     GraphNodeTarget::Value(node) => {
-                        if let Some(pipeline) = self.graph_pipeline() {
-                            if self
+                        if let Some(pipeline) = self.graph_pipeline()
+                            && self
                                 .editor
                                 .project
                                 .set_value_node_input_value(pipeline, node, &input, value)
-                            {
-                                self.playback.invalidate();
-                            }
+                        {
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Input => {
@@ -1249,16 +1249,16 @@ impl EditorApp {
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
-                        if let Some(pipeline) = self.graph_pipeline() {
-                            if self.editor.project.set_pipeline_node_host_value(
+                        if let Some(pipeline) = self.graph_pipeline()
+                            && self.editor.project.set_pipeline_node_host_value(
                                 pipeline,
                                 node,
                                 &input,
                                 self.editor.timeline.selected_keyframe_time(),
                                 value,
-                            ) {
-                                self.playback.invalidate();
-                            }
+                            )
+                        {
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Input => {
@@ -1281,15 +1281,15 @@ impl EditorApp {
                         }
                     }
                     GraphNodeTarget::Shared(node) => {
-                        if let Some(pipeline) = self.graph_pipeline() {
-                            if self.editor.project.toggle_pipeline_node_host_keyframe(
+                        if let Some(pipeline) = self.graph_pipeline()
+                            && self.editor.project.toggle_pipeline_node_host_keyframe(
                                 pipeline,
                                 node,
                                 &input,
                                 self.editor.timeline.selected_keyframe_time(),
-                            ) {
-                                self.playback.invalidate();
-                            }
+                            )
+                        {
+                            self.playback.invalidate();
                         }
                     }
                     GraphNodeTarget::Input => {
@@ -1301,14 +1301,13 @@ impl EditorApp {
                 return;
             }
             PipelineGraphAction::SetValueNodeValue { node, value } => {
-                if let Some(pipeline) = self.graph_pipeline() {
-                    if self
+                if let Some(pipeline) = self.graph_pipeline()
+                    && self
                         .editor
                         .project
                         .set_value_node_value(pipeline, node, value)
-                    {
-                        self.playback.invalidate();
-                    }
+                {
+                    self.playback.invalidate();
                 }
                 return;
             }

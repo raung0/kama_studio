@@ -124,16 +124,13 @@ impl WasmRuntime {
         font_size: f32,
         render_scale: f32,
     ) -> [u32; 2] {
-        self.text
-            .lock()
-            .map(|mut host| {
-                host.measure(
-                    text,
-                    font_family,
-                    font_size.max(1.0) * render_scale.max(0.000_001),
-                )
-            })
-            .unwrap_or([1, 1])
+        self.text.lock().map_or([1, 1], |mut host| {
+            host.measure(
+                text,
+                font_family,
+                font_size.max(1.0) * render_scale.max(0.000_001),
+            )
+        })
     }
 
     pub fn precompile(&mut self, path: &Path) -> Result<()> {
@@ -241,7 +238,7 @@ impl WasmRuntime {
             .read(&store, output_ptr as usize, &mut bytes)
             .context("CPU plugin returned an out-of-bounds frame")?;
         let mut pixels = Vec::with_capacity(value_count);
-        for bytes in bytes.chunks_exact(4) {
+        for bytes in bytes.as_chunks::<4>().0 {
             let value = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             pixels.push(if value.is_finite() { value } else { 0.0 });
         }
@@ -554,7 +551,7 @@ impl AudioWasmProcessor {
                         .context("audio frame count overflow")?,
                     i32::try_from(channels).context("audio channel count overflow")?,
                     i32::try_from(sample_rate).context("audio sample rate overflow")?,
-                    if reset { 1 } else { 0 },
+                    i32::from(reset),
                 ),
             )
             .map_err(anyhow::Error::from)
@@ -798,9 +795,9 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn plugin_parameter_hash(value: &str) -> u32 {
+pub fn plugin_parameter_hash(value: &str) -> u32 {
     value.bytes().fold(0x811c9dc5u32, |hash, byte| {
-        (hash ^ byte as u32).wrapping_mul(0x01000193)
+        (hash ^ u32::from(byte)).wrapping_mul(0x01000193)
     })
 }
 
@@ -841,9 +838,9 @@ impl TextHost {
         let mut borrowed = buffer.borrow_with(&mut self.font_system);
         borrowed.set_size(None, None);
         borrowed.set_wrap(Wrap::None);
-        let attrs = font_family
-            .map(|family| Attrs::new().family(Family::Name(family)))
-            .unwrap_or_else(Attrs::new);
+        let attrs = font_family.map_or_else(Attrs::new, |family| {
+            Attrs::new().family(Family::Name(family))
+        });
         borrowed.set_text(text, &attrs, Shaping::Advanced, None);
         let mut width = 0.0f32;
         let mut height = 0.0f32;
@@ -876,9 +873,9 @@ impl TextHost {
             let mut borrowed = buffer.borrow_with(&mut self.font_system);
             borrowed.set_size(Some(width as f32), Some(height as f32));
             borrowed.set_wrap(Wrap::None);
-            let attrs = font_family
-                .map(|family| Attrs::new().family(Family::Name(family)))
-                .unwrap_or_else(Attrs::new);
+            let attrs = font_family.map_or_else(Attrs::new, |family| {
+                Attrs::new().family(Family::Name(family))
+            });
             borrowed.set_text(text, &attrs, Shaping::Advanced, Some(CosmicAlign::Center));
             let runs: Vec<_> = borrowed.layout_runs().collect();
             let content_height = runs
@@ -888,7 +885,7 @@ impl TextHost {
             let mut glyphs = Vec::new();
             for run in runs {
                 let origin = (0.0, run.line_y + y_shift);
-                for glyph in run.glyphs.iter() {
+                for glyph in run.glyphs {
                     glyphs.push(glyph.physical(origin, 1.0));
                 }
             }
@@ -923,10 +920,10 @@ impl TextHost {
                     }
                     let index = ((y as u32 * image.placement.width + x as u32) * 4) as usize;
                     let glyph_rgba = [
-                        mask[index] as f32 / 255.0,
-                        mask[index + 1] as f32 / 255.0,
-                        mask[index + 2] as f32 / 255.0,
-                        mask[index + 3] as f32 / 255.0,
+                        f32::from(mask[index]) / 255.0,
+                        f32::from(mask[index + 1]) / 255.0,
+                        f32::from(mask[index + 2]) / 255.0,
+                        f32::from(mask[index + 3]) / 255.0,
                     ];
                     let alpha = (glyph_rgba[3] * color[3]).clamp(0.0, 1.0);
                     let rgb = if matches!(&image.content, SwashContent::Color) {
@@ -957,7 +954,9 @@ fn swash_to_rgba_mask(content: &SwashContent, data: &[u8], width: u32, height: u
             .flat_map(|alpha| [255, 255, 255, *alpha])
             .collect(),
         SwashContent::SubpixelMask => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .take(count)
             .flat_map(|rgba| [255, 255, 255, rgba[0].max(rgba[1]).max(rgba[2])])
             .collect(),
@@ -970,10 +969,10 @@ fn swash_to_rgba_mask(content: &SwashContent, data: &[u8], width: u32, height: u
 fn alpha_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     let inverse = 1.0 - src[3].clamp(0.0, 1.0);
     [
-        src[0] + dst[0] * inverse,
-        src[1] + dst[1] * inverse,
-        src[2] + dst[2] * inverse,
-        src[3] + dst[3] * inverse,
+        dst[0].mul_add(inverse, src[0]),
+        dst[1].mul_add(inverse, src[1]),
+        dst[2].mul_add(inverse, src[2]),
+        dst[3].mul_add(inverse, src[3]),
     ]
 }
 

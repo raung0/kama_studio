@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    GRAPH_CARD_BASE_H, GRAPH_IMAGE_INPUT_H, GRAPH_INPUT_H, GraphCard, PipelineKind, Rect, Size,
+    graph_card_scale, graph_host_row_height, graph_property_row_height,
+};
 
 pub(super) fn graph_image_socket_label(kind: PipelineKind) -> &'static str {
     if kind == PipelineKind::Audio {
@@ -80,8 +83,8 @@ pub(super) fn graph_value_input_row(card: Rect, index: usize) -> Rect {
 
 pub(super) fn graph_card_content_rows(card_rect: Rect, card: &GraphCard) -> (Vec<Rect>, Vec<Rect>) {
     let scale = graph_card_scale(card_rect);
-    let base =
-        GRAPH_CARD_BASE_H + card.image_inputs.len().saturating_sub(1) as f32 * GRAPH_IMAGE_INPUT_H;
+    let base = (card.image_inputs.len().saturating_sub(1) as f32)
+        .mul_add(GRAPH_IMAGE_INPUT_H, GRAPH_CARD_BASE_H);
     let mut items = Vec::with_capacity(1 + card.inputs.len() + card.host_inputs.len());
     items.push(crate::ui_layout::Item::height(base * scale));
     items.extend(card.inputs.iter().map(|input| {
@@ -154,8 +157,10 @@ pub(super) fn graph_image_input_port(card: Rect) -> Rect {
 pub(super) fn graph_named_image_input_port(card: Rect, index: usize) -> Rect {
     let scale = graph_card_scale(card);
     Rect::new(
-        card.x - 5.0 * scale,
-        card.y + (29.0 + index as f32 * GRAPH_IMAGE_INPUT_H) * scale,
+        5.0f32.mul_add(-scale, card.x),
+        (index as f32)
+            .mul_add(GRAPH_IMAGE_INPUT_H, 29.0)
+            .mul_add(scale, card.y),
         10.0 * scale,
         10.0 * scale,
     )
@@ -164,8 +169,8 @@ pub(super) fn graph_named_image_input_port(card: Rect, index: usize) -> Rect {
 pub(super) fn graph_image_output_port(card: Rect) -> Rect {
     let scale = graph_card_scale(card);
     Rect::new(
-        card.right() - 5.0 * scale,
-        card.y + 29.0 * scale,
+        5.0f32.mul_add(-scale, card.right()),
+        29.0f32.mul_add(scale, card.y),
         10.0 * scale,
         10.0 * scale,
     )
@@ -177,12 +182,18 @@ pub(super) fn graph_image_input_point(card: Rect) -> [f32; 2] {
 
 pub(super) fn graph_named_image_input_point(card: Rect, index: usize) -> [f32; 2] {
     let port = graph_named_image_input_port(card, index);
-    [port.x + port.width * 0.5, port.y + port.height * 0.5]
+    [
+        port.width.mul_add(0.5, port.x),
+        port.height.mul_add(0.5, port.y),
+    ]
 }
 
 pub(super) fn graph_image_output_point(card: Rect) -> [f32; 2] {
     let port = graph_image_output_port(card);
-    [port.x + port.width * 0.5, port.y + port.height * 0.5]
+    [
+        port.width.mul_add(0.5, port.x),
+        port.height.mul_add(0.5, port.y),
+    ]
 }
 
 pub(super) fn graph_value_output_port(card: Rect) -> Rect {
@@ -191,7 +202,10 @@ pub(super) fn graph_value_output_port(card: Rect) -> Rect {
 
 pub(super) fn graph_value_output_point(card: Rect) -> [f32; 2] {
     let port = graph_value_output_port(card);
-    [port.x + port.width * 0.5, port.y + port.height * 0.5]
+    [
+        port.width.mul_add(0.5, port.x),
+        port.height.mul_add(0.5, port.y),
+    ]
 }
 
 pub(super) fn graph_property_row_rect(
@@ -277,12 +291,12 @@ pub(super) fn graph_host_value_parts(row: Rect, scale: f32) -> (Rect, Rect) {
             crate::ui_layout::Item::width(10.0 * scale),
             crate::ui_layout::Item::new(
                 Size::Pixels(54.0 * scale),
-                Size::Pixels((row.height - 4.0 * scale).max(10.0 * scale)),
+                Size::Pixels(4.0f32.mul_add(-scale, row.height).max(10.0 * scale)),
             ),
             crate::ui_layout::Item::width(2.0 * scale),
             crate::ui_layout::Item::new(
                 Size::Fill,
-                Size::Pixels((row.height - 4.0 * scale).max(10.0 * scale)),
+                Size::Pixels(4.0f32.mul_add(-scale, row.height).max(10.0 * scale)),
             ),
             crate::ui_layout::Item::width(10.0 * scale),
         ],
@@ -298,8 +312,8 @@ pub(super) fn graph_scalar_input_port(card_rect: Rect, card: &GraphCard, index: 
     let row = graph_property_row_rect(card_rect, card, index);
     let size = (8.0 * scale).max(4.0);
     Rect::new(
-        card_rect.x - size * 0.5,
-        row.y + row.height * 0.5 - size * 0.5,
+        size.mul_add(-0.5, card_rect.x),
+        size.mul_add(-0.5, row.height.mul_add(0.5, row.y)),
         size,
         size,
     )
@@ -311,15 +325,18 @@ pub(super) fn graph_scalar_input_point(
     index: usize,
 ) -> [f32; 2] {
     let port = graph_scalar_input_port(card_rect, card, index);
-    [port.x + port.width * 0.5, port.y + port.height * 0.5]
+    [
+        port.width.mul_add(0.5, port.x),
+        port.height.mul_add(0.5, port.y),
+    ]
 }
 
 pub(super) fn graph_value_input_port(card: Rect, index: usize) -> Rect {
     let s = graph_card_scale(card);
     let size = (8.0 * s).max(4.0);
     Rect::new(
-        card.x - size * 0.5,
-        card.y + (GRAPH_CARD_BASE_H + index as f32 * GRAPH_INPUT_H + 4.0) * s,
+        size.mul_add(-0.5, card.x),
+        ((index as f32).mul_add(GRAPH_INPUT_H, GRAPH_CARD_BASE_H) + 4.0).mul_add(s, card.y),
         size,
         size,
     )
@@ -327,7 +344,10 @@ pub(super) fn graph_value_input_port(card: Rect, index: usize) -> Rect {
 
 pub(super) fn graph_value_input_point(card: Rect, index: usize) -> [f32; 2] {
     let port = graph_value_input_port(card, index);
-    [port.x + port.width * 0.5, port.y + port.height * 0.5]
+    [
+        port.width.mul_add(0.5, port.x),
+        port.height.mul_add(0.5, port.y),
+    ]
 }
 
 pub(super) fn graph_value_input_label_rect(card: Rect, index: usize) -> Rect {
@@ -355,7 +375,7 @@ pub(super) fn graph_value_input_area(card: Rect, index: usize, linkable: bool) -
         &[
             crate::ui_layout::Item::width(53.0 * scale),
             crate::ui_layout::Item::new(Size::Fill, Size::Pixels(16.0 * scale)),
-            crate::ui_layout::Item::width((9.0 * scale) + reserve),
+            crate::ui_layout::Item::width(9.0f32.mul_add(scale, reserve)),
         ],
         0.0,
         0.0,
@@ -405,7 +425,7 @@ pub(super) fn graph_value_swatch_rect(card: Rect) -> Rect {
     let scale = graph_card_scale(card);
     let (_, rows) = crate::ui_layout::fit_column_at(
         card,
-        [card.x, card.y + 29.0 * scale],
+        [card.x, 29.0f32.mul_add(scale, card.y)],
         card.width,
         &[crate::ui_layout::Item::height(18.0 * scale)],
         0.0,
@@ -433,7 +453,7 @@ pub(super) fn graph_value_component_rect(card: Rect, component: usize, linkable:
         &[
             crate::ui_layout::Item::width(9.0 * scale),
             crate::ui_layout::Item::new(Size::Fill, Size::Pixels(16.0 * scale)),
-            crate::ui_layout::Item::width(9.0 * scale + reserve),
+            crate::ui_layout::Item::width(9.0f32.mul_add(scale, reserve)),
         ],
         0.0,
         0.0,

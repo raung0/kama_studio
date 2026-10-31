@@ -27,7 +27,7 @@ mod engine;
 mod spec;
 mod transcoder;
 
-pub(crate) use engine::RenderPhase;
+pub use engine::RenderPhase;
 use engine::RenderSession;
 use spec::RenderSpec;
 
@@ -40,7 +40,7 @@ const DEFAULT_CACHE_CHUNK_SECONDS: f64 = 8.0;
 
 labeled_enum! {
     #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-    pub(crate) enum VideoCodec {
+    pub enum VideoCodec {
         H264 => "H.264",
         H265 => "H.265 / HEVC",
         ProRes4444 => "ProRes 4444",
@@ -52,7 +52,7 @@ labeled_enum! {
 
 labeled_enum! {
     #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-    pub(crate) enum RenderResolution {
+    pub enum RenderResolution {
         #[default]
         Canvas => "Canvas / Project",
         Uhd4K => "3840×2160 (4K UHD)",
@@ -80,7 +80,7 @@ impl RenderResolution {
 
 labeled_enum! {
     #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-    pub(crate) enum AudioCodec { Aac => "AAC", Opus => "Opus", Flac => "FLAC", Pcm => "PCM 24-bit", }
+    pub enum AudioCodec { Aac => "AAC", Opus => "Opus", Flac => "FLAC", Pcm => "PCM 24-bit", }
 }
 
 fn compatible_containers(codec: VideoCodec) -> &'static [&'static str] {
@@ -104,7 +104,7 @@ fn compatible_audio_codecs(container: &str) -> &'static [AudioCodec] {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct RenderPreset {
+pub struct RenderPreset {
     pub name: String,
     pub category: String,
     pub container: String,
@@ -249,7 +249,7 @@ impl RenderNumber {
     const ALL: [Self; 3] = [Self::Quality, Self::Begin, Self::End];
 }
 
-pub(crate) struct RenderPanelState {
+pub struct RenderPanelState {
     settings: RenderSpec,
     builtins: Vec<RenderPreset>,
     user_presets: Vec<RenderPreset>,
@@ -271,7 +271,7 @@ impl RenderPanelState {
         let preset = presets[0].clone();
         let end = timeline.render_end_seconds();
         let fps = project.active_settings().frame_rate.max(1.0);
-        let end_frame = (end as f64 * fps).ceil().max(1.0) as u64 - 1;
+        let end_frame = (f64::from(end) * fps).ceil().max(1.0) as u64 - 1;
         let output = PathBuf::from(format!("render.{}", preset.extension()));
         let quality = preset.quality;
         Self {
@@ -288,7 +288,7 @@ impl RenderPanelState {
             user_presets: load_user_presets(),
             preset_name: TextEdit::single_line("My preset"),
             numbers: [
-                NumberInput::new(quality as f64)
+                NumberInput::new(f64::from(quality))
                     .bounds(0.0, 51.0)
                     .precision(0),
                 NumberInput::new(0.0)
@@ -505,7 +505,7 @@ impl RenderPanelState {
                 }
             }
             RenderCombo::Resolution => {
-                self.settings.preset.resolution = RenderResolution::ALL[index]
+                self.settings.preset.resolution = RenderResolution::ALL[index];
             }
             RenderCombo::VideoCodec => {
                 self.settings.preset.video_codec = VideoCodec::ALL[index];
@@ -521,10 +521,10 @@ impl RenderPanelState {
                     compatible_audio_codecs(&self.settings.preset.container)[index];
             }
             RenderCombo::SampleRate => {
-                self.settings.preset.sample_rate = [44_100, 48_000, 96_000][index]
+                self.settings.preset.sample_rate = [44_100, 48_000, 96_000][index];
             }
             RenderCombo::Bitrate => {
-                self.settings.preset.audio_bitrate_kbps = [128, 192, 256, 320][index]
+                self.settings.preset.audio_bitrate_kbps = [128, 192, 256, 320][index];
             }
         }
     }
@@ -532,7 +532,7 @@ impl RenderPanelState {
     fn apply_number(&mut self, kind: RenderNumber, value: f64) {
         match kind {
             RenderNumber::Quality => {
-                self.settings.preset.quality = value.round().clamp(0.0, 51.0) as u8
+                self.settings.preset.quality = value.round().clamp(0.0, 51.0) as u8;
             }
             RenderNumber::Begin => {
                 self.custom_begin = true;
@@ -547,7 +547,7 @@ impl RenderPanelState {
 
     fn sync_controls(&mut self) {
         let number_values = [
-            self.settings.preset.quality as f64,
+            f64::from(self.settings.preset.quality),
             self.settings.begin_frame as f64,
             self.settings.end_frame as f64,
         ];
@@ -606,8 +606,10 @@ impl RenderPanelState {
         }
         if !self.custom_end {
             let fps = project.active_settings().frame_rate.max(1.0);
-            self.settings.end_frame =
-                (timeline.render_end_seconds() as f64 * fps).ceil().max(1.0) as u64 - 1;
+            self.settings.end_frame = (f64::from(timeline.render_end_seconds()) * fps)
+                .ceil()
+                .max(1.0) as u64
+                - 1;
         }
     }
 
@@ -1100,15 +1102,15 @@ impl RenderPanelState {
                 return true;
             }
         }
-        if self.section_open(1) {
-            if let Some(value) = self.number_mut(RenderNumber::Quality).pointer_pressed(
+        if self.section_open(1)
+            && let Some(value) = self.number_mut(RenderNumber::Quality).pointer_pressed(
                 layout.number(RenderNumber::Quality),
                 p,
                 modifiers,
-            ) {
-                self.apply_number(RenderNumber::Quality, value);
-                return true;
-            }
+            )
+        {
+            self.apply_number(RenderNumber::Quality, value);
+            return true;
         }
         if self.section_open(2)
             && self.settings.preset.container != "gif"
@@ -1155,7 +1157,7 @@ impl RenderPanelState {
             }
             if layout.begin_buttons[0].contains(p) {
                 self.custom_begin = true;
-                self.settings.begin_frame = (timeline.playhead().max(0.0) as f64
+                self.settings.begin_frame = (f64::from(timeline.playhead().max(0.0))
                     * project.active_settings().frame_rate)
                     .round() as u64;
                 return true;
@@ -1178,14 +1180,14 @@ impl RenderPanelState {
             }
             if layout.end_buttons[0].contains(p) {
                 self.custom_end = true;
-                self.settings.end_frame = (timeline.playhead().max(0.0) as f64
+                self.settings.end_frame = (f64::from(timeline.playhead().max(0.0))
                     * project.active_settings().frame_rate)
                     .round() as u64;
                 return true;
             }
             if layout.end_buttons[1].contains(p) {
                 self.custom_end = false;
-                self.settings.end_frame = (timeline.render_end_seconds() as f64
+                self.settings.end_frame = (f64::from(timeline.render_end_seconds())
                     * project.active_settings().frame_rate)
                     .ceil()
                     .max(1.0) as u64
@@ -1754,8 +1756,8 @@ mod layout_tests {
         panel.pointer_pressed(
             rect,
             [
-                layout.action.x + layout.action.width * 0.5,
-                layout.action.y + layout.action.height * 0.5,
+                layout.action.width.mul_add(0.5, layout.action.x),
+                layout.action.height.mul_add(0.5, layout.action.y),
             ],
             ModifiersState::empty(),
             &project,

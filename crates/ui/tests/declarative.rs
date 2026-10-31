@@ -6,7 +6,7 @@ struct BadgeComponent;
 #[ui_component("Badge", stateless)]
 impl Component for BadgeComponent {
     fn ui(&mut self, ctx: &mut BuildCtx, text: String) -> BlockBuilder<'_> {
-        let _ = ctx.new().text(text);
+        ctx.new().text(text)
     }
 }
 
@@ -19,7 +19,7 @@ struct Meter {
 impl Component for Meter {
     fn ui(&mut self, ctx: &mut BuildCtx, value: f32) -> BlockBuilder<'_> {
         self.builds += 1;
-        let _ = ctx.new().text(format!("{value:.0}%"));
+        ctx.new().text(format!("{value:.0}%"))
     }
 }
 

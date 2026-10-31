@@ -1,6 +1,10 @@
-use super::*;
+use super::{
+    Accelerator, Code, CommandRegistry, FileCommand, LayoutCommand, Menu, MenuEvent, MenuItem,
+    Modifiers, PathBuf, PredefinedMenuItem, Rect, Submenu, i18n, recent_projects, saved_layouts,
+    ui,
+};
 
-pub(super) const APP_MENU_HEIGHT: f32 = 22.0;
+pub const APP_MENU_HEIGHT: f32 = 22.0;
 #[cfg(not(target_os = "macos"))]
 const APP_MENU_FILE_WIDTH: f32 = 54.0;
 #[cfg(not(target_os = "macos"))]
@@ -337,7 +341,7 @@ pub(super) fn delete_saved_layout_menu_item_rect(index: usize, layout_count: usi
     menu_item_rect(delete_saved_layout_menu_popup_rect(layout_count), index)
 }
 
-pub(super) const EDIT_MENU_COMMANDS: &[&str] = &[
+pub const EDIT_MENU_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
     "edit.copy",
@@ -476,7 +480,7 @@ pub(super) fn command_meta(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) struct NativeMenu {
+pub struct NativeMenu {
     _menu: Menu,
     about: MenuItem,
     settings: MenuItem,
@@ -602,8 +606,7 @@ impl NativeMenu {
             };
             let label = commands
                 .definition(command)
-                .map(|definition| definition.label.as_str())
-                .unwrap_or(command);
+                .map_or(command, |definition| definition.label.as_str());
             let item = MenuItem::new(label, true, accelerator);
             edit_menu
                 .append(&item)
@@ -1592,7 +1595,7 @@ pub(super) fn build_app_menu(
     }
 }
 
-pub(super) fn app_menu_height() -> f32 {
+pub fn app_menu_height() -> f32 {
     if cfg!(target_os = "macos") {
         0.0
     } else {
@@ -1600,7 +1603,7 @@ pub(super) fn app_menu_height() -> f32 {
     }
 }
 
-pub(super) fn dock_tab_close_rect(tab: Rect) -> Rect {
+pub fn dock_tab_close_rect(tab: Rect) -> Rect {
     kama_ui::layout::row(
         tab,
         &[

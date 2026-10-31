@@ -555,12 +555,12 @@ struct PluginHandleSet {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MonitorAction {
+pub enum MonitorAction {
     CaptureFrame,
     CaptureTemporaryFrame,
 }
 
-pub(crate) struct MonitorBuildContext<'a> {
+pub struct MonitorBuildContext<'a> {
     pub project: &'a Project,
     pub timeline: &'a TimelineState,
     pub plugins: &'a PluginRegistry,
@@ -570,7 +570,7 @@ pub(crate) struct MonitorBuildContext<'a> {
     pub icons: Icons,
 }
 
-pub(crate) struct MonitorPointerContext<'a> {
+pub struct MonitorPointerContext<'a> {
     pub modifiers: ModifiersState,
     pub project: &'a mut Project,
     pub plugins: &'a PluginRegistry,
@@ -874,16 +874,16 @@ impl MonitorState {
             let graph_transform_selected = graph_selection.is_some_and(|selection| {
                 graph_selection_is_transform(timeline, plugins, selection)
             });
-            if graph_selection.is_none() || graph_transform_selected {
-                if let Some(geometry) = transform_gizmo_geometry(
+            if (graph_selection.is_none() || graph_transform_selected)
+                && let Some(geometry) = transform_gizmo_geometry(
                     preview,
                     timeline,
                     render_width,
                     render_height,
                     source_geometry,
-                ) {
-                    draw_transform_gizmo(ctx, geometry);
-                }
+                )
+            {
+                draw_transform_gizmo(ctx, geometry);
             }
             let edit = MonitorEditView {
                 preview,
@@ -1020,8 +1020,8 @@ impl MonitorState {
         let width = fit.width * self.view_zoom;
         let height = fit.height * self.view_zoom;
         self.view_pan = [
-            point[0] - uv[0] * width - (fit.x + (fit.width - width) * 0.5),
-            point[1] - uv[1] * height - (fit.y + (fit.height - height) * 0.5),
+            uv[0].mul_add(-width, point[0]) - (fit.width - width).mul_add(0.5, fit.x),
+            uv[1].mul_add(-height, point[1]) - (fit.height - height).mul_add(0.5, fit.y),
         ];
         true
     }
@@ -1248,26 +1248,25 @@ impl MonitorState {
                 self.plugin_handle_drag = None;
                 return true;
             }
-            if allow_transform_gizmo {
-                if let Some(geometry) = transform_gizmo_geometry(
+            if allow_transform_gizmo
+                && let Some(geometry) = transform_gizmo_geometry(
                     preview,
                     timeline,
                     preview_width,
                     preview_height,
                     source_geometry,
-                ) {
-                    if let Some(handle) = gizmo_handle_at(point, geometry) {
-                        return self.begin_gizmo_drag(
-                            handle,
-                            preview,
-                            point,
-                            [preview_width, preview_height],
-                            timeline,
-                            plugins,
-                            source_geometry,
-                        );
-                    }
-                }
+                )
+                && let Some(handle) = gizmo_handle_at(point, geometry)
+            {
+                return self.begin_gizmo_drag(
+                    handle,
+                    preview,
+                    point,
+                    [preview_width, preview_height],
+                    timeline,
+                    plugins,
+                    source_geometry,
+                );
             }
         }
         if !preview.contains(point) {
@@ -1298,7 +1297,7 @@ impl MonitorState {
                     self.pen_tool,
                     project,
                     timeline,
-                    handle_snap.clone(),
+                    handle_snap,
                     &mut self.pen_drag,
                     &mut self.selected_pen_point,
                 ) {
@@ -1306,26 +1305,25 @@ impl MonitorState {
                     self.plugin_handle_drag = None;
                     return true;
                 }
-                if allow_transform_gizmo {
-                    if let Some(geometry) = transform_gizmo_geometry(
+                if allow_transform_gizmo
+                    && let Some(geometry) = transform_gizmo_geometry(
                         preview,
                         timeline,
                         preview_width,
                         preview_height,
                         source_geometry,
-                    ) {
-                        if point_in_quad(point, geometry.corners) {
-                            return self.begin_gizmo_drag(
-                                TransformGizmoHandle::Move,
-                                preview,
-                                point,
-                                [preview_width, preview_height],
-                                timeline,
-                                plugins,
-                                source_geometry,
-                            );
-                        }
-                    }
+                    )
+                    && point_in_quad(point, geometry.corners)
+                {
+                    return self.begin_gizmo_drag(
+                        TransformGizmoHandle::Move,
+                        preview,
+                        point,
+                        [preview_width, preview_height],
+                        timeline,
+                        plugins,
+                        source_geometry,
+                    );
                 }
             }
             return true;
@@ -1407,7 +1405,7 @@ impl MonitorState {
                     );
                     TransformGizmoGroupMember {
                         clip_id: clip.id,
-                        time: time as f64,
+                        time: f64::from(time),
                         position: [
                             state.position[0] - source_geometry.position_offset[0],
                             state.position[1] - source_geometry.position_offset[1],
@@ -1552,19 +1550,19 @@ impl MonitorState {
         }
         if let Some(mut drag) = self.gradient_midpoint_drag.take() {
             let delta = [drag.end[0] - drag.start[0], drag.end[1] - drag.start[1]];
-            let length_sq = delta[0] * delta[0] + delta[1] * delta[1];
+            let length_sq = f32::mul_add(delta[1], delta[1], delta[0] * delta[0]);
             if length_sq <= 1.0e-6 {
                 self.gradient_midpoint_drag = Some(drag);
                 return true;
             }
 
-            let raw_midpoint = (((point[0] - drag.start[0]) * delta[0]
-                + (point[1] - drag.start[1]) * delta[1])
+            let raw_midpoint = ((point[1] - drag.start[1])
+                .mul_add(delta[1], (point[0] - drag.start[0]) * delta[0])
                 / length_sq)
                 .clamp(0.01, 0.99);
             let projected = [
-                drag.start[0] + delta[0] * raw_midpoint,
-                drag.start[1] + delta[1] * raw_midpoint,
+                f32::mul_add(delta[0], raw_midpoint, drag.start[0]),
+                f32::mul_add(delta[1], raw_midpoint, drag.start[1]),
             ];
             let _ = drag.snap.snap([projected[0]; 3], [projected[1]; 3], 8.0);
 
@@ -1952,7 +1950,7 @@ fn monitor_fit_preview_rect(rect: Rect, canvas_width: u32, canvas_height: u32) -
     let fit_area = Rect::new(
         stage.x + FIT_PADDING,
         stage.y + FIT_PADDING,
-        (stage.width - FIT_PADDING * 2.0).max(1.0),
+        FIT_PADDING.mul_add(-2.0, stage.width).max(1.0),
         (stage.height - FIT_PADDING).max(1.0),
     );
     let aspect = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
@@ -1963,8 +1961,8 @@ fn monitor_fit_preview_rect(rect: Rect, canvas_width: u32, canvas_height: u32) -
         width = height * aspect;
     }
     Rect::new(
-        fit_area.x + (fit_area.width - width) * 0.5,
-        fit_area.y + (fit_area.height - height) * 0.5,
+        (fit_area.width - width).mul_add(0.5, fit_area.x),
+        (fit_area.height - height).mul_add(0.5, fit_area.y),
         width.max(1.0),
         height.max(1.0),
     )
@@ -1982,8 +1980,8 @@ fn monitor_preview_rect(
     let width = fit.width * zoom;
     let height = fit.height * zoom;
     Rect::new(
-        fit.x + (fit.width - width) * 0.5 + pan[0],
-        fit.y + (fit.height - height) * 0.5 + pan[1],
+        (fit.width - width).mul_add(0.5, fit.x) + pan[0],
+        (fit.height - height).mul_add(0.5, fit.y) + pan[1],
         width.max(1.0),
         height.max(1.0),
     )
@@ -2068,7 +2066,7 @@ fn clip_transform_state(
     timeline_time: f32,
     position_offset: [f32; 2],
 ) -> ClipTransformState {
-    let keyframe_time = timeline_time as f64;
+    let keyframe_time = f64::from(timeline_time);
     let transform = pipeline.transform();
     let value = |name: &str| {
         transform
@@ -2219,8 +2217,8 @@ fn geometry_features(geometry: TransformGizmoGeometry) -> ([f32; 3], [f32; 3]) {
         .map(|point| point[1])
         .fold(f32::NEG_INFINITY, f32::max);
     (
-        [left, (left + right) * 0.5, right],
-        [top, (top + bottom) * 0.5, bottom],
+        [left, f32::midpoint(left, right), right],
+        [top, f32::midpoint(top, bottom), bottom],
     )
 }
 
@@ -2235,12 +2233,14 @@ fn monitor_snap_targets(
 ) -> SnapTargets {
     let mut targets = SnapTargets::default();
     if viewport_snap {
-        targets
-            .x
-            .extend([preview.x, preview.x + preview.width * 0.5, preview.right()]);
+        targets.x.extend([
+            preview.x,
+            preview.width.mul_add(0.5, preview.x),
+            preview.right(),
+        ]);
         targets.y.extend([
             preview.y,
-            preview.y + preview.height * 0.5,
+            preview.height.mul_add(0.5, preview.y),
             preview.bottom(),
         ]);
     }
@@ -2319,12 +2319,12 @@ fn transform_source_point(
     let placed_center = [position[0] * canvas[0], position[1] * canvas[1]];
     let anchor_source = [anchor[0] * source_size[0], anchor[1] * source_size[1]];
     let scaled_anchor = [
-        placed_center[0] + (anchor_source[0] - source_center[0]) * scale[0],
-        placed_center[1] + (anchor_source[1] - source_center[1]) * scale[1],
+        (anchor_source[0] - source_center[0]).mul_add(scale[0], placed_center[0]),
+        (anchor_source[1] - source_center[1]).mul_add(scale[1], placed_center[1]),
     ];
     let scaled = [
-        placed_center[0] + (source[0] - source_center[0]) * scale[0],
-        placed_center[1] + (source[1] - source_center[1]) * scale[1],
+        (source[0] - source_center[0]).mul_add(scale[0], placed_center[0]),
+        (source[1] - source_center[1]).mul_add(scale[1], placed_center[1]),
     ];
     let rotated = rotate(
         [scaled[0] - scaled_anchor[0], scaled[1] - scaled_anchor[1]],
@@ -2346,8 +2346,8 @@ fn inverse_transform_source_point(
     let placed_center = [position[0] * canvas[0], position[1] * canvas[1]];
     let anchor_source = [anchor[0] * source_size[0], anchor[1] * source_size[1]];
     let scaled_anchor = [
-        placed_center[0] + (anchor_source[0] - source_center[0]) * scale[0],
-        placed_center[1] + (anchor_source[1] - source_center[1]) * scale[1],
+        (anchor_source[0] - source_center[0]).mul_add(scale[0], placed_center[0]),
+        (anchor_source[1] - source_center[1]).mul_add(scale[1], placed_center[1]),
     ];
     let unrotated = rotate(
         [
@@ -2464,7 +2464,7 @@ fn draw_snap_guides(
             kama_ui::ui!(ctx, {
                 Rect(
                     ("monitor-snap-guide-x", index),
-                    Rect::new(x - width * 0.5, preview.y, width, preview.height),
+                    Rect::new(f32::mul_add(width, -0.5, x), preview.y, width, preview.height),
                 ) {
                     fill: color;
                 }
@@ -2477,7 +2477,7 @@ fn draw_snap_guides(
             kama_ui::ui!(ctx, {
                 Rect(
                     ("monitor-snap-guide-y", index),
-                    Rect::new(preview.x, y - height * 0.5, preview.width, height),
+                    Rect::new(preview.x, f32::mul_add(height, -0.5, y), preview.width, height),
                 ) {
                     fill: color;
                 }
@@ -2639,7 +2639,7 @@ fn selected_generator_vec2_handles(
         let pipeline = project.pipeline(pipeline_id)?;
         let node = pipeline.node(node_id)?;
         let definition = plugins.generator(&node.node_type)?;
-        let time = timeline_time as f64;
+        let time = f64::from(timeline_time);
         let value_for = |name: &str| {
             if follows_clip {
                 timeline.pipeline_input_value(project, node_id, name)
@@ -2657,9 +2657,10 @@ fn selected_generator_vec2_handles(
         })?;
         let value = value_for(&input.id)?.vec2()?;
         let clip = graph_selection_clip(timeline, selection);
-        let geometry = clip
-            .map(|clip| clip_source_geometry(source_geometry, clip.id, render_width, render_height))
-            .unwrap_or_else(|| SourceGeometry::canvas(render_width, render_height));
+        let geometry = clip.map_or_else(
+            || SourceGeometry::canvas(render_width, render_height),
+            |clip| clip_source_geometry(source_geometry, clip.id, render_width, render_height),
+        );
         let resolved = definition
             .inputs
             .iter()
@@ -2707,7 +2708,7 @@ fn selected_generator_vec2_handles(
         return None;
     };
     let definition = plugins.generator(generator_type)?;
-    let time = timeline_time as f64;
+    let time = f64::from(timeline_time);
     let value_for = |name: &str| {
         parameters
             .get(name)
@@ -2798,7 +2799,7 @@ fn generator_vec2_overlay(
 fn selected_plugin_handles(edit: MonitorEditContext<'_, '_>) -> Option<PluginHandleSet> {
     let selection = edit.view.graph_selection?;
     let [render_width, render_height] = edit.view.render_size;
-    let time = edit.timeline.playhead() as f64;
+    let time = f64::from(edit.timeline.playhead());
 
     let (definition, parameters, clip, owner) = match selection {
         GraphMonitorSelection::Local { node } => {
@@ -2876,17 +2877,15 @@ fn selected_plugin_handles(edit: MonitorEditContext<'_, '_>) -> Option<PluginHan
     let clip = clip_state.as_ref();
 
     let monitor = definition.monitor.as_ref()?;
-    let overlay_size = clip
-        .map(|clip| {
-            let geometry = clip_source_geometry(
-                edit.view.source_geometry,
-                clip.id,
-                render_width,
-                render_height,
-            );
-            [geometry.size.0 as f32, geometry.size.1 as f32]
-        })
-        .unwrap_or([render_width as f32, render_height as f32]);
+    let overlay_size = clip.map_or([render_width as f32, render_height as f32], |clip| {
+        let geometry = clip_source_geometry(
+            edit.view.source_geometry,
+            clip.id,
+            render_width,
+            render_height,
+        );
+        [geometry.size.0 as f32, geometry.size.1 as f32]
+    });
     let overlay = edit
         .view
         .monitor_wasm
@@ -2930,16 +2929,17 @@ fn selected_plugin_handles(edit: MonitorEditContext<'_, '_>) -> Option<PluginHan
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let geometry = clip
-        .map(|clip| {
+    let geometry = clip.map_or_else(
+        || SourceGeometry::canvas(render_width, render_height),
+        |clip| {
             clip_source_geometry(
                 edit.view.source_geometry,
                 clip.id,
                 render_width,
                 render_height,
             )
-        })
-        .unwrap_or_else(|| SourceGeometry::canvas(render_width, render_height));
+        },
+    );
     let handles = overlay
         .handles
         .iter()
@@ -3064,7 +3064,7 @@ fn shape_size_transform_drag(
     );
     Some(GeneratorSizeTransformDrag {
         clip_id: clip.id,
-        time: edit.timeline.playhead() as f64,
+        time: f64::from(edit.timeline.playhead()),
         position: [
             state.position[0] - handles.source_geometry.position_offset[0],
             state.position[1] - handles.source_geometry.position_offset[1],
@@ -3352,10 +3352,10 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
             midpoints_input,
         } = graph_generator_pen_input(project, selection, timeline, plugins)?;
         let clip = graph_selection_clip(timeline, selection).cloned();
-        let geometry = clip
-            .as_ref()
-            .map(|clip| clip_source_geometry(source_geometry, clip.id, render_width, render_height))
-            .unwrap_or_else(|| SourceGeometry::canvas(render_width, render_height));
+        let geometry = clip.as_ref().map_or_else(
+            || SourceGeometry::canvas(render_width, render_height),
+            |clip| clip_source_geometry(source_geometry, clip.id, render_width, render_height),
+        );
         let graph_node = project.pipeline(pipeline)?.node(node)?;
         let definition = plugins.generator(&graph_node.node_type)?;
         let parameters = graph_node
@@ -3423,7 +3423,7 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
         || clip_source_geometry(source_geometry, clip.id, render_width, render_height);
     let geometry = tight_generator_source_geometry(
         &clip.source,
-        timeline_time as f64,
+        f64::from(timeline_time),
         plugins,
         project.active_settings().canvas_size,
         render_width,
@@ -3444,7 +3444,7 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
         .iter()
         .filter_map(|(name, binding)| {
             binding
-                .evaluate(timeline_time as f64)
+                .evaluate(f64::from(timeline_time))
                 .map(|value| (plugin_parameter_hash(name), value))
         })
         .collect();
@@ -3454,7 +3454,7 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
         &input,
         resolved,
         [geometry.size.0 as f32, geometry.size.1 as f32],
-        timeline_time as f64,
+        f64::from(timeline_time),
     )?;
     let source_scale = selected_clip_pen_scale(
         &clip,
@@ -3514,8 +3514,8 @@ fn selected_gradient_midpoint_handles(
                 GradientMidpointHandle {
                     segment,
                     point: [
-                        start[0] + (end[0] - start[0]) * midpoint,
-                        start[1] + (end[1] - start[1]) * midpoint,
+                        f32::mul_add(end[0] - start[0], midpoint, start[0]),
+                        f32::mul_add(end[1] - start[1], midpoint, start[1]),
                     ],
                     start,
                     end,
@@ -3625,7 +3625,7 @@ fn handle_selected_generator_pen_press(
             *selected = None;
             return true;
         }
-        *drag = Some(setup.drag(handle.index, snap.clone()));
+        *drag = Some(setup.drag(handle.index, snap));
         return true;
     }
 
@@ -3764,7 +3764,7 @@ fn graph_generator_pen_input(
     let input = definition.inputs.iter().find(|input| {
         input.ty == InputType::Vec2Array && input.monitor_handle == Some(MonitorHandleMode::Points)
     })?;
-    let time = timeline.playhead() as f64;
+    let time = f64::from(timeline.playhead());
     Some(GraphGeneratorPenInput {
         input: input.id.clone(),
         time,
@@ -3793,10 +3793,9 @@ fn selected_clip_pen_input(
     let input = definition.inputs.iter().find(|input| {
         input.ty == InputType::Vec2Array && input.monitor_handle == Some(MonitorHandleMode::Points)
     })?;
-    let time = timeline_time as f64;
+    let time = f64::from(timeline_time);
     let origin = generator_content_bounds(definition, parameters, time)
-        .map(|(x, y, _, _)| [x, y])
-        .unwrap_or([0.0, 0.0]);
+        .map_or([0.0, 0.0], |(x, y, _, _)| [x, y]);
     Some((
         input.id.clone(),
         origin,
@@ -3830,7 +3829,7 @@ fn selected_clip_pen_scale(
             source_dimensions.1.max(1) as f32 / canvas_size[1].max(1) as f32,
         ];
     }
-    let time = timeline_time as f64;
+    let time = f64::from(timeline_time);
     let Some((_, _, width, height)) = generator_content_bounds(definition, parameters, time) else {
         return [1.0, 1.0];
     };
@@ -3882,8 +3881,7 @@ fn screen_to_selected_clip_source_point(
 fn pen_insert_index(selected: Option<usize>, point_count: usize) -> usize {
     selected
         .filter(|index| *index < point_count)
-        .map(|index| index + 1)
-        .unwrap_or(point_count)
+        .map_or(point_count, |index| index + 1)
 }
 
 fn gradient_pen_insert_target(
@@ -3901,18 +3899,18 @@ fn gradient_pen_insert_target(
         let a = handles[index].point;
         let b = handles[index + 1].point;
         let delta = [b[0] - a[0], b[1] - a[1]];
-        let length_sq = delta[0] * delta[0] + delta[1] * delta[1];
+        let length_sq = delta[1].mul_add(delta[1], delta[0] * delta[0]);
         if length_sq <= 1.0e-6 {
             continue;
         }
-        let t = ((point[0] - a[0]) * delta[0] + (point[1] - a[1]) * delta[1]) / length_sq;
+        let t = (point[1] - a[1]).mul_add(delta[1], (point[0] - a[0]) * delta[0]) / length_sq;
         if !(0.0..=1.0).contains(&t) {
             continue;
         }
-        let projected = [a[0] + delta[0] * t, a[1] + delta[1] * t];
+        let projected = [delta[0].mul_add(t, a[0]), delta[1].mul_add(t, a[1])];
         let dx = point[0] - projected[0];
         let dy = point[1] - projected[1];
-        let distance_sq = dx * dx + dy * dy;
+        let distance_sq = dy.mul_add(dy, dx * dx);
         if distance_sq > SEGMENT_HIT_RADIUS * SEGMENT_HIT_RADIUS {
             continue;
         }
@@ -3923,19 +3921,21 @@ fn gradient_pen_insert_target(
             best = Some((distance_sq, index + 1, projected));
         }
     }
-    best.map(|(_, index, projected)| (index, Some(projected)))
-        .unwrap_or((handles.len(), None))
+    best.map_or((handles.len(), None), |(_, index, projected)| {
+        (index, Some(projected))
+    })
 }
 
 fn project_point_to_segment(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     let delta = [b[0] - a[0], b[1] - a[1]];
-    let length_sq = delta[0] * delta[0] + delta[1] * delta[1];
+    let length_sq = delta[1].mul_add(delta[1], delta[0] * delta[0]);
     let t = if length_sq <= 1.0e-6 {
         0.0
     } else {
-        (((point[0] - a[0]) * delta[0] + (point[1] - a[1]) * delta[1]) / length_sq).clamp(0.0, 1.0)
+        ((point[1] - a[1]).mul_add(delta[1], (point[0] - a[0]) * delta[0]) / length_sq)
+            .clamp(0.0, 1.0)
     };
-    [a[0] + delta[0] * t, a[1] + delta[1] * t]
+    [delta[0].mul_add(t, a[0]), delta[1].mul_add(t, a[1])]
 }
 
 fn draw_gradient_midpoint_handles(
@@ -4040,7 +4040,7 @@ fn draw_monitor_handle_set<T>(
         let selected = selected == Some(index);
         let size = size + if selected { 2.0 } else { 0.0 };
         kama_ui::ui!(ctx, {
-            Rect((key, index), Rect::new(point[0] - size * 0.5, point[1] - size * 0.5, size, size)) {
+            Rect((key, index), Rect::new(f32::mul_add(size, -0.5, point[0]), f32::mul_add(size, -0.5, point[1]), size, size)) {
                 fill: if selected { accent } else { Color::WHITE };
                 border: 2; border_color: if selected { Color::WHITE } else { accent };
                 border_radius: if selected { size * 0.5 } else { radius }; interactive;
@@ -4098,7 +4098,7 @@ fn draw_gizmo_line(
     );
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
-    let length = (dx * dx + dy * dy).sqrt().max(0.0001);
+    let length = dx.hypot(dy).max(0.0001);
     let nx = -dy / length * width * 0.5;
     let ny = dx / length * width * 0.5;
     let points = [
@@ -4119,8 +4119,8 @@ fn draw_gizmo_line(
 
 fn project_to_screen(preview: Rect, point: [f32; 2], size: [f32; 2]) -> [f32; 2] {
     [
-        preview.x + point[0] / size[0].max(1.0) * preview.width,
-        preview.y + point[1] / size[1].max(1.0) * preview.height,
+        (point[0] / size[0].max(1.0)).mul_add(preview.width, preview.x),
+        (point[1] / size[1].max(1.0)).mul_add(preview.height, preview.y),
     ]
 }
 
@@ -4164,8 +4164,8 @@ fn rotate(value: [f32; 2], degrees: f32) -> [f32; 2] {
     let radians = degrees.to_radians();
     let (sin, cos) = radians.sin_cos();
     [
-        value[0] * cos - value[1] * sin,
-        value[0] * sin + value[1] * cos,
+        value[1].mul_add(-sin, value[0] * cos),
+        value[1].mul_add(cos, value[0] * sin),
     ]
 }
 
@@ -4184,7 +4184,7 @@ fn safe_scale(value: f32) -> f32 {
 fn distance_sq(a: [f32; 2], b: [f32; 2]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
-    dx * dx + dy * dy
+    dy.mul_add(dy, dx * dx)
 }
 
 fn point_in_quad(point: [f32; 2], corners: [[f32; 2]; 4]) -> bool {
@@ -4192,7 +4192,7 @@ fn point_in_quad(point: [f32; 2], corners: [[f32; 2]; 4]) -> bool {
     for index in 0..4 {
         let a = corners[index];
         let b = corners[(index + 1) % 4];
-        let cross = (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0]);
+        let cross = (b[1] - a[1]).mul_add(-(point[0] - a[0]), (b[0] - a[0]) * (point[1] - a[1]));
         if cross.abs() <= 0.001 {
             continue;
         }

@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    CLIP_DRAG_THRESHOLD_PX, ClipEdgeOrigin, ClipMoveAnchor, ClipOrigin, ContextCommand,
+    ContextKind, ContextMenu, DOUBLE_CLICK, Drag, EDGE_W, ElementState, Instant,
+    KEYFRAME_AXIS_LOCK_RATIO, Key, KeyEvent, KeyframeValueEditor, LayoutSnapshot,
+    MAX_PIXELS_PER_SECOND, MixerParameter, ModifiersState, MouseButton, NamedKey, OverviewPart,
+    Project, RenameState, SNAP_PX, SelectedKeyframe, ShiftClipAdjustAxis, TRACK_HANDLE_W,
+    TRACK_HEADER_PAD, TRACK_MIN, TimelineAction, TimelineHoverTarget, TimelineLayout,
+    TimelineState, TimelineTool, TrackKind, clip_source_duration, format_keyframe_value,
+    intersects, keyframe_property_axis_range, keyframe_value_y, normalized_rect,
+};
 
 impl TimelineState {
     pub fn pointer_pressed(
@@ -95,11 +104,11 @@ impl TimelineState {
                 let hit = self
                     .clip_at(layout, point)
                     .map(|(index, _)| self.clips[index].id);
-                if let Some(id) = hit {
-                    if !self.selected.contains(&id) {
-                        self.selected_track = None;
-                        self.select_clip(id, modifiers.shift_key());
-                    }
+                if let Some(id) = hit
+                    && !self.selected.contains(&id)
+                {
+                    self.selected_track = None;
+                    self.select_clip(id, modifiers.shift_key());
                 }
                 self.drag = Some(Drag::BoxSelect {
                     start: point,
@@ -158,9 +167,10 @@ impl TimelineState {
                 if !window.contains(point) {
                     let visible = self.visible_duration(layout);
                     let body = layout.overview_body;
-                    let time = ((point[0] - body.x) / body.width.max(1.0)).clamp(0.0, 1.0) as f64
-                        * self.overview_duration(layout);
-                    self.scroll_time = (time - visible * 0.5).max(0.0);
+                    let time =
+                        f64::from(((point[0] - body.x) / body.width.max(1.0)).clamp(0.0, 1.0))
+                            * self.overview_duration(layout);
+                    self.scroll_time = visible.mul_add(-0.5, time).max(0.0);
                 }
                 OverviewPart::Body
             };
@@ -182,7 +192,7 @@ impl TimelineState {
                     let was_expanded = self.expanded_keyframe_tracks.contains(&track_id);
                     self.keyframe_track_expansion
                         .entry(track_id)
-                        .or_insert(was_expanded as u8 as f32);
+                        .or_insert(f32::from(u8::from(was_expanded)));
                     if !self.expanded_keyframe_tracks.insert(track_id) {
                         self.expanded_keyframe_tracks.remove(&track_id);
                     }
@@ -196,7 +206,7 @@ impl TimelineState {
                     let was_expanded = self.expanded_keyframe_lanes.contains(&target);
                     self.keyframe_lane_expansion
                         .entry(target.clone())
-                        .or_insert(was_expanded as u8 as f32);
+                        .or_insert(f32::from(u8::from(was_expanded)));
                     if !self.expanded_keyframe_lanes.insert(target.clone()) {
                         self.expanded_keyframe_lanes.remove(&target);
                     }
@@ -323,11 +333,11 @@ impl TimelineState {
                 return true;
             }
             if rect.width >= 30.0 && (left || right) {
-                if !self.selected.contains(&id) {
+                if self.selected.contains(&id) {
+                    self.primary_selected = Some(id);
+                } else {
                     self.selected_track = None;
                     self.select_clip(id, modifiers.shift_key());
-                } else {
-                    self.primary_selected = Some(id);
                 }
                 self.drag = Some(Drag::ClipEdge {
                     id,
@@ -448,8 +458,8 @@ impl TimelineState {
                 scroll_y,
             } => {
                 self.scroll_time = (*scroll_time
-                    - (point[0] - start[0]) as f64 / self.pixels_per_second as f64)
-                    .max(0.0);
+                    - f64::from(point[0] - start[0]) / f64::from(self.pixels_per_second))
+                .max(0.0);
                 self.scroll_y = self.clamp_scroll(*scroll_y - (point[1] - start[1]), layout);
             }
             Drag::BoxSelect { current, .. } => *current = point,
@@ -499,42 +509,37 @@ impl TimelineState {
                         ShiftClipAdjustAxis::Horizontal => {
                             let mut offset_delta = -dx / self.pixels_per_second;
 
-                            if self.clip_snap {
-                                if let Some(origin) = origins
+                            if self.clip_snap
+                                && let Some(origin) = origins
                                     .iter()
                                     .find(|origin| origin.id == *shift_adjust_anchor)
+                                && let Some(clip) = self
+                                    .clips
+                                    .get(origin.index)
+                                    .filter(|clip| clip.id == origin.id)
+                            {
+                                let speed = clip.speed.max(0.01);
+                                let raw_offset = offset_delta.mul_add(speed, origin.source_offset);
+                                let snap_distance = SNAP_PX / self.pixels_per_second * speed;
+                                let mut snap_targets = vec![0.0];
+                                if let Some(source_duration) =
+                                    clip_source_duration(project, &clip.source)
                                 {
-                                    if let Some(clip) = self
-                                        .clips
-                                        .get(origin.index)
-                                        .filter(|clip| clip.id == origin.id)
-                                    {
-                                        let speed = clip.speed.max(0.01);
-                                        let raw_offset =
-                                            origin.source_offset + offset_delta * speed;
-                                        let snap_distance =
-                                            SNAP_PX / self.pixels_per_second * speed;
-                                        let mut snap_targets = vec![0.0];
-                                        if let Some(source_duration) =
-                                            clip_source_duration(project, &clip.source)
-                                        {
-                                            snap_targets.push(
-                                                source_duration - origin.duration.max(0.0) * speed,
-                                            );
-                                        }
-                                        if let Some(target) =
-                                            snap_targets.into_iter().min_by(|left, right| {
-                                                (raw_offset - *left)
-                                                    .abs()
-                                                    .total_cmp(&(raw_offset - *right).abs())
-                                            })
-                                        {
-                                            if (raw_offset - target).abs() <= snap_distance {
-                                                offset_delta =
-                                                    (target - origin.source_offset) / speed;
-                                            }
-                                        }
-                                    }
+                                    snap_targets.push(f32::mul_add(
+                                        origin.duration.max(0.0),
+                                        -speed,
+                                        source_duration,
+                                    ));
+                                }
+                                if let Some(target) =
+                                    snap_targets.into_iter().min_by(|left, right| {
+                                        (raw_offset - *left)
+                                            .abs()
+                                            .total_cmp(&(raw_offset - *right).abs())
+                                    })
+                                    && (raw_offset - target).abs() <= snap_distance
+                                {
+                                    offset_delta = (target - origin.source_offset) / speed;
                                 }
                             }
 
@@ -546,8 +551,8 @@ impl TimelineState {
                                 else {
                                     continue;
                                 };
-                                clip.source_offset =
-                                    origin.source_offset + offset_delta * clip.speed.max(0.01);
+                                clip.source_offset = offset_delta
+                                    .mul_add(clip.speed.max(0.01), origin.source_offset);
                             }
                         }
                         ShiftClipAdjustAxis::Vertical => {
@@ -627,7 +632,7 @@ impl TimelineState {
                     }
                 }
 
-                let delta_time = dx as f64 / self.pixels_per_second as f64;
+                let delta_time = f64::from(dx) / f64::from(self.pixels_per_second);
                 let delta_y = can_move_vertically.then_some(dy);
                 self.move_keyframes(points, delta_time, delta_y, true);
             }
@@ -657,15 +662,14 @@ impl TimelineState {
         modifiers: ModifiersState,
         project: &Project,
     ) -> bool {
-        if button == MouseButton::Left {
-            if let Some(knob) = self
+        if button == MouseButton::Left
+            && let Some(knob) = self
                 .mixer_knobs
                 .values_mut()
                 .find(|knob| knob.is_dragging())
-            {
-                knob.pointer_released();
-                return true;
-            }
+        {
+            knob.pointer_released();
+            return true;
         }
         let relevant = matches!(
             (&self.drag, button),
@@ -698,7 +702,7 @@ impl TimelineState {
                 if let Some(layout) = self.focused_layout(snapshot) {
                     let dx = current[0] - start[0];
                     let dy = current[1] - start[1];
-                    if dx * dx + dy * dy > 16.0 {
+                    if f32::mul_add(dy, dy, dx * dx) > 16.0 {
                         let area = normalized_rect(start, current);
                         let hits: Vec<_> = self
                             .clips
@@ -786,12 +790,12 @@ impl TimelineState {
                 current_y,
                 ..
             }) => {
-                if let Some(layout) = self.focused_layout(snapshot) {
-                    if let Some(index) = self.track_index(id) {
-                        let offset = current_y - grab_y - self.track_base_y(layout, index);
-                        if offset.abs() > 0.25 {
-                            self.track_offsets.insert(id, offset);
-                        }
+                if let Some(layout) = self.focused_layout(snapshot)
+                    && let Some(index) = self.track_index(id)
+                {
+                    let offset = current_y - grab_y - self.track_base_y(layout, index);
+                    if offset.abs() > 0.25 {
+                        self.track_offsets.insert(id, offset);
                     }
                 }
             }
@@ -803,7 +807,7 @@ impl TimelineState {
             }) if {
                 let dx = point[0] - start[0];
                 let dy = point[1] - start[1];
-                dx * dx + dy * dy < CLIP_DRAG_THRESHOLD_PX * CLIP_DRAG_THRESHOLD_PX
+                dy.mul_add(dy, dx * dx) < CLIP_DRAG_THRESHOLD_PX * CLIP_DRAG_THRESHOLD_PX
             } =>
             {
                 self.select_clip(id, true);
@@ -815,7 +819,7 @@ impl TimelineState {
             }) if {
                 let dx = point[0] - start[0];
                 let dy = point[1] - start[1];
-                dx * dx + dy * dy < CLIP_DRAG_THRESHOLD_PX * CLIP_DRAG_THRESHOLD_PX
+                dy.mul_add(dy, dx * dx) < CLIP_DRAG_THRESHOLD_PX * CLIP_DRAG_THRESHOLD_PX
             } =>
             {
                 self.selected_track = None;
@@ -885,15 +889,16 @@ impl TimelineState {
             self.scroll_y = self.clamp_scroll(self.scroll_y - amount, layout);
         } else if modifiers.shift_key() {
             self.scroll_time =
-                (self.scroll_time - amount as f64 / self.pixels_per_second as f64).max(0.0);
+                (self.scroll_time - f64::from(amount) / f64::from(self.pixels_per_second)).max(0.0);
         } else if point[0] < layout.body.x
             && point[1] >= layout.body.y
             && point[1] < layout.body.bottom()
         {
             self.scroll_y = self.clamp_scroll(self.scroll_y - amount, layout);
         } else if horizontal.abs() > vertical.abs() {
-            self.scroll_time =
-                (self.scroll_time - horizontal as f64 / self.pixels_per_second as f64).max(0.0);
+            self.scroll_time = (self.scroll_time
+                - f64::from(horizontal) / f64::from(self.pixels_per_second))
+            .max(0.0);
         } else if vertical.abs() > 0.01
             && (layout.body.contains(point) || layout.ruler.contains(point))
         {
@@ -904,9 +909,12 @@ impl TimelineState {
                 && (layout.body.width / pixels_per_second).is_finite()
             {
                 self.pixels_per_second = pixels_per_second;
-                self.scroll_time = (self.playhead as f64
-                    - layout.body.width as f64 / pixels_per_second as f64 * 0.5)
-                    .max(0.0);
+                self.scroll_time = f64::mul_add(
+                    f64::from(layout.body.width) / f64::from(pixels_per_second),
+                    -0.5,
+                    f64::from(self.playhead),
+                )
+                .max(0.0);
             }
         }
         true
@@ -966,17 +974,16 @@ impl TimelineState {
         if self.keyframe_value_editor.is_none()
             && self.mixer_exact.is_none()
             && self.rename.is_none()
+            && let Some(layout) = self.focused_layout(snapshot)
         {
-            if let Some(layout) = self.focused_layout(snapshot) {
-                match event.logical_key {
-                    Key::Named(NamedKey::ArrowUp) if self.cycle_hover_target(layout, -1) => {
-                        return true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) if self.cycle_hover_target(layout, 1) => {
-                        return true;
-                    }
-                    _ => {}
+            match event.logical_key {
+                Key::Named(NamedKey::ArrowUp) if self.cycle_hover_target(layout, -1) => {
+                    return true;
                 }
+                Key::Named(NamedKey::ArrowDown) if self.cycle_hover_target(layout, 1) => {
+                    return true;
+                }
+                _ => {}
             }
         }
         if self.keyframe_value_editor.is_some() {
@@ -997,14 +1004,13 @@ impl TimelineState {
                     if let Some(text) = event.text.as_deref().filter(|text| {
                         text.chars()
                             .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))
-                    }) {
-                        if let Some(editor) = &mut self.keyframe_value_editor {
-                            if editor.replace_on_input {
-                                editor.value.clear();
-                                editor.replace_on_input = false;
-                            }
-                            editor.value.push_str(text);
+                    }) && let Some(editor) = &mut self.keyframe_value_editor
+                    {
+                        if editor.replace_on_input {
+                            editor.value.clear();
+                            editor.replace_on_input = false;
                         }
+                        editor.value.push_str(text);
                     }
                 }
             }
@@ -1028,14 +1034,13 @@ impl TimelineState {
                     if let Some(text) = event.text.as_deref().filter(|text| {
                         text.chars()
                             .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
-                    }) {
-                        if let Some(editor) = &mut self.mixer_exact {
-                            if editor.replace_on_input {
-                                editor.value.clear();
-                                editor.replace_on_input = false;
-                            }
-                            editor.value.push_str(text);
+                    }) && let Some(editor) = &mut self.mixer_exact
+                    {
+                        if editor.replace_on_input {
+                            editor.value.clear();
+                            editor.replace_on_input = false;
                         }
+                        editor.value.push_str(text);
                     }
                 }
             }
@@ -1051,12 +1056,11 @@ impl TimelineState {
                     }
                 }
                 _ => {
-                    if let Some(text) = event.text.as_deref() {
-                        if text.chars().all(|character| !character.is_control()) {
-                            if let Some(rename) = self.rename.as_mut() {
-                                rename.value.push_str(text);
-                            }
-                        }
+                    if let Some(text) = event.text.as_deref()
+                        && text.chars().all(|character| !character.is_control())
+                        && let Some(rename) = self.rename.as_mut()
+                    {
+                        rename.value.push_str(text);
                     }
                 }
             }
@@ -1104,23 +1108,23 @@ impl TimelineState {
     ) {
         match command {
             ContextCommand::CopySelection => {
-                self.pending_action = Some(TimelineAction::CopySelection)
+                self.pending_action = Some(TimelineAction::CopySelection);
             }
             ContextCommand::CutSelection => {
-                self.pending_action = Some(TimelineAction::CutSelection)
+                self.pending_action = Some(TimelineAction::CutSelection);
             }
             ContextCommand::Paste => self.pending_action = Some(TimelineAction::Paste),
             ContextCommand::Group => self.pending_action = Some(TimelineAction::GroupSelection),
             ContextCommand::Ungroup => self.pending_action = Some(TimelineAction::UngroupSelection),
             ContextCommand::CloseGap => self.pending_action = Some(TimelineAction::CloseGap),
             ContextCommand::SpeedDuration => {
-                self.pending_action = Some(TimelineAction::SpeedDuration)
+                self.pending_action = Some(TimelineAction::SpeedDuration);
             }
             ContextCommand::ReplaceSelectedClips => {
-                self.pending_action = Some(TimelineAction::ReplaceSelectedClips)
+                self.pending_action = Some(TimelineAction::ReplaceSelectedClips);
             }
             ContextCommand::DeleteSelection => {
-                self.pending_action = Some(TimelineAction::DeleteSelection)
+                self.pending_action = Some(TimelineAction::DeleteSelection);
             }
             ContextCommand::EditKeyframeValue => {
                 if let (Some(stack), Some(value)) =
@@ -1139,7 +1143,7 @@ impl TimelineState {
             }
             ContextCommand::DeleteKeyframes => self.delete_selected_keyframes(),
             ContextCommand::AddSelectionToComposition => {
-                self.pending_action = Some(TimelineAction::AddSelectionToComposition)
+                self.pending_action = Some(TimelineAction::AddSelectionToComposition);
             }
             ContextCommand::SetEnd => self.pending_action = Some(TimelineAction::SetEnd),
             ContextCommand::InsertVideoHere => {

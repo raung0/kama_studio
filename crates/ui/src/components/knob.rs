@@ -207,8 +207,8 @@ impl Knob {
         let radius = dial_size * 0.34;
         let indicator_size = 2.0 * ui_scale;
         let indicator = Rect::new(
-            angle.cos().mul_add(radius, center[0]) - indicator_size * 0.5,
-            angle.sin().mul_add(radius, center[1]) - indicator_size * 0.5,
+            indicator_size.mul_add(-0.5, angle.cos().mul_add(radius, center[0])),
+            indicator_size.mul_add(-0.5, angle.sin().mul_add(radius, center[1])),
             indicator_size,
             indicator_size,
         );

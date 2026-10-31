@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    ANGLE_ROW_H, Accordion, AppIcon, Color, ColorButton, EFFECT_NODE_CONTENT_PAD,
+    EFFECT_NODE_HEADER_H, EnumControlsExt, FormatKey, GpuValue, Hash, Icons, KeyframeControl, Knob,
+    KnobControlsExt, NumberControlsExt, PluginInput, PluginRegistry, Project, Rect, Size,
+    SliderControls, SliderControlsExt, SpinInput, Style, TimelineState, ToggleButton, icon_button,
+    keyframe_rect, property_chrome, property_control_rect, property_row_parts, row_hit,
+    set_eq_band, theme, toggle_icon_button,
+};
 
 pub(super) struct GraphicEqBuild<'a> {
     pub(super) viewport: Rect,
@@ -92,12 +99,12 @@ pub(super) fn build_graphic_eq_controls<K: Copy + Eq + Hash, S: Hash, Z: Hash>(
         style,
     } = build;
     let layout = graphic_eq_layout(viewport, count, scroll, min_slot_width);
-    let zero_y = layout.slider_top + (layout.slider_bottom - layout.slider_top) * 0.5;
+    let zero_y = (layout.slider_bottom - layout.slider_top).mul_add(0.5, layout.slider_top);
     kama_ui::ui!(ctx, {
         Rect(surface_key, viewport) {
             fill: theme::control(); border: 1; border_color: theme::line(); border_radius: radius;
         }
-        Rect(zero_key, Rect::new(viewport.x + zero_inset, zero_y, (viewport.width - zero_inset * 2.0).max(1.0), 1.0)) {
+        Rect(zero_key, Rect::new(viewport.x + zero_inset, zero_y, f32::mul_add(zero_inset, -2.0, viewport.width).max(1.0), 1.0)) {
             fill: theme::line_soft();
         }
     });
@@ -205,8 +212,7 @@ pub(super) fn plugin_node_name(plugins: &PluginRegistry, node_type: &str) -> Str
                 .generator(node_type)
                 .map(|definition| definition.name.as_str())
         })
-        .map(str::to_owned)
-        .unwrap_or_else(|| friendly_name(node_type))
+        .map_or_else(|| friendly_name(node_type), str::to_owned)
 }
 
 pub(super) fn friendly_name(raw: &str) -> String {
@@ -457,11 +463,11 @@ pub(super) fn transform_rotation_parts(rect: Rect, y: f32) -> (Rect, Rect, Rect,
 
 pub(super) fn split_angle(rotation: f32) -> (i32, f32) {
     let turns = (rotation / 360.0).trunc() as i32;
-    (turns, rotation - turns as f32 * 360.0)
+    (turns, (turns as f32).mul_add(-360.0, rotation))
 }
 
 pub(super) fn angle_knob(value: f32) -> Knob {
-    Knob::new(-36000.0, 36000.0, value as f64)
+    Knob::new(-36000.0, 36000.0, f64::from(value))
         .step(0.1)
         .circular()
         .formatter(|value, _| format!("{:.0}°", value.rem_euclid(360.0)))

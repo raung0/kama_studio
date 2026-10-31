@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    AppIcon, CompositionId, ContextMenuClick, ContextMenuItem, EnumControlsExt, Hash, HashMap,
+    HashSet, Icons, Key, KeyEvent, KnobControlsExt, MEDIA_ITEM_GAP, MEDIA_ROW_H, MEDIA_TRACK_H,
+    MediaId, MediaKind, ModifiersState, NamedKey, NumberControlsExt, Project, Rect,
+    SliderControlsExt, build_context_menu, context_menu_click, context_menu_rect,
+    draw_composition_row, draw_media_row, draw_media_stream_row, media_disclosure_rect,
+    media_list_top, media_streams, theme,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaStream {
@@ -128,7 +135,7 @@ fn visit_media_rows<'a, B>(
         let open_amount = composition_expansion
             .get(&composition.id)
             .copied()
-            .unwrap_or(expanded as u8 as f32);
+            .unwrap_or(f32::from(u8::from(expanded)));
         pending.push(Pending {
             entry: MediaListEntry::Composition {
                 composition,
@@ -163,7 +170,7 @@ fn visit_media_rows<'a, B>(
         let open_amount = media_expansion
             .get(&asset.id)
             .copied()
-            .unwrap_or(expanded as u8 as f32);
+            .unwrap_or(f32::from(u8::from(expanded)));
         pending.push(Pending {
             entry: MediaListEntry::Media {
                 asset,
@@ -348,8 +355,9 @@ impl MediaPanelState {
             .or_else(|| self.primary.map(MediaKeyboardSelection::Media));
         let index = current
             .and_then(|selection| rows.iter().position(|row| *row == selection))
-            .map(|index| (index as isize + direction).clamp(0, rows.len() as isize - 1) as usize)
-            .unwrap_or(if direction < 0 { rows.len() - 1 } else { 0 });
+            .map_or(if direction < 0 { rows.len() - 1 } else { 0 }, |index| {
+                (index as isize + direction).clamp(0, rows.len() as isize - 1) as usize
+            });
         let selection = rows[index];
         self.selected.clear();
         self.primary = None;
@@ -465,15 +473,15 @@ impl MediaPanelState {
     pub fn tick(&mut self, dt: f32) {
         let step = 1.0 - (-30.0 * dt).exp();
         for (&id, amount) in &mut self.composition_expansion {
-            let target = self.expanded_compositions.contains(&id) as u8 as f32;
-            *amount += (target - *amount) * step;
+            let target = f32::from(u8::from(self.expanded_compositions.contains(&id)));
+            *amount = (target - *amount).mul_add(step, *amount);
             if (*amount - target).abs() < 0.001 {
                 *amount = target;
             }
         }
         for (&id, amount) in &mut self.media_expansion {
-            let target = self.expanded.contains(&id) as u8 as f32;
-            *amount += (target - *amount) * step;
+            let target = f32::from(u8::from(self.expanded.contains(&id)));
+            *amount = (target - *amount).mul_add(step, *amount);
             if (*amount - target).abs() < 0.001 {
                 *amount = target;
             }
@@ -482,11 +490,10 @@ impl MediaPanelState {
 
     pub fn is_animating(&self) -> bool {
         self.composition_expansion.iter().any(|(&id, &amount)| {
-            (amount - self.expanded_compositions.contains(&id) as u8 as f32).abs() > 0.001
-        }) || self
-            .media_expansion
-            .iter()
-            .any(|(&id, &amount)| (amount - self.expanded.contains(&id) as u8 as f32).abs() > 0.001)
+            (amount - f32::from(u8::from(self.expanded_compositions.contains(&id)))).abs() > 0.001
+        }) || self.media_expansion.iter().any(|(&id, &amount)| {
+            (amount - f32::from(u8::from(self.expanded.contains(&id)))).abs() > 0.001
+        })
     }
 
     pub fn build(&self, ctx: &mut kama_ui::BuildCtx, rect: Rect, project: &Project, icons: Icons) {
@@ -622,27 +629,25 @@ impl MediaPanelState {
                     ContextMenuItem::new(
                         "Duplicate Composition",
                         Some(AppIcon::Copy),
-                        selection
-                            .map(|selection| {
-                                MediaAction::DuplicateComposition(selection.composition)
-                            })
-                            .unwrap_or(MediaAction::None),
+                        selection.map_or(MediaAction::None, |selection| {
+                            MediaAction::DuplicateComposition(selection.composition)
+                        }),
                     )
                     .enabled(selection.is_some()),
                     ContextMenuItem::new(
                         "Rename Composition…",
                         Some(AppIcon::Rename),
-                        selection
-                            .map(|selection| MediaAction::RenameComposition(selection.composition))
-                            .unwrap_or(MediaAction::None),
+                        selection.map_or(MediaAction::None, |selection| {
+                            MediaAction::RenameComposition(selection.composition)
+                        }),
                     )
                     .enabled(selection.is_some()),
                     ContextMenuItem::new(
                         "Delete Composition",
                         Some(AppIcon::Delete),
-                        selection
-                            .map(|selection| MediaAction::DeleteComposition(selection.composition))
-                            .unwrap_or(MediaAction::None),
+                        selection.map_or(MediaAction::None, |selection| {
+                            MediaAction::DeleteComposition(selection.composition)
+                        }),
                     )
                     .enabled(selection.is_some() && project.compositions.len() > 1),
                     insert(),
@@ -657,11 +662,11 @@ impl MediaPanelState {
                     ContextMenuItem::new(
                         "Replace selected media…",
                         Some(AppIcon::Restore),
-                        primary
-                            .map(|selection| MediaAction::ReplaceSelectedMedia {
+                        primary.map_or(MediaAction::None, |selection| {
+                            MediaAction::ReplaceSelectedMedia {
                                 media: selection.media,
-                            })
-                            .unwrap_or(MediaAction::None),
+                            }
+                        }),
                     )
                     .enabled(primary.is_some()),
                     ContextMenuItem::new(
@@ -774,7 +779,7 @@ impl MediaPanelState {
                     let was_expanded = self.expanded_compositions.contains(&selection.composition);
                     self.composition_expansion
                         .entry(selection.composition)
-                        .or_insert(was_expanded as u8 as f32);
+                        .or_insert(f32::from(u8::from(was_expanded)));
                     if !self.expanded_compositions.remove(&selection.composition) {
                         self.expanded_compositions.insert(selection.composition);
                     }
@@ -788,7 +793,7 @@ impl MediaPanelState {
                     let was_expanded = self.expanded.contains(&selection.media);
                     self.media_expansion
                         .entry(selection.media)
-                        .or_insert(was_expanded as u8 as f32);
+                        .or_insert(f32::from(u8::from(was_expanded)));
                     if !self.expanded.remove(&selection.media) {
                         self.expanded.insert(selection.media);
                     }
@@ -1001,9 +1006,8 @@ impl MediaPanelState {
                 } else {
                     0
                 };
-                MEDIA_ROW_H
-                    + MEDIA_ITEM_GAP
-                    + stream_count as f32 * (MEDIA_TRACK_H + MEDIA_ITEM_GAP)
+                (stream_count as f32)
+                    .mul_add(MEDIA_TRACK_H + MEDIA_ITEM_GAP, MEDIA_ROW_H + MEDIA_ITEM_GAP)
             })
             .sum();
         let composition_height: f32 = project
@@ -1015,9 +1019,8 @@ impl MediaPanelState {
                 } else {
                     0
                 };
-                MEDIA_ROW_H
-                    + MEDIA_ITEM_GAP
-                    + stream_count as f32 * (MEDIA_TRACK_H + MEDIA_ITEM_GAP)
+                (stream_count as f32)
+                    .mul_add(MEDIA_TRACK_H + MEDIA_ITEM_GAP, MEDIA_ROW_H + MEDIA_ITEM_GAP)
             })
             .sum();
         let content_height = composition_height + media_height;

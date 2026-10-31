@@ -4,7 +4,7 @@ use kama_ui::components::TextEdit;
 
 use crate::{POPUP_FADE_DURATION, PendingDiscardAction};
 
-pub(super) struct PopupAnimation {
+pub struct PopupAnimation {
     opened_at: Instant,
     closing: Option<(Instant, f32)>,
 }
@@ -33,7 +33,7 @@ impl PopupAnimation {
             let t = (now.saturating_duration_since(started).as_secs_f32()
                 / POPUP_FADE_DURATION.as_secs_f32())
             .clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
+            t * t * 2.0f32.mul_add(-t, 3.0)
         };
         self.closing.map_or_else(
             || eased(self.opened_at),
@@ -100,7 +100,7 @@ macro_rules! popup_editor_dialog_methods {
     };
 }
 
-pub(super) struct SimpleDialog {
+pub struct SimpleDialog {
     pub(super) animation: PopupAnimation,
 }
 impl SimpleDialog {
@@ -112,7 +112,7 @@ impl SimpleDialog {
 }
 popup_dialog_methods!(SimpleDialog);
 
-pub(super) struct ActionDialog {
+pub struct ActionDialog {
     pub(super) action: PendingDiscardAction,
     pub(super) animation: PopupAnimation,
 }
@@ -126,7 +126,7 @@ impl ActionDialog {
 }
 popup_dialog_methods!(ActionDialog);
 
-pub(super) struct LayoutSaveDialog {
+pub struct LayoutSaveDialog {
     pub(super) editor: TextEdit,
     pub(super) animation: PopupAnimation,
 }
