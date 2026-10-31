@@ -46,7 +46,7 @@ wasmtime = "50.0.0"
 muda = "0.21.2"
 
 [build-dependencies]
-resvg = "0.48.1"
+resvg = "0.49.0"
 winresource = "0.1"
 
 [package.metadata.bundle]
