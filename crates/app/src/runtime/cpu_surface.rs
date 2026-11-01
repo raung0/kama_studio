@@ -77,15 +77,17 @@ impl CpuSurfaceSession {
             "invalid CPU surface process IDs"
         );
         let token = new_session_token(parent_pid, exporter_pid);
-        let directory = std::env::temp_dir().join(format!(
-            "kama-video-cpu-{}-{}",
-            parent_pid,
+        let short_token =
             token
                 .iter()
                 .take(6)
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ));
+                .fold(String::with_capacity(12), |mut output, byte| {
+                    use std::fmt::Write as _;
+                    let _ = write!(output, "{byte:02x}");
+                    output
+                });
+        let directory =
+            std::env::temp_dir().join(format!("kama-video-cpu-{parent_pid}-{short_token}"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -205,7 +207,14 @@ impl CpuSurfaceSession {
             "CPU surface slot identity or dimensions changed"
         );
         fence(Ordering::Acquire);
-        Ok(slot.map[..usize::try_from(frame.length)?].to_vec())
+        let length = usize::try_from(frame.length)?;
+        let pixels = slot
+            .map
+            .get(..length)
+            .context("CPU surface mapping is shorter than the frame")?
+            .to_vec();
+        drop(slots);
+        Ok(pixels)
     }
 
     pub fn cache_capture(
@@ -244,6 +253,7 @@ impl CpuSurfaceSession {
         if let Some(capture) = captures.iter().find(|capture| capture.identity == identity) {
             let descriptor = capture.descriptor.clone();
             prune_captures(&mut captures, preserve, Some(&descriptor));
+            drop(captures);
             return Ok(descriptor);
         }
         prune_captures(&mut captures, preserve, None);
@@ -280,6 +290,7 @@ impl CpuSurfaceSession {
             descriptor: descriptor.clone(),
             _map: map,
         });
+        drop(captures);
         Ok(descriptor)
     }
 
@@ -386,7 +397,10 @@ pub fn write_frame(
         .chunks_exact(compact_row)
         .zip(map.chunks_exact_mut(stride))
     {
-        destination[..compact_row].copy_from_slice(source);
+        destination
+            .get_mut(..compact_row)
+            .context("CPU surface destination row is shorter than expected")?
+            .copy_from_slice(source);
     }
     fence(Ordering::Release);
     Ok(())
@@ -493,11 +507,16 @@ pub fn readback_rgba16(
         "CPU preview readback requires RGBA16Float"
     );
     let row_bytes = u64::from(width) * BYTES_PER_PIXEL;
-    let padded = row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+    let alignment = u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let padded = row_bytes
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .context("CPU preview padded row size overflow")?;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Kama CPU preview readback"),
-        size: padded * u64::from(height),
+        size: padded
+            .checked_mul(u64::from(height))
+            .context("CPU preview readback buffer size overflow")?,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -538,12 +557,18 @@ pub fn readback_rgba16(
     let mapped = slice
         .get_mapped_range()
         .context("access mapped CPU preview readback")?;
-    let mut pixels = Vec::with_capacity(usize::try_from(row_bytes * u64::from(height))?);
+    let pixel_length = row_bytes
+        .checked_mul(u64::from(height))
+        .context("CPU preview pixel length overflow")?;
+    let mut pixels = Vec::with_capacity(usize::try_from(pixel_length)?);
     for row in mapped
         .chunks_exact(usize::try_from(padded)?)
         .take(height as usize)
     {
-        pixels.extend_from_slice(&row[..usize::try_from(row_bytes)?]);
+        let compact_row = row
+            .get(..usize::try_from(row_bytes)?)
+            .context("CPU preview readback row is shorter than expected")?;
+        pixels.extend_from_slice(compact_row);
     }
     drop(mapped);
     buffer.unmap();
@@ -573,18 +598,17 @@ fn new_session_token(parent_pid: i32, exporter_pid: i32) -> [u8; 32] {
         .unwrap_or_default()
         .as_nanos();
     let mut token = [0_u8; 32];
-    for index in 0..4_u64 {
+    for (index, chunk) in token.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         (
             stamp,
             parent_pid,
             exporter_pid,
             NEXT_TOKEN.fetch_add(1, Ordering::Relaxed),
-            index,
+            u64::try_from(index).unwrap_or_default(),
         )
             .hash(&mut hasher);
-        token[index as usize * 8..index as usize * 8 + 8]
-            .copy_from_slice(&hasher.finish().to_le_bytes());
+        chunk.copy_from_slice(&hasher.finish().to_le_bytes());
     }
     token
 }

@@ -369,7 +369,7 @@ pub fn probe_av_media(path: &Path) -> Result<AvMediaProbe> {
     }
 }
 
-pub(crate) fn probe_av_media_local(path: &Path) -> Result<AvMediaProbe> {
+pub fn probe_av_media_local(path: &Path) -> Result<AvMediaProbe> {
     init_ffmpeg()?;
     let input = format::input(path).with_context(|| format!("open media {}", path.display()))?;
     let video = input.streams().best(Type::Video);
@@ -2195,7 +2195,7 @@ fn shared_video_preview_cache(path: &Path) -> Arc<SharedPreviewCache> {
         .to_owned();
     let _ = thread::Builder::new()
         .name(format!("kama-video-preview-{preview_name}"))
-        .spawn(move || video_preview_worker(worker_path, &request_rx, &worker_cache));
+        .spawn(move || video_preview_worker(&worker_path, &request_rx, &worker_cache));
     cache
 }
 
@@ -2985,14 +2985,14 @@ fn scrub_thumbnail_dimensions(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn video_preview_worker(
-    path: PathBuf,
+    path: &Path,
     requests: &Receiver<PreviewBuildRequest>,
     cache: &Weak<SharedPreviewCache>,
 ) {
-    let duration = probe_av_media(&path).ok().and_then(|probe| probe.duration);
+    let duration = probe_av_media(path).ok().and_then(|probe| probe.duration);
 
     let mut decoder = crate::worker::is_processing_child()
-        .then(|| BlockingVideoDecoder::new_preview(path.clone()));
+        .then(|| BlockingVideoDecoder::new_preview(path.to_path_buf()));
     let Ok(mut request) = requests.recv() else {
         return;
     };
@@ -3028,23 +3028,26 @@ fn video_preview_worker(
                 }
                 break;
             }
-            let decoded = if let Some(decoder) = &mut decoder {
-                decoder.reference_frame(
-                    time,
-                    request.source_fps,
-                    preview_width,
-                    preview_height,
-                    None,
-                )
-            } else {
-                crate::media_worker::thumbnail(
-                    &path,
-                    time,
-                    request.source_fps,
-                    [preview_width, preview_height],
-                )
-            };
-            let frame = match decoded {
+            let frame_result = decoder.as_mut().map_or_else(
+                || {
+                    crate::media_worker::thumbnail(
+                        path,
+                        time,
+                        request.source_fps,
+                        [preview_width, preview_height],
+                    )
+                },
+                |decoder| {
+                    decoder.reference_frame(
+                        time,
+                        request.source_fps,
+                        preview_width,
+                        preview_height,
+                        None,
+                    )
+                },
+            );
+            let frame = match frame_result {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
                     match requests.recv() {
@@ -3085,7 +3088,7 @@ fn video_preview_worker(
     }
 }
 
-pub(crate) struct ThumbnailDecoder(BlockingVideoDecoder);
+pub struct ThumbnailDecoder(BlockingVideoDecoder);
 
 impl ThumbnailDecoder {
     pub(crate) fn new(path: &Path) -> Self {

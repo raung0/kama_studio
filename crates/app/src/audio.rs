@@ -36,6 +36,12 @@ use serde::{Deserialize, Serialize};
 const AUDIO_DRIFT_TOLERANCE: f32 = 0.090;
 const AUDIO_RETRY_DELAY: Duration = Duration::from_secs(2);
 
+fn deadline_after(duration: Duration) -> Instant {
+    Instant::now()
+        .checked_add(duration)
+        .unwrap_or_else(Instant::now)
+}
+
 fn audio_startup_ready(
     ready_generation: Option<(u64, u64)>,
     expected_generation: (u64, u64),
@@ -614,8 +620,13 @@ struct DesiredVoice {
     effects: Vec<AudioEffectSettings>,
 }
 
-pub(crate) struct AudioEngine {
-    _sink: Option<MixerDeviceSink>,
+struct AudioReadiness {
+    required: bool,
+    sources_consuming: bool,
+}
+
+pub struct AudioEngine {
+    sink: Option<MixerDeviceSink>,
     mixer: Option<Mixer>,
     master_meter: Arc<AudioMeter>,
     voices: HashMap<u64, AudioVoice>,
@@ -627,9 +638,7 @@ pub(crate) struct AudioEngine {
     last_playhead: Option<f32>,
     output_retry_at: Instant,
     output_retry_delay: Duration,
-    output_ready: bool,
-    audio_required: bool,
-    audio_sources_ready: bool,
+    readiness: AudioReadiness,
 }
 
 impl AudioEngine {
@@ -641,7 +650,7 @@ impl AudioEngine {
             })
             .ok();
         let mut engine = Self {
-            _sink: None,
+            sink: None,
             mixer: None,
             master_meter,
             voices: HashMap::new(),
@@ -653,9 +662,10 @@ impl AudioEngine {
             last_playhead: None,
             output_retry_at: Instant::now(),
             output_retry_delay: Duration::from_secs(1),
-            output_ready: false,
-            audio_required: false,
-            audio_sources_ready: false,
+            readiness: AudioReadiness {
+                required: false,
+                sources_consuming: false,
+            },
         };
         engine.retry_output();
         engine
@@ -670,9 +680,8 @@ impl AudioEngine {
                 mixer.add(Zero::new(channels, sample_rate));
                 sink.mixer()
                     .add(MeteredSource::new(source, Arc::clone(&self.master_meter)));
-                self._sink = Some(sink);
+                self.sink = Some(sink);
                 self.mixer = Some(mixer);
-                self.output_ready = true;
                 self.output_retry_delay = Duration::from_secs(1);
             }
             Err(error) => {
@@ -680,21 +689,24 @@ impl AudioEngine {
                     "Audio",
                     format!("output unavailable; retry scheduled: {error:#?}"),
                 );
-                self.output_ready = false;
                 self.mixer = None;
-                self._sink = None;
-                self.output_retry_at = Instant::now() + self.output_retry_delay;
-                self.output_retry_delay =
-                    (self.output_retry_delay * 2).min(Duration::from_secs(30));
+                self.sink = None;
+                self.output_retry_at = Instant::now()
+                    .checked_add(self.output_retry_delay)
+                    .unwrap_or_else(Instant::now);
+                self.output_retry_delay = self
+                    .output_retry_delay
+                    .saturating_mul(2)
+                    .min(Duration::from_secs(30));
             }
         }
     }
 
     pub const fn playback_ready(&self) -> (bool, bool, bool) {
         (
-            self.output_ready,
-            self.audio_required,
-            self.audio_sources_ready,
+            self.sink.is_some(),
+            self.readiness.required,
+            self.readiness.sources_consuming,
         )
     }
 
@@ -710,7 +722,7 @@ impl AudioEngine {
         self.playing = false;
         self.clock_lead = 0.0;
         self.last_playhead = None;
-        self.audio_sources_ready = false;
+        self.readiness.sources_consuming = false;
     }
 
     pub const fn set_master_muted(&mut self, muted: bool) {
@@ -736,7 +748,7 @@ impl AudioEngine {
             playhead,
             &mut desired,
         );
-        self.audio_required = !desired.is_empty();
+        self.readiness.required = !desired.is_empty();
         let desired_voice_count = desired.len();
         if self.mixer.is_none() && Instant::now() >= self.output_retry_at {
             self.retry_output();
@@ -744,7 +756,7 @@ impl AudioEngine {
         let Some(mixer) = self.mixer.as_ref() else {
             self.playing = false;
             self.clock_lead = 0.0;
-            self.audio_sources_ready = false;
+            self.readiness.sources_consuming = false;
             return;
         };
 
@@ -875,7 +887,7 @@ impl AudioEngine {
                 self.clock_lead = lead.clamp(0.0, 0.250);
             }
         }
-        self.audio_sources_ready = desired_voice_count == 0
+        self.readiness.sources_consuming = desired_voice_count == 0
             || (playing
                 && self.voices.len() == desired_voice_count
                 && self
@@ -918,10 +930,10 @@ fn open_default_output() -> Result<MixerDeviceSink> {
     let device = host
         .default_output_device()
         .context("the operating system has no default audio output device")?;
-    let device_name = device
-        .description()
-        .map(|description| description.name().to_owned())
-        .unwrap_or_else(|error| format!("unnamed device ({error:?})"));
+    let device_name = device.description().map_or_else(
+        |error| format!("unnamed device ({error:?})"),
+        |description| description.name().to_owned(),
+    );
     let config = device.default_output_config().with_context(|| {
         format!("read default output config for selected device {device_name:?}")
     })?;
@@ -975,7 +987,7 @@ enum AudioWorkerRequest {
     },
     Project {
         revision: u64,
-        snapshot: AudioProjectSnapshot,
+        snapshot: Box<AudioProjectSnapshot>,
     },
     Transport {
         revision: u64,
@@ -1140,17 +1152,17 @@ impl AudioWorkerProcess {
         let reader = thread::Builder::new()
             .name(format!("kama-audio-stdout-{pid}"))
             .spawn(move || {
-                audio_worker_reader(stdout, response_tx, cfg!(all(test, debug_assertions)));
+                audio_worker_reader(stdout, &response_tx, cfg!(all(test, debug_assertions)));
             })
             .context("start audio worker reader")?;
         let diagnostics_reader = thread::Builder::new()
             .name(format!("kama-audio-stderr-{pid}"))
-            .spawn(move || audio_worker_diagnostics(stderr, diagnostic_log))
+            .spawn(move || audio_worker_diagnostics(stderr, &diagnostic_log))
             .context("start audio worker diagnostics reader")?;
         let metrics_output = Arc::downgrade(&metrics);
         thread::Builder::new()
             .name(format!("kama-audio-metrics-{pid}"))
-            .spawn(move || audio_worker_metrics(pid, metrics_output))
+            .spawn(move || audio_worker_metrics(pid, &metrics_output))
             .context("start audio worker metrics sampler")?;
         request_tx
             .try_send(AudioWorkerRequest::Hello {
@@ -1196,7 +1208,7 @@ impl AudioWorkerProcess {
     }
 }
 
-fn audio_worker_metrics(pid: u32, output: std::sync::Weak<Mutex<Option<(f32, u64)>>>) {
+fn audio_worker_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<(f32, u64)>>>) {
     #[cfg(unix)]
     loop {
         let Some(output) = output.upgrade() else {
@@ -1215,10 +1227,10 @@ fn audio_worker_metrics(pid: u32, output: std::sync::Weak<Mutex<Option<(f32, u64
         let (Some(cpu), Some(rss_kib)) = (fields.next(), fields.next()) else {
             break;
         };
-        if let (Ok(cpu), Ok(rss_kib)) = (cpu.parse::<f32>(), rss_kib.parse::<u64>()) {
-            if let Ok(mut metrics) = output.lock() {
-                *metrics = Some((cpu, rss_kib.saturating_mul(1024)));
-            }
+        if let (Ok(cpu), Ok(rss_kib)) = (cpu.parse::<f32>(), rss_kib.parse::<u64>())
+            && let Ok(mut metrics) = output.lock()
+        {
+            *metrics = Some((cpu, rss_kib.saturating_mul(1024)));
         }
         drop(output);
         thread::sleep(Duration::from_secs(1));
@@ -1259,7 +1271,7 @@ fn read_bounded_line(
     Ok(Some(line))
 }
 
-fn audio_worker_diagnostics(stderr: impl std::io::Read, output: Arc<Mutex<VecDeque<String>>>) {
+fn audio_worker_diagnostics(stderr: impl std::io::Read, output: &Arc<Mutex<VecDeque<String>>>) {
     let mut reader = BufReader::new(stderr);
     while let Ok(Some(line)) = read_bounded_line(&mut reader, 1024) {
         if let Ok(mut output) = output.lock() {
@@ -1289,7 +1301,7 @@ fn audio_worker_writer(stdin: ChildStdin, requests: mpsc::Receiver<AudioWorkerRe
 
 fn audio_worker_reader(
     stdout: impl std::io::Read,
-    responses: mpsc::SyncSender<AudioWorkerResponse>,
+    responses: &mpsc::SyncSender<AudioWorkerResponse>,
     allow_test_harness_output: bool,
 ) {
     let mut reader = BufReader::new(stdout);
@@ -1339,6 +1351,10 @@ fn is_test_harness_output(line: &str) -> bool {
         || line.starts_with("test result:")
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "worker lifecycle and transport flags are independent protocol states"
+)]
 pub struct AudioPlayback {
     process: Option<AudioWorkerProcess>,
     last_pid: Option<u32>,
@@ -1421,7 +1437,7 @@ impl AudioPlayback {
             accepted_project_revision: None,
             accepted_project_name: None,
             status,
-            startup_deadline: Instant::now() + Duration::from_secs(10),
+            startup_deadline: deadline_after(Duration::from_secs(10)),
             last_response_at: Instant::now(),
             transport_waiting_since: None,
             ready_generation: None,
@@ -1476,12 +1492,12 @@ impl AudioPlayback {
         )
     }
 
-    pub fn set_video_ready(&mut self, ready: bool) {
+    pub const fn set_video_ready(&mut self, ready: bool) {
         self.video_ready = ready;
     }
 
     #[cfg(debug_assertions)]
-    pub fn crash_for_test(&mut self) {
+    pub const fn crash_for_test(&mut self) {
         self.crash_requested = matches!(self.status, AudioWorkerStatus::Ready { .. });
     }
 
@@ -1552,7 +1568,7 @@ impl AudioPlayback {
                 && process
                     .send(AudioWorkerRequest::Project {
                         revision: worker_revision,
-                        snapshot: snapshot.clone(),
+                        snapshot: Box::new(snapshot.clone()),
                     })
                     .is_ok()
             {
@@ -1644,7 +1660,7 @@ impl AudioPlayback {
                     AudioWorkerResponse::Ready { protocol, pid } => {
                         if protocol == AUDIO_WORKER_PROTOCOL && pid == process.pid {
                             self.status = AudioWorkerStatus::Ready { pid };
-                            self.startup_deadline = Instant::now() + Duration::from_secs(10);
+                            self.startup_deadline = deadline_after(Duration::from_secs(10));
                             self.last_response_at = Instant::now();
                         } else {
                             invalid_ready = true;
@@ -1809,7 +1825,7 @@ impl AudioPlayback {
                     if process
                         .send(AudioWorkerRequest::Project {
                             revision,
-                            snapshot: snapshot.clone(),
+                            snapshot: Box::new(snapshot.clone()),
                         })
                         .is_ok()
                     {
@@ -1818,7 +1834,7 @@ impl AudioPlayback {
                 }
                 self.process = Some(process);
                 self.status = AudioWorkerStatus::Restarting;
-                self.startup_deadline = Instant::now() + Duration::from_secs(10);
+                self.startup_deadline = deadline_after(Duration::from_secs(10));
                 self.last_response_at = Instant::now();
                 self.transport_waiting_since = None;
                 self.crash_reported = false;
@@ -1878,7 +1894,7 @@ impl AudioPlayback {
         }
     }
 
-    pub fn master_levels(&self) -> [f32; 2] {
+    pub const fn master_levels(&self) -> [f32; 2] {
         if self.playing && !self.master_muted {
             self.master_levels
         } else {
@@ -1887,7 +1903,11 @@ impl AudioPlayback {
     }
 }
 
-pub(super) fn run_audio_worker() -> Result<()> {
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the stdin lock must remain held while reading subsequent worker requests"
+)]
+pub fn run_audio_worker() -> Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     let mut lines = stdin.lock().lines();
@@ -2798,7 +2818,7 @@ mod tests {
         };
         let request = AudioWorkerRequest::Project {
             revision: 6,
-            snapshot,
+            snapshot: Box::new(snapshot),
         };
 
         let encoded = serde_json::to_vec(&request).unwrap();
@@ -2807,13 +2827,17 @@ mod tests {
         else {
             panic!("audio project request expected");
         };
-        let mut restored = snapshot.project;
-        snapshot.worker_state.restore(&mut restored).unwrap();
+        let AudioProjectSnapshot {
+            mut project,
+            worker_state,
+            ..
+        } = *snapshot;
+        worker_state.restore(&mut project).unwrap();
         assert_eq!(
-            restored.media[0].path,
+            project.media[0].path,
             PathBuf::from("/resolved/current/narration.wav")
         );
-        assert_eq!(restored.active_composition, active_composition);
+        assert_eq!(project.active_composition, active_composition);
     }
 
     #[cfg(debug_assertions)]
@@ -2946,7 +2970,7 @@ mod tests {
     fn response_backpressure_preserves_lifecycle_messages() {
         let input = b"{\"type\":\"ready\",\"protocol\":1,\"pid\":4210}\n{\"type\":\"ready\",\"protocol\":1,\"pid\":4211}\n{\"type\":\"stopped\"}\n";
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let reader = std::thread::spawn(move || super::audio_worker_reader(&input[..], tx, false));
+        let reader = std::thread::spawn(move || super::audio_worker_reader(&input[..], &tx, false));
         let timeout = std::time::Duration::from_secs(2);
         assert!(matches!(
             rx.recv_timeout(timeout).unwrap(),
@@ -2983,7 +3007,7 @@ mod tests {
         input.push(b'\n');
         let (tx, rx) = std::sync::mpsc::sync_channel(2);
         let reader = std::thread::spawn(move || {
-            super::audio_worker_reader(&input[..], tx, false);
+            super::audio_worker_reader(&input[..], &tx, false);
         });
 
         assert!(matches!(

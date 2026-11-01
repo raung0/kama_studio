@@ -278,7 +278,7 @@ pub fn analyze_media(asset: &MediaAsset) -> Option<WaveformData> {
     }
 }
 
-pub(crate) fn analyze_media_local(asset: &MediaAsset) -> Option<WaveformData> {
+pub fn analyze_media_local(asset: &MediaAsset) -> Option<WaveformData> {
     let video = matches!(asset.kind, MediaKind::Video)
         .then(|| analyze_video(&asset.path))
         .transpose()

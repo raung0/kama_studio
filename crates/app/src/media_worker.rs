@@ -19,7 +19,14 @@ static ANALYSIS_JOB: Mutex<Option<Session>> = Mutex::new(None);
 static THUMBNAIL_JOB: Mutex<Option<Session>> = Mutex::new(None);
 static CAPTURE_JOB: Mutex<Option<Session>> = Mutex::new(None);
 
-pub(crate) struct CapturedFrame {
+fn rgba16_len(size: [u32; 2]) -> Result<u64> {
+    u64::from(size[0])
+        .checked_mul(u64::from(size[1]))
+        .and_then(|pixels| pixels.checked_mul(8))
+        .context("RGBA16 image size overflow")
+}
+
+pub struct CapturedFrame {
     pub size: [u32; 2],
     pub pixels: Vec<u8>,
     pub saved_path: Option<PathBuf>,
@@ -92,9 +99,9 @@ impl ThumbnailFrame {
     }
 
     fn into_frame(self) -> Result<crate::runtime::video::VideoFrame> {
-        let size = u64::from(self.fit_size[0]) * u64::from(self.fit_size[1]);
+        let length = rgba16_len(self.fit_size)?;
         anyhow::ensure!(
-            size <= 1024 * 1024 && self.pixels.len() as u64 == size * 8,
+            length / 8 <= 1024 * 1024 && u64::try_from(self.pixels.len())? == length,
             "invalid thumbnail pixel dimensions"
         );
         let mut frame = crate::runtime::video::VideoFrame::from_rgba16(
@@ -120,6 +127,19 @@ struct Reply {
 
 struct Process(Option<Child>);
 
+struct Cleanup {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
@@ -131,14 +151,14 @@ impl Drop for Process {
     }
 }
 
-pub(crate) fn probe(path: &Path) -> Result<AvMediaProbe> {
+pub fn probe(path: &Path) -> Result<AvMediaProbe> {
     match execute(Request::Probe(path.to_owned()), Duration::from_secs(20))? {
         Response::Probe(probe) => Ok(probe),
         _ => anyhow::bail!("unexpected media probe response"),
     }
 }
 
-pub(crate) fn analyze(asset: &MediaAsset) -> Result<Option<WaveformData>> {
+pub fn analyze(asset: &MediaAsset) -> Result<Option<WaveformData>> {
     let mut snapshot = asset.clone();
     snapshot.waveform = None;
     match execute(
@@ -153,7 +173,7 @@ pub(crate) fn analyze(asset: &MediaAsset) -> Result<Option<WaveformData>> {
     }
 }
 
-pub(crate) fn thumbnail(
+pub fn thumbnail(
     path: &Path,
     time: f64,
     fps: f64,
@@ -210,7 +230,7 @@ fn execute(request: Request, timeout: Duration) -> Result<Response> {
     result
 }
 
-pub(crate) fn capture(
+pub fn capture(
     project: crate::project::Project,
     timeline: crate::timeline::TimelineDocument,
     playhead: f32,
@@ -230,17 +250,6 @@ pub(crate) fn capture(
         options.mode(0o600);
     }
     let file = options.open(&output)?;
-    struct Cleanup {
-        path: PathBuf,
-        keep: bool,
-    }
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            if !self.keep {
-                let _ = std::fs::remove_file(&self.path);
-            }
-        }
-    }
     let _cleanup = Cleanup {
         path: output.clone(),
         keep: false,
@@ -290,7 +299,7 @@ pub(crate) fn capture(
         size == expected_size && returned_path == saved_path,
         "frame capture response differs from request"
     );
-    let expected = u64::from(size[0]) * u64::from(size[1]) * 8;
+    let expected = rgba16_len(size)?;
     anyhow::ensure!(
         expected <= 256 * 1024 * 1024 && std::fs::metadata(&output)?.len() == expected,
         "invalid captured frame size"
@@ -363,9 +372,12 @@ impl Session {
                     break;
                 }
                 if let Ok(mut captured) = captured.lock() {
-                    captured.extend_from_slice(&buffer[..count]);
+                    let Some(chunk) = buffer.get(..count) else {
+                        break;
+                    };
+                    captured.extend_from_slice(chunk);
                     if captured.len() > 32_768 {
-                        let excess = captured.len() - 32_768;
+                        let excess = captured.len().saturating_sub(32_768);
                         captured.drain(..excess);
                     }
                 }
@@ -380,17 +392,20 @@ impl Session {
                     serde_json::to_writer(&mut input, &request)?;
                     input.write_all(b"\n")?;
                     input.flush()?;
-                    loop {
+                    #[cfg(test)]
+                    let line = loop {
                         let line = read_message(&mut reader)?;
-                        #[cfg(test)]
                         if line.trim().is_empty()
                             || line.starts_with("running ")
                             || line.starts_with("test ")
                         {
                             continue;
                         }
-                        return serde_json::from_str(&line).context("decode media worker response");
-                    }
+                        break line;
+                    };
+                    #[cfg(not(test))]
+                    let line = read_message(&mut reader)?;
+                    serde_json::from_str(&line).context("decode media worker response")
                 })();
                 let failed = result.is_err();
                 if tx.send(result).is_err() || failed {
@@ -453,13 +468,17 @@ fn read_message(reader: &mut impl BufRead) -> Result<String> {
         .read_until(b'\n', &mut bytes)?;
     anyhow::ensure!(count > 0, "media worker closed its response stream");
     anyhow::ensure!(
-        count as u64 <= MAX_MESSAGE_BYTES,
+        u64::try_from(count)? <= MAX_MESSAGE_BYTES,
         "media worker message exceeds size limit"
     );
     String::from_utf8(bytes).context("media worker message is not UTF-8")
 }
 
-pub(super) fn run() -> Result<()> {
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the stdin lock must stay held for the worker request loop"
+)]
+pub fn run() -> Result<()> {
     let input = std::io::stdin();
     let mut input = input.lock();
     let mut thumbnail_decoder = None;
@@ -484,7 +503,7 @@ pub(super) fn run() -> Result<()> {
                     .active_settings()
                     .canvas_size
                     .map(|value| value.max(1));
-                let expected = u64::from(size[0]) * u64::from(size[1]) * 8;
+                let expected = rgba16_len(size)?;
                 anyhow::ensure!(
                     playhead.is_finite() && expected <= 256 * 1024 * 1024,
                     "capture exceeds the frame size limit"
@@ -496,7 +515,7 @@ pub(super) fn run() -> Result<()> {
                     &plugin_paths,
                 )?;
                 anyhow::ensure!(
-                    pixels.len() as u64 == expected,
+                    u64::try_from(pixels.len())? == expected,
                     "capture renderer returned an invalid frame size"
                 );
                 let mut raw = std::fs::OpenOptions::new()
@@ -508,9 +527,10 @@ pub(super) fn run() -> Result<()> {
                     if let Some(parent) = path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
-                    let samples = pixels
-                        .chunks_exact(2)
-                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                    let (pixel_samples, _) = pixels.as_chunks::<2>();
+                    let samples = pixel_samples
+                        .iter()
+                        .map(|bytes| u16::from_le_bytes(*bytes))
                         .collect::<Vec<_>>();
                     let image = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
                         size[0], size[1], samples,
@@ -590,6 +610,8 @@ pub(super) fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     #[test]
     fn capture_never_overwrites_an_existing_destination() {
         let output =
@@ -614,7 +636,6 @@ mod tests {
         let source = root.join("red-then-blue.y4m");
         let output = root.join("captured-blue.png");
         let mut file = std::fs::File::create(&source).unwrap();
-        use std::io::Write;
         file.write_all(b"YUV4MPEG2 W16 H16 F2:1 Ip A1:1 C420mpeg2 XCOLORRANGE=LIMITED\n")
             .unwrap();
         for (y, cb, cr) in [(81, 90, 240), (41, 240, 110)] {
@@ -651,13 +672,18 @@ mod tests {
         assert_eq!(captured.saved_path.as_ref(), Some(&output));
         let saved = image::open(&output).unwrap().to_rgba16();
         assert_eq!(saved.dimensions(), (16, 16));
-        for (raw, pixel) in captured.pixels.chunks_exact(8).zip(saved.pixels()) {
-            let values = raw
-                .chunks_exact(2)
-                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        let (raw_pixels, _) = captured.pixels.as_chunks::<8>();
+        for (raw, pixel) in raw_pixels.iter().zip(saved.pixels()) {
+            let (channels, _) = raw.as_chunks::<2>();
+            let values = channels
+                .iter()
+                .map(|bytes| u16::from_le_bytes(*bytes))
                 .collect::<Vec<_>>();
             assert!(
-                i32::from(values[2]) - i32::from(values[0]) > 20_000,
+                values
+                    .get(2)
+                    .zip(values.first())
+                    .is_some_and(|(blue, red)| i32::from(*blue) - i32::from(*red) > 20_000),
                 "capture at 0.5 seconds must be blue: {values:?}"
             );
             assert_eq!(values.as_slice(), &pixel.0);
@@ -671,9 +697,9 @@ mod tests {
     #[test]
     fn hung_media_job_reports_unresponsiveness_without_waiting_for_completion() {
         let mut session = super::Session::spawn().unwrap();
-        let error = match session.execute(super::Request::Hang, std::time::Duration::from_secs(1)) {
-            Ok(_) => panic!("hung child must reach the response deadline"),
-            Err(error) => error,
+        let Err(error) = session.execute(super::Request::Hang, std::time::Duration::from_secs(1))
+        else {
+            panic!("hung child must reach the response deadline");
         };
         let diagnostic = format!("{error:#}");
         assert!(diagnostic.contains("media process"));
@@ -682,7 +708,6 @@ mod tests {
 
     #[test]
     fn child_thumbnail_returns_cpu_pixels_with_source_dimensions() {
-        use std::io::Write;
         let path =
             std::env::temp_dir().join(format!("kama-thumbnail-job-{}.y4m", std::process::id()));
         let mut file = std::fs::File::create(&path).unwrap();
@@ -703,8 +728,8 @@ mod tests {
             panic!("native FFmpeg frame ownership must not cross into the UI process");
         };
         assert_eq!(pixels.len(), 16 * 16 * 8);
-        for channel in pixels.chunks_exact(2) {
-            assert!(u16::from_le_bytes([channel[0], channel[1]]) > 50_000);
+        for channel in pixels.as_chunks::<2>().0 {
+            assert!(u16::from_le_bytes(*channel) > 50_000);
         }
         let next = super::thumbnail(&path, 1.0 / 24.0, 24.0, [16, 16])
             .unwrap()
@@ -712,11 +737,14 @@ mod tests {
         let crate::runtime::video::VideoFramePixels::Rgba16(pixels) = &next.pixels else {
             panic!("second thumbnail must also contain independent CPU pixels");
         };
-        for pixel in pixels.chunks_exact(8) {
-            for channel in pixel[..6].chunks_exact(2) {
-                assert!(u16::from_le_bytes([channel[0], channel[1]]) < 1_000);
+        for pixel in pixels.as_chunks::<8>().0 {
+            for channel in pixel.as_chunks::<2>().0.iter().take(3) {
+                assert!(u16::from_le_bytes(*channel) < 1_000);
             }
-            assert_eq!(u16::from_le_bytes([pixel[6], pixel[7]]), u16::MAX);
+            assert_eq!(
+                u16::from_le_bytes(*pixel.as_chunks::<2>().0.get(3).unwrap()),
+                u16::MAX
+            );
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -724,9 +752,9 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn crashing_a_media_job_returns_an_error_to_the_live_parent() {
-        let error = match super::execute(super::Request::Crash, std::time::Duration::from_secs(5)) {
-            Ok(_) => panic!("crashed child cannot produce a successful response"),
-            Err(error) => error,
+        let Err(error) = super::execute(super::Request::Crash, std::time::Duration::from_secs(5))
+        else {
+            panic!("crashed child cannot produce a successful response");
         };
         let diagnostic = format!("{error:#}");
         assert!(diagnostic.contains("media process"));
@@ -736,8 +764,6 @@ mod tests {
     #[test]
     fn child_probes_audio_and_returns_nonempty_waveform_bands() {
         use crate::project::Project;
-        use std::io::Write;
-
         let path = std::env::temp_dir().join(format!("kama-media-job-{}.wav", std::process::id()));
         let frames = 44_100_u32;
         let mut file = std::fs::File::create(&path).unwrap();
@@ -749,7 +775,7 @@ mod tests {
         file.write_all(b"\x02\0\x10\0data").unwrap();
         file.write_all(&(frames * 2).to_le_bytes()).unwrap();
         for index in 0..frames {
-            let phase = index as f64 * std::f64::consts::TAU * 440.0 / 44_100.0;
+            let phase = f64::from(index) * std::f64::consts::TAU * 440.0 / 44_100.0;
             let sample = if index < 22_050 {
                 0
             } else {

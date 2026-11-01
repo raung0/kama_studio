@@ -8843,7 +8843,9 @@ mod effect_model_tests {
         let mut timeline = TimelineState::default();
         timeline.toggle_playback();
         timeline.set_playback_ready(false);
-        timeline.selection_frame = Instant::now() - Duration::from_millis(40);
+        timeline.selection_frame = Instant::now()
+            .checked_sub(Duration::from_millis(40))
+            .unwrap_or_else(Instant::now);
         timeline.tick(&LayoutSnapshot::default(), 30.0);
         assert_eq!(timeline.playhead(), 0.0);
 
@@ -8851,7 +8853,9 @@ mod effect_model_tests {
         timeline.tick(&LayoutSnapshot::default(), 30.0);
         assert_eq!(timeline.playhead(), 0.0);
 
-        timeline.selection_frame = Instant::now() - Duration::from_millis(30);
+        timeline.selection_frame = Instant::now()
+            .checked_sub(Duration::from_millis(30))
+            .unwrap_or_else(Instant::now);
         timeline.tick(&LayoutSnapshot::default(), 30.0);
         assert!(timeline.playhead() >= 0.02);
     }

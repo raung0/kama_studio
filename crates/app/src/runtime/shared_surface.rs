@@ -146,9 +146,9 @@ mod platform {
                     width,
                     height,
                     parent_pid,
-                    &mut info,
-                    &mut native,
-                    &mut raw_texture,
+                    &raw mut info,
+                    &raw mut native,
+                    &raw mut raw_texture,
                 )
             };
             anyhow::ensure!(
@@ -180,11 +180,15 @@ mod platform {
             })
         }
 
-        pub fn descriptor(&self) -> &SharedSurfaceDescriptor {
+        pub const fn descriptor(&self) -> &SharedSurfaceDescriptor {
             &self.descriptor
         }
 
-        pub fn texture(&self) -> &wgpu::Texture {
+        #[expect(
+            clippy::expect_used,
+            reason = "the texture is present until ownership is explicitly transferred"
+        )]
+        pub const fn texture(&self) -> &wgpu::Texture {
             self.texture
                 .as_ref()
                 .expect("surface texture remains owned")
@@ -229,10 +233,10 @@ mod platform {
             let status = unsafe {
                 kama_shared_surface_receive(
                     metal_device,
-                    &info,
+                    &raw const info,
                     timeout_ms,
-                    &mut native,
-                    &mut raw_texture,
+                    &raw mut native,
+                    &raw mut raw_texture,
                 )
             };
             anyhow::ensure!(status == 0, "receive/import IOSurface failed: {status}");
@@ -258,12 +262,20 @@ mod platform {
             })
         }
 
-        pub fn texture(&self) -> &wgpu::Texture {
+        #[expect(
+            clippy::expect_used,
+            reason = "the imported texture is present until ownership is explicitly transferred"
+        )]
+        pub const fn texture(&self) -> &wgpu::Texture {
             self.texture
                 .as_ref()
                 .expect("imported texture remains owned")
         }
 
+        #[expect(
+            clippy::expect_used,
+            reason = "receive constructs this value with a texture and transfers it exactly once"
+        )]
         pub fn into_texture(mut self) -> wgpu::Texture {
             self.texture.take().expect("imported texture remains owned")
         }
@@ -384,6 +396,9 @@ mod platform {
         })
     }
 
+    pub use ImportedSurface as PlatformImportedSurface;
+    pub use SharedSurface as PlatformSharedSurface;
+
     #[cfg(test)]
     mod tests {
         use std::{
@@ -399,10 +414,13 @@ mod platform {
             let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
             descriptor.backends = wgpu::Backends::METAL;
             let instance = wgpu::Instance::new(descriptor);
-            let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
-                .expect("Metal adapter available");
-            let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
-                .expect("request Metal device");
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
+            .expect("Metal adapter available");
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                    .expect("request Metal device");
             (instance, device, queue)
         }
 
@@ -410,7 +428,9 @@ mod platform {
             child: &mut std::process::Child,
             timeout: Duration,
         ) -> std::process::ExitStatus {
-            let deadline = Instant::now() + timeout;
+            let deadline = Instant::now()
+                .checked_add(timeout)
+                .unwrap_or_else(Instant::now);
             loop {
                 if let Some(status) = child.try_wait().expect("poll subprocess") {
                     return status;
@@ -429,14 +449,15 @@ mod platform {
             if std::env::var_os("KAMA_SHARED_SURFACE_CHILD_TEST").is_none() {
                 return;
             }
-            let mut encoded = String::new();
+            let mut encoded_descriptor = String::new();
             std::io::stdin()
                 .lock()
-                .read_line(&mut encoded)
+                .read_line(&mut encoded_descriptor)
                 .expect("read descriptor from parent");
-            let descriptor =
-                serde_json::from_str::<super::super::SharedSurfaceDescriptor>(encoded.trim())
-                    .expect("decode parent descriptor");
+            let descriptor = serde_json::from_str::<super::super::SharedSurfaceDescriptor>(
+                encoded_descriptor.trim(),
+            )
+            .expect("decode parent descriptor");
             let (_instance, device, queue) = metal_device();
 
             let mut bad_session = descriptor.clone();
@@ -464,7 +485,8 @@ mod platform {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             encoder.copy_texture_to_buffer(
                 imported.texture().as_image_copy(),
                 wgpu::TexelCopyBufferInfo {
@@ -498,9 +520,9 @@ mod platform {
                 .expect("map imported pixels");
             let mapped = slice.get_mapped_range().expect("mapped GPU readback");
             let expected = [0, 52, 0, 56, 0, 58, 0, 60];
-            for row in mapped.chunks_exact(256).take(4) {
-                for pixel in row[..32].chunks_exact(8) {
-                    assert_eq!(pixel, expected);
+            for row in mapped.as_chunks::<256>().0.iter().take(4) {
+                for pixel in row.as_chunks::<8>().0.iter().take(4) {
+                    assert_eq!(pixel, &expected);
                 }
             }
             println!("child verified all imported RGBA16Float pixels");
@@ -524,8 +546,11 @@ mod platform {
             let surface = SharedSurface::allocate(&device, 4, 4, child_pid)
                 .expect("allocate IOSurface and authenticated Mach channel");
 
-            let view = surface.texture().create_view(&Default::default());
-            let mut encoder = device.create_command_encoder(&Default::default());
+            let view = surface
+                .texture()
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
                 let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("deterministic shared-surface clear"),
@@ -581,9 +606,6 @@ mod platform {
             );
         }
     }
-
-    pub use ImportedSurface as PlatformImportedSurface;
-    pub use SharedSurface as PlatformSharedSurface;
 }
 
 #[cfg(target_os = "macos")]

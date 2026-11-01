@@ -94,7 +94,7 @@ pub struct Project {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct WorkerProjectState {
+pub struct WorkerProjectState {
     active_composition: CompositionId,
     media_paths: Vec<(MediaId, PathBuf)>,
 }
@@ -1072,7 +1072,10 @@ impl Project {
         let Some(index) = self.media.iter().position(|asset| asset.id == id) else {
             anyhow::bail!("media asset {id} does not exist");
         };
-        let current = &self.media[index];
+        let current = self
+            .media
+            .get(index)
+            .context("located media asset disappeared before replacement")?;
         let replacement = media_asset_from_path(id, path)?;
         ensure_media_replacement_compatible(current.kind, replacement.kind)?;
         let previous_name = current.name.clone();
@@ -1096,7 +1099,10 @@ impl Project {
                 }
             }
         }
-        self.media[index] = replacement;
+        *self
+            .media
+            .get_mut(index)
+            .context("located media asset disappeared during replacement")? = replacement;
         Ok(())
     }
 

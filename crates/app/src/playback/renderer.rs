@@ -717,7 +717,7 @@ impl FrameRenderer {
         Self::new_with_device(device, effects, plugins)
     }
 
-    pub(crate) fn source_geometry(&self) -> &HashMap<u32, SourceGeometry> {
+    pub(crate) const fn source_geometry(&self) -> &HashMap<u32, SourceGeometry> {
         &self.source_geometry
     }
 
@@ -2631,7 +2631,8 @@ impl FrameRenderer {
         if let Some((_, _, decoder)) = &mut self.render_cache_decoder {
             decoded_frame_ready |= decoder.poll_completed();
         }
-        decoded_frame_ready |= self.poll_generator_worker();
+        let generator_frame_ready = self.poll_generator_worker();
+        decoded_frame_ready |= generator_frame_ready;
         if decoded_frame_ready {
             self.last_signature = None;
         }
@@ -2750,7 +2751,8 @@ impl FrameRenderer {
 
         if self.waiting_for_video {
             self.last_signature = None;
-            return Ok(scrubbing && !self.preview_missing_source);
+            // Waiting for the newest generator request would starve playback when rendering is slower than the frame rate.
+            return Ok((scrubbing || generator_frame_ready) && !self.preview_missing_source);
         }
         self.last_signature = Some(signature);
         self.last_presentation_identity = Some(presentation.identity());
@@ -3352,19 +3354,232 @@ fn placeholder_frame(label: &str, preview_width: u32, preview_height: u32) -> Cp
     frame
 }
 
+fn srgb_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 #[cfg(test)]
 mod headless_preview_tests {
     use super::*;
     use crate::{
         effects::EffectRuntime, plugin::PluginRegistry, project::Project, timeline::TimelineState,
     };
+    use std::time::Duration;
+
+    #[test]
+    fn slow_animated_generator_publishes_completions_while_newer_frames_are_pending() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            ..wgpu::DeviceDescriptor::default()
+        }))
+        .unwrap();
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [16, 16];
+        let plugins = PluginRegistry::load_default("").unwrap();
+        let effects = EffectRuntime::default();
+        let generator = plugins.generator("builtin.regular_polygon").unwrap();
+        let mut timeline = TimelineState::default();
+        let track = timeline
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .unwrap()
+            .id;
+        assert!(timeline.insert_plugin_generator_at(
+            track,
+            0.0,
+            generator,
+            PipelineInstance::effect_default()
+        ));
+        timeline.toggle_generator_keyframe("rotation");
+        timeline.set_worker_transport(2.0, false);
+        timeline.set_generator_value("rotation", GpuValue::F32(180.0));
+        let mut renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+        let (completed, responses) = mpsc::channel();
+        let shared = Arc::new(GeneratorWorkerShared {
+            jobs: Mutex::new(HashMap::new()),
+            wake: Condvar::new(),
+            closed: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+        });
+        renderer.generator_worker = Some(GeneratorWorker {
+            shared: Arc::clone(&shared),
+            responses,
+            pending: HashMap::new(),
+        });
+        let output = PresentationTexture::new(&device, 16, 16);
+        let mut refresh = |renderer: &mut FrameRenderer, time| {
+            timeline.set_worker_transport(time, true);
+            renderer
+                .refresh_preview_on(
+                    &device,
+                    &queue,
+                    &project,
+                    &timeline,
+                    &effects,
+                    &plugins,
+                    None,
+                    [16, 16],
+                    1.0,
+                    false,
+                    None,
+                    &output,
+                )
+                .unwrap()
+        };
+        assert!(!refresh(&mut renderer, 0.0));
+        let first = {
+            let mut jobs = shared.jobs.lock().unwrap();
+            let slot = *jobs.keys().next().unwrap();
+            jobs.remove(&slot).unwrap()
+        };
+        for time in [0.1, 0.2, 0.3] {
+            assert!(!refresh(&mut renderer, time));
+            assert_eq!(
+                shared.jobs.lock().unwrap().len(),
+                1,
+                "only the latest request should be queued"
+            );
+        }
+        let frame = |color| {
+            let mut pixels = CpuFrame::transparent(16, 16);
+            for y in 0..16 {
+                for x in 0..16 {
+                    pixels.set_rgba(x, y, color);
+                }
+            }
+            VideoGpuRuntime::upload(&device, &queue, &pixels)
+        };
+        completed
+            .send(GeneratorWorkerResult {
+                slot: first.slot,
+                key: first.key,
+                epoch: first.epoch,
+                result: Ok(frame([1.0, 0.0, 0.0, 1.0])),
+            })
+            .unwrap();
+        assert!(
+            refresh(&mut renderer, 0.4),
+            "a completed frame must be published before animation stops"
+        );
+        assert!(
+            renderer.is_waiting_for_video(),
+            "a newer generator request is still pending"
+        );
+        assert_eq!(
+            read_center_pixel(&device, &queue, &output),
+            [0x3c00, 0, 0, 0x3c00]
+        );
+        let next = {
+            let mut jobs = shared.jobs.lock().unwrap();
+            let slot = *jobs.keys().next().unwrap();
+            jobs.remove(&slot).unwrap()
+        };
+        assert_ne!(
+            first.key, next.key,
+            "the queued request must advance to the newest time"
+        );
+        assert!(
+            matches!(
+                &next.kind,
+                GeneratorWorkerKind::Plugin { parameter_time, .. }
+                    if (*parameter_time - 0.4).abs() < 0.00001
+            ),
+            "slow rendering must skip queued intermediate animation times"
+        );
+        completed
+            .send(GeneratorWorkerResult {
+                slot: next.slot,
+                key: next.key,
+                epoch: next.epoch,
+                result: Ok(frame([0.0, 1.0, 0.0, 1.0])),
+            })
+            .unwrap();
+        assert!(refresh(&mut renderer, 0.8));
+        assert_eq!(
+            read_center_pixel(&device, &queue, &output),
+            [0, 0x3c00, 0, 0x3c00]
+        );
+        renderer.clear_caches();
+        completed
+            .send(GeneratorWorkerResult {
+                slot: first.slot,
+                key: first.key,
+                epoch: first.epoch,
+                result: Ok(frame([1.0, 0.0, 0.0, 1.0])),
+            })
+            .unwrap();
+        assert!(
+            !refresh(&mut renderer, 1.2),
+            "invalidation must still reject unrelated old completions"
+        );
+    }
+
+    fn read_center_pixel(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        output: &PresentationTexture,
+    ) -> [u16; 4] {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("generator progress pixels"),
+            size: 256 * 16,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            output.texture().as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(16),
+                },
+            },
+            wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let (tx, rx) = mpsc::sync_channel(1);
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).unwrap();
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(5)),
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+        let pixels = buffer.slice(..).get_mapped_range().unwrap();
+        let center = &pixels[8 * 256 + 8 * 8..8 * 256 + 8 * 8 + 8];
+        let components: [[u8; 2]; 4] = center.as_chunks::<2>().0.try_into().unwrap();
+        components.map(u16::from_le_bytes)
+    }
 
     #[test]
     fn seeking_never_publishes_a_frame_with_an_unfinished_generator() {
         use std::time::{Duration, Instant};
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
@@ -3459,7 +3674,8 @@ mod headless_preview_tests {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             encoder.copy_texture_to_buffer(
                 output.texture().as_image_copy(),
                 wgpu::TexelCopyBufferInfo {
@@ -3520,7 +3736,9 @@ mod headless_preview_tests {
         drop(file);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
@@ -3554,7 +3772,7 @@ mod headless_preview_tests {
             timeline.set_worker_transport(time, false);
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                let rendered = renderer
+                let published = renderer
                     .refresh_preview_on(
                         &device,
                         &queue,
@@ -3570,7 +3788,7 @@ mod headless_preview_tests {
                         &output,
                     )
                     .unwrap();
-                if rendered && !renderer.is_waiting_for_video() {
+                if published && !renderer.is_waiting_for_video() {
                     break;
                 }
                 assert!(
@@ -3585,7 +3803,8 @@ mod headless_preview_tests {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             encoder.copy_texture_to_buffer(
                 output.texture().as_image_copy(),
                 wgpu::TexelCopyBufferInfo {
@@ -3618,7 +3837,7 @@ mod headless_preview_tests {
             rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
             let pixels = buffer.slice(..).get_mapped_range().unwrap();
             let pixel = &pixels[8 * 256 + 8 * 8..8 * 256 + 8 * 8 + 8];
-            for component in pixel[..6].chunks_exact(2) {
+            for component in pixel[..6].as_chunks::<2>().0 {
                 let value = u16::from_le_bytes([component[0], component[1]]);
                 if white {
                     assert!(
@@ -3738,22 +3957,14 @@ mod headless_preview_tests {
                 .expect("map preview pixels");
             let mapped = slice.get_mapped_range().expect("mapped preview pixels");
             let expected = [0x00, 0x34, 0x00, 0x38, 0x00, 0x3a, 0x00, 0x3c];
-            for row in mapped.chunks_exact(256).take(4) {
-                for pixel in row[..32].chunks_exact(8) {
+            for row in mapped.as_chunks::<256>().0.iter().take(4) {
+                for pixel in row[..32].as_chunks::<8>().0 {
                     assert_eq!(
-                        pixel, expected,
+                        *pixel, expected,
                         "expected exact RGBA16Float solid-background pixel"
                     );
                 }
             }
         });
-    }
-}
-
-fn srgb_to_linear(value: f32) -> f32 {
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
     }
 }

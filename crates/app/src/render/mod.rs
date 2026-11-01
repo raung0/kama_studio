@@ -25,7 +25,7 @@ use crate::{
 mod cache_encoder;
 mod engine;
 
-pub(crate) fn capture_processing_frame(
+pub fn capture_processing_frame(
     project: &crate::project::Project,
     document: crate::timeline::TimelineDocument,
     playhead: f32,
@@ -51,11 +51,11 @@ pub(crate) fn capture_processing_frame(
 mod spec;
 mod transcoder;
 
-pub(crate) fn run_processing_worker() -> anyhow::Result<()> {
+pub fn run_processing_worker() -> anyhow::Result<()> {
     engine::run_render_process_worker()
 }
 
-pub(crate) fn create_processing_device(
+pub fn create_processing_device(
     expected_gpu: Option<u64>,
 ) -> anyhow::Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     engine::create_render_device(expected_gpu)

@@ -1,4 +1,4 @@
-pub(super) fn run(kind: &str) -> anyhow::Result<()> {
+pub fn run(kind: &str) -> anyhow::Result<()> {
     match kind {
         "audio" => crate::audio::run_audio_worker(),
         "media" => crate::media_worker::run(),
@@ -8,7 +8,7 @@ pub(super) fn run(kind: &str) -> anyhow::Result<()> {
     }
 }
 
-pub(crate) fn is_processing_child() -> bool {
+pub fn is_processing_child() -> bool {
     std::env::args().any(|argument| {
         argument
             .strip_prefix("--kama-worker=")

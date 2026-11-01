@@ -792,7 +792,7 @@ struct RenderProcessStart {
 
 #[derive(Serialize, Deserialize)]
 enum RenderProcessMessage {
-    Start(RenderProcessStart),
+    Start(Box<RenderProcessStart>),
     Command(RenderWorkerCommand),
 }
 
@@ -910,7 +910,7 @@ impl RenderTask {
         project: &Project,
         timeline: &TimelineState,
         _plugins: &PluginRegistry,
-        shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
+        shared_cache: &Arc<Mutex<Vec<CacheChunk>>>,
         interaction: (u64, bool, bool),
     ) -> Result<Self> {
         let (edit_revision, editing, interactive) = interaction;
@@ -982,7 +982,7 @@ impl RenderTask {
             .context("start render worker command writer")?;
         let latest_status = Arc::new(Mutex::new(None));
         let reader_status = Arc::clone(&latest_status);
-        let reader_cache = Arc::clone(&shared_cache);
+        let reader_cache = Arc::clone(shared_cache);
         let last_response_at = Arc::new(Mutex::new(Instant::now()));
         let reader_last_response_at = Arc::clone(&last_response_at);
         let diagnostics = Arc::new(Mutex::new(VecDeque::with_capacity(32)));
@@ -992,20 +992,20 @@ impl RenderTask {
             .spawn(move || {
                 render_process_reader(
                     child_stdout,
-                    reader_status,
-                    reader_cache,
-                    reader_diagnostics,
-                    reader_last_response_at,
+                    &reader_status,
+                    &reader_cache,
+                    &reader_diagnostics,
+                    &reader_last_response_at,
                 );
             })
             .context("start render worker response reader")?;
         let stderr_diagnostics = Arc::clone(&diagnostics);
         thread::Builder::new()
             .name(format!("kama-render-stderr-{pid}"))
-            .spawn(move || render_process_stderr(child_stderr, stderr_diagnostics))
+            .spawn(move || render_process_stderr(child_stderr, &stderr_diagnostics))
             .context("start render worker diagnostic reader")?;
         command_tx
-            .try_send(RenderProcessMessage::Start(start))
+            .try_send(RenderProcessMessage::Start(Box::new(start)))
             .map_err(|error| anyhow::anyhow!("queue render worker startup: {error}"))?;
         let child = child.into_child();
         let initial_status = RenderWorkerStatus {
@@ -1293,8 +1293,10 @@ impl RenderTask {
             Err(mpsc::TrySendError::Full(RenderProcessMessage::Command(command))) => {
                 self.queue_command(command)
             }
-            Err(mpsc::TrySendError::Full(RenderProcessMessage::Start(_)))
-            | Err(mpsc::TrySendError::Disconnected(_)) => false,
+            Err(
+                mpsc::TrySendError::Full(RenderProcessMessage::Start(_))
+                | mpsc::TrySendError::Disconnected(_),
+            ) => false,
         }
     }
 
@@ -1303,8 +1305,9 @@ impl RenderTask {
             .queued_commands
             .iter()
             .rposition(|queued| same_coalescing_class(queued, &command))
+            && let Some(queued) = self.queued_commands.get_mut(index)
         {
-            self.queued_commands[index] = command;
+            *queued = command;
             return true;
         }
         if self.queued_commands.len() < 16 {
@@ -1326,8 +1329,10 @@ impl RenderTask {
                     self.queued_commands.push_front(command);
                     break;
                 }
-                Err(mpsc::TrySendError::Full(RenderProcessMessage::Start(_)))
-                | Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err(
+                    mpsc::TrySendError::Full(RenderProcessMessage::Start(_))
+                    | mpsc::TrySendError::Disconnected(_),
+                ) => {
                     self.queued_commands.clear();
                     break;
                 }
@@ -1340,7 +1345,7 @@ fn render_worker_timed_out(last_response_at: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_response_at) >= Duration::from_secs(30)
 }
 
-fn same_coalescing_class(left: &RenderWorkerCommand, right: &RenderWorkerCommand) -> bool {
+const fn same_coalescing_class(left: &RenderWorkerCommand, right: &RenderWorkerCommand) -> bool {
     matches!(
         (left, right),
         (
@@ -1391,14 +1396,22 @@ struct RenderChildGuard {
 }
 
 impl RenderChildGuard {
-    fn new(child: std::process::Child) -> Self {
+    const fn new(child: std::process::Child) -> Self {
         Self { child: Some(child) }
     }
 
-    fn child_mut(&mut self) -> &mut std::process::Child {
+    #[expect(
+        clippy::expect_used,
+        reason = "the child guard owns its child until into_child transfers it"
+    )]
+    const fn child_mut(&mut self) -> &mut std::process::Child {
         self.child.as_mut().expect("guarded render child exists")
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the child guard owns its child until into_child transfers it"
+    )]
     fn id(&self) -> u32 {
         self.child
             .as_ref()
@@ -1406,6 +1419,10 @@ impl RenderChildGuard {
             .id()
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "the child guard owns its child until this one-time transfer"
+    )]
     fn into_child(mut self) -> std::process::Child {
         self.child.take().expect("guarded render child exists")
     }
@@ -1428,8 +1445,8 @@ fn run_render_worker(
     mut update_revision: u64,
     mut editing: bool,
     mut interactive: bool,
-    device: &Arc<wgpu::Device>,
-    queue: &Arc<wgpu::Queue>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
     project: &mut Project,
     timeline: &mut TimelineState,
     effects: &mut EffectRuntime,
@@ -1747,7 +1764,7 @@ fn render_process_writer(
 
 fn render_process_command_reader<R: std::io::BufRead>(
     mut reader: R,
-    commands: SyncSender<RenderWorkerCommand>,
+    commands: &SyncSender<RenderWorkerCommand>,
 ) {
     loop {
         let mut bytes = Vec::new();
@@ -1757,7 +1774,7 @@ fn render_process_command_reader<R: std::io::BufRead>(
                 Ok(RenderProcessMessage::Command(command)) => command,
                 Ok(RenderProcessMessage::Start(_)) | Err(_) => RenderWorkerCommand::Cancel,
             },
-            Ok(Some(true)) | Ok(None) | Err(_) => RenderWorkerCommand::Cancel,
+            Ok(Some(true) | None) | Err(_) => RenderWorkerCommand::Cancel,
         };
         let cancel = matches!(command, RenderWorkerCommand::Cancel);
         if commands.send(command).is_err() || cancel {
@@ -1768,10 +1785,10 @@ fn render_process_command_reader<R: std::io::BufRead>(
 
 fn render_process_reader(
     stdout: std::process::ChildStdout,
-    latest_status: Arc<Mutex<Option<RenderWorkerStatus>>>,
-    shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
-    diagnostics: Arc<Mutex<VecDeque<String>>>,
-    last_response_at: Arc<Mutex<Instant>>,
+    latest_status: &Arc<Mutex<Option<RenderWorkerStatus>>>,
+    shared_cache: &Arc<Mutex<Vec<CacheChunk>>>,
+    diagnostics: &Arc<Mutex<VecDeque<String>>>,
+    last_response_at: &Arc<Mutex<Instant>>,
 ) {
     let mut reader = std::io::BufReader::new(stdout);
     loop {
@@ -1781,8 +1798,8 @@ fn render_process_reader(
             Ok(Some(true)) => {
                 let status = error_status_from_cache(
                     "render worker protocol line exceeded the 64 MiB limit".into(),
-                    &latest_status,
-                    &shared_cache,
+                    latest_status,
+                    shared_cache,
                 );
                 *latest_status
                     .lock()
@@ -1791,7 +1808,7 @@ fn render_process_reader(
             }
             Ok(None) => break,
             Err(error) => {
-                push_render_diagnostic(&diagnostics, format!("read worker protocol: {error}"));
+                push_render_diagnostic(diagnostics, format!("read worker protocol: {error}"));
                 break;
             }
         }
@@ -1817,8 +1834,8 @@ fn render_process_reader(
             Err(error) => {
                 let status = error_status_from_cache(
                     format!("decode render worker response: {error}"),
-                    &latest_status,
-                    &shared_cache,
+                    latest_status,
+                    shared_cache,
                 );
                 *latest_status
                     .lock()
@@ -1831,7 +1848,7 @@ fn render_process_reader(
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
         match response {
             RenderProcessResponse::Ready { pid } => {
-                push_render_diagnostic(&diagnostics, format!("worker ready pid={pid}"));
+                push_render_diagnostic(diagnostics, format!("worker ready pid={pid}"));
             }
             RenderProcessResponse::Status(status) => {
                 shared_cache
@@ -1844,7 +1861,7 @@ fn render_process_reader(
                 *latest = Some(status.into());
             }
             RenderProcessResponse::Error { message } => {
-                let status = error_status_from_cache(message, &latest_status, &shared_cache);
+                let status = error_status_from_cache(message, latest_status, shared_cache);
                 *latest_status
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status);
@@ -1896,7 +1913,7 @@ fn error_status_from_cache(
 
 fn render_process_stderr(
     stderr: std::process::ChildStderr,
-    diagnostics: Arc<Mutex<VecDeque<String>>>,
+    diagnostics: &Arc<Mutex<VecDeque<String>>>,
 ) {
     let mut reader = std::io::BufReader::new(stderr);
     loop {
@@ -1907,11 +1924,11 @@ fn render_process_stderr(
                 if truncated {
                     line.push_str(" [line truncated at 4 KiB]");
                 }
-                push_render_diagnostic(&diagnostics, line);
+                push_render_diagnostic(diagnostics, line);
             }
             Ok(None) => break,
             Err(error) => {
-                push_render_diagnostic(&diagnostics, format!("read worker stderr: {error}"));
+                push_render_diagnostic(diagnostics, format!("read worker stderr: {error}"));
                 break;
             }
         }
@@ -1932,7 +1949,7 @@ fn read_bounded_line<R: std::io::BufRead>(
         let consumed = available
             .iter()
             .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |index| index + 1);
+            .map_or(available.len(), |index| index.saturating_add(1));
         let payload_len = if available.get(consumed.saturating_sub(1)) == Some(&b'\n') {
             consumed.saturating_sub(1)
         } else {
@@ -1940,7 +1957,13 @@ fn read_bounded_line<R: std::io::BufRead>(
         };
         let remaining = max_bytes.saturating_sub(output.len());
         let copied = payload_len.min(remaining);
-        output.extend_from_slice(&available[..copied]);
+        let Some(payload) = available.get(..copied) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "render worker response segment is out of bounds",
+            ));
+        };
+        output.extend_from_slice(payload);
         truncated |= copied < payload_len;
         let has_newline = available
             .get(consumed.saturating_sub(1))
@@ -2019,7 +2042,7 @@ pub(super) fn run_render_process_worker() -> Result<()> {
     let start = match serde_json::from_slice::<RenderProcessMessage>(&start_line)
         .context("decode render worker startup")?
     {
-        RenderProcessMessage::Start(start) => start,
+        RenderProcessMessage::Start(start) => *start,
         RenderProcessMessage::Command(_) => anyhow::bail!("render worker expected startup first"),
     };
     let startup = (|| -> Result<_> {
@@ -2082,7 +2105,7 @@ pub(super) fn run_render_process_worker() -> Result<()> {
         .name(format!("kama-render-command-read-{}", std::process::id()))
         .spawn(move || {
             let stdin = std::io::stdin();
-            render_process_command_reader(stdin.lock(), command_tx);
+            render_process_command_reader(stdin.lock(), &command_tx);
         })
         .context("start render worker command reader")?;
     let (status_tx, status_rx) = mpsc::sync_channel::<RenderWorkerStatus>(1);
@@ -2105,8 +2128,8 @@ pub(super) fn run_render_process_worker() -> Result<()> {
         start.edit_revision,
         start.editing,
         start.interactive,
-        &Arc::new(device.clone()),
-        &Arc::new(queue.clone()),
+        &device,
+        &queue,
         &mut project,
         &mut timeline,
         &mut effects,
@@ -2829,7 +2852,7 @@ impl RenderSession {
             project,
             timeline,
             plugins,
-            cache,
+            &cache,
             interaction,
         )?;
         if !self.cache_dirs.contains(&task.cache_dir) {
@@ -2910,7 +2933,7 @@ impl RenderSession {
             &target_project,
             &target_timeline,
             plugins,
-            cache,
+            &cache,
             interaction,
         ) {
             Ok(replacement) => {
@@ -3070,7 +3093,7 @@ mod tests {
     #[test]
     fn command_pipe_eof_requests_child_cancellation() {
         let (commands, receiver) = mpsc::sync_channel(1);
-        render_process_command_reader(std::io::Cursor::new(&b""[..]), commands);
+        render_process_command_reader(std::io::Cursor::new(&b""[..]), &commands);
 
         assert!(matches!(
             receiver.try_recv(),
@@ -3099,8 +3122,16 @@ mod tests {
     #[test]
     fn watchdog_times_out_after_30_seconds_without_protocol_activity() {
         let now = Instant::now();
-        assert!(!render_worker_timed_out(now - Duration::from_secs(29), now));
-        assert!(render_worker_timed_out(now - Duration::from_secs(30), now));
+        assert!(!render_worker_timed_out(
+            now.checked_sub(Duration::from_secs(29))
+                .unwrap_or_else(Instant::now),
+            now
+        ));
+        assert!(render_worker_timed_out(
+            now.checked_sub(Duration::from_secs(30))
+                .unwrap_or_else(Instant::now),
+            now
+        ));
     }
 
     #[cfg(all(target_os = "macos", debug_assertions))]
@@ -3204,22 +3235,27 @@ mod tests {
             thread::spawn(move || {
                 render_process_reader(
                     stdout,
-                    latest_status,
-                    shared_cache,
-                    diagnostics,
-                    last_response_at,
+                    &latest_status,
+                    &shared_cache,
+                    &diagnostics,
+                    &last_response_at,
                 );
             });
         }
         {
             let diagnostics = Arc::clone(&diagnostics);
-            thread::spawn(move || render_process_stderr(stderr, diagnostics));
+            thread::spawn(move || render_process_stderr(stderr, &diagnostics));
         }
-        command_tx.send(RenderProcessMessage::Start(start)).unwrap();
+        command_tx
+            .send(RenderProcessMessage::Start(Box::new(start)))
+            .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(90);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(90))
+            .unwrap_or_else(Instant::now);
         let completed = loop {
-            if let Some(status) = latest_status.lock().unwrap().take() {
+            let latest = latest_status.lock().unwrap().take();
+            if let Some(status) = latest {
                 assert_ne!(status.phase, RenderPhase::Error, "{:?}", status.error);
                 if status.phase == RenderPhase::Done {
                     break status;
@@ -3248,22 +3284,22 @@ mod tests {
             .decoder()
             .video()
             .unwrap();
-        let mut decoded = ffmpeg_next::frame::Video::empty();
+        let mut decoded_frame = ffmpeg_next::frame::Video::empty();
         let mut chroma = Vec::new();
         for (stream, packet) in input.packets() {
             if stream.index() != stream_index {
                 continue;
             }
             decoder.send_packet(&packet).unwrap();
-            while decoder.receive_frame(&mut decoded).is_ok() {
-                assert_eq!(decoded.format(), ffmpeg_next::format::Pixel::YUV420P);
-                chroma.push([decoded.data(1)[0], decoded.data(2)[0]]);
+            while decoder.receive_frame(&mut decoded_frame).is_ok() {
+                assert_eq!(decoded_frame.format(), ffmpeg_next::format::Pixel::YUV420P);
+                chroma.push([decoded_frame.data(1)[0], decoded_frame.data(2)[0]]);
             }
         }
         decoder.send_eof().unwrap();
-        while decoder.receive_frame(&mut decoded).is_ok() {
-            assert_eq!(decoded.format(), ffmpeg_next::format::Pixel::YUV420P);
-            chroma.push([decoded.data(1)[0], decoded.data(2)[0]]);
+        while decoder.receive_frame(&mut decoded_frame).is_ok() {
+            assert_eq!(decoded_frame.format(), ffmpeg_next::format::Pixel::YUV420P);
+            chroma.push([decoded_frame.data(1)[0], decoded_frame.data(2)[0]]);
         }
         assert_eq!(chroma.len(), 2);
         assert!(

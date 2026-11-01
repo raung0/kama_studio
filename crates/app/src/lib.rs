@@ -1168,8 +1168,8 @@ impl EditorApp {
         let editor = EditorSession::new(project, timeline, project_path);
         let video = video_worker::VideoPlayback::new(
             &plugin_paths,
-            renderer.device_handle(),
-            renderer.queue_handle(),
+            &renderer.device_handle(),
+            &renderer.queue_handle(),
         );
         let mut editor_app = Self {
             window,
@@ -1242,7 +1242,7 @@ impl EditorApp {
         Ok(editor_app)
     }
 
-    fn swap_window_state(&mut self, state: &mut EditorWindowState) {
+    const fn swap_window_state(&mut self, state: &mut EditorWindowState) {
         std::mem::swap(&mut self.window, &mut state.window);
         std::mem::swap(&mut self.renderer, &mut state.renderer);
         std::mem::swap(&mut self.icons, &mut state.icons);
@@ -4699,7 +4699,11 @@ impl EditorApp {
                     .map_or(std::env::current_dir()?, Path::to_path_buf);
                 let output_dir = root.join("Captures");
                 let fps = self.editor.project.active_settings().frame_rate.max(1.0);
-                let frame = (f64::from(playhead.max(0.0)) * fps).round() as u64;
+                #[expect(
+                    clippy::cast_sign_loss,
+                    reason = "playhead is clamped nonnegative and project frame rate is positive"
+                )]
+                let frame = (f64::from(playhead.max(0.0)) * fps).round().max(0.0) as u64;
                 let stem = sanitize_file_name(&self.editor.project.active_composition().name);
                 let base = format!("{stem}-frame-{frame:06}");
                 let mut path = output_dir.join(format!("{base}.png"));
@@ -4749,10 +4753,10 @@ impl EditorApp {
         id: u64,
         result: std::result::Result<media_worker::CapturedFrame, String>,
     ) {
-        if !self
+        if self
             .pending_capture
             .as_ref()
-            .is_some_and(|pending| pending.id == id)
+            .is_none_or(|pending| pending.id != id)
         {
             return;
         }
@@ -5358,8 +5362,10 @@ impl EditorApp {
             self.editor
                 .timeline
                 .set_worker_transport(self.editor.timeline.playhead(), false);
-            self.video
-                .restart(self.renderer.device_handle(), self.renderer.queue_handle());
+            self.video.restart(
+                &self.renderer.device_handle(),
+                &self.renderer.queue_handle(),
+            );
         }
     }
 

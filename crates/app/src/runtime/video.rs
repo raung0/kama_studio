@@ -515,7 +515,11 @@ impl GpuFrame {
 }
 
 pub struct PresentationTexture {
-    _texture: wgpu::Texture,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the owning texture must outlive its storage view")
+    )]
+    texture: wgpu::Texture,
     storage_view: wgpu::TextureView,
     identity: u64,
     pub width: u32,
@@ -547,7 +551,7 @@ impl PresentationTexture {
     pub(crate) fn from_texture(texture: wgpu::Texture, width: u32, height: u32) -> Self {
         let storage_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
-            _texture: texture,
+            texture,
             storage_view,
             identity: NEXT_GPU_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             width: width.max(1),
@@ -561,7 +565,7 @@ impl PresentationTexture {
 
     #[cfg(test)]
     pub(crate) const fn texture(&self) -> &wgpu::Texture {
-        &self._texture
+        &self.texture
     }
 
     pub(crate) const fn identity(&self) -> u64 {

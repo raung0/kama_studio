@@ -100,7 +100,7 @@ fn snapshot() -> Vec<MessageEntry> {
         .unwrap_or_default()
 }
 
-pub(crate) fn drain_for_worker() -> Vec<(MessageSeverity, String, String)> {
+pub fn drain_for_worker() -> Vec<(MessageSeverity, String, String)> {
     let Ok(mut log) = log().lock() else {
         return Vec::new();
     };
