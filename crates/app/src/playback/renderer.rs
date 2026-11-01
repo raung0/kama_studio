@@ -62,7 +62,7 @@ const fn nonnegative_f64_to_u64(value: f64) -> u64 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RenderCachePreview {
     pub path: PathBuf,
     pub local_time: f64,
@@ -101,7 +101,7 @@ impl<T: Clone> GraphGeneratorVariants<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceGeometry {
     pub(crate) size: (u32, u32),
     pub(crate) position_offset: [f32; 2],
@@ -611,8 +611,6 @@ struct TimelineRender<'a> {
 }
 
 pub struct FrameRenderer {
-    texture: Option<ExternalTextureId>,
-    presentation: Option<PresentationTexture>,
     gpu: Option<VideoGpuRuntime>,
     image_cache: HashMap<PathBuf, Arc<CpuFrame>>,
     image_gpu_cache: HashMap<PathBuf, GpuFrame>,
@@ -630,14 +628,14 @@ pub struct FrameRenderer {
     source_geometry: HashMap<u32, SourceGeometry>,
     wasm: Option<WasmRuntime>,
     last_signature: Option<u64>,
+    last_presentation_identity: Option<u64>,
     waiting_for_video: bool,
+    preview_missing_source: bool,
 }
 
 impl Default for FrameRenderer {
     fn default() -> Self {
         Self {
-            texture: None,
-            presentation: None,
             gpu: None,
             image_cache: HashMap::new(),
             image_gpu_cache: HashMap::new(),
@@ -660,7 +658,9 @@ impl Default for FrameRenderer {
                 })
                 .ok(),
             last_signature: None,
+            last_presentation_identity: None,
             waiting_for_video: false,
+            preview_missing_source: false,
         }
     }
 }
@@ -717,11 +717,8 @@ impl FrameRenderer {
         Self::new_with_device(device, effects, plugins)
     }
 
-    pub(crate) const fn preview_output(&self) -> PreviewOutput<'_> {
-        PreviewOutput {
-            texture: self.texture,
-            source_geometry: &self.source_geometry,
-        }
+    pub(crate) fn source_geometry(&self) -> &HashMap<u32, SourceGeometry> {
+        &self.source_geometry
     }
 
     pub(crate) const fn is_waiting_for_video(&self) -> bool {
@@ -729,7 +726,12 @@ impl FrameRenderer {
     }
 
     pub(crate) fn clear_frame_caches(&mut self) {
-        self.presentation = None;
+        self.clear_content_caches();
+    }
+
+    fn clear_content_caches(&mut self) {
+        self.last_signature = None;
+        self.last_presentation_identity = None;
         self.image_cache.clear();
         self.image_gpu_cache.clear();
         self.model_gpu = None;
@@ -840,22 +842,24 @@ impl FrameRenderer {
         effects: &EffectRuntime,
         plugins: &PluginRegistry,
     ) {
+        self.sync_compiled_effects_on(renderer.device(), effects, plugins);
+    }
+
+    pub(crate) fn sync_compiled_effects_on(
+        &mut self,
+        device: &wgpu::Device,
+        effects: &EffectRuntime,
+        plugins: &PluginRegistry,
+    ) {
         if self.gpu.is_none() {
-            self.gpu = Some(VideoGpuRuntime::new(renderer.device()));
+            self.gpu = Some(VideoGpuRuntime::new(device));
         }
         if let Some(gpu) = &mut self.gpu {
-            gpu.prewarm(renderer.device(), effects, plugins);
+            gpu.prewarm(device, effects, plugins);
         }
 
         self.graph_generator_gpu_cache.clear();
         self.last_signature = None;
-    }
-
-    pub(crate) fn precompile_wasm(&mut self, path: &std::path::Path) -> Result<()> {
-        if let Some(runtime) = &mut self.wasm {
-            runtime.precompile(path)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn render_export_rgba16_on(
@@ -1059,7 +1063,7 @@ impl FrameRenderer {
                 };
                 self.finish_export_decode_frame();
                 let surface = self.export_readbacks.encode(index);
-                surface.encode_gpu_conversion(&gpu, device, &mut encoder, &frame);
+                surface.encode_gpu_conversion(&gpu, device, &mut encoder, &frame)?;
                 surface.copy_to_buffer(&mut encoder);
                 let submission = queue.submit(Some(encoder.finish()));
                 let slice = surface.buffer.slice(..);
@@ -1695,8 +1699,12 @@ impl FrameRenderer {
                             if let Some((cached_path, _, surface)) =
                                 self.video_gpu_cache.get(&clip_id)
                                 && cached_path.as_path() == asset.path.as_path()
+                                && (!render.scrubbing || frame.is_none())
                             {
                                 return Ok(surface.frame());
+                            }
+                            if frame.is_none() {
+                                self.preview_missing_source = true;
                             }
                         }
                         if let Some(frame) = frame {
@@ -2587,9 +2595,10 @@ impl FrameRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn refresh_preview(
+    pub(crate) fn refresh_preview_on(
         &mut self,
-        renderer: &mut Renderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         project: &Project,
         timeline: &TimelineState,
         effects: &EffectRuntime,
@@ -2597,8 +2606,10 @@ impl FrameRenderer {
         render_cache: Option<&RenderCachePreview>,
         preview_size: [u32; 2],
         render_scale: f32,
+        scrubbing: bool,
         captured_frame: Option<([u32; 2], &[u8])>,
-    ) -> Result<()> {
+        presentation: &PresentationTexture,
+    ) -> Result<bool> {
         let [preview_width, preview_height] = preview_size;
         let top_level_clip_ids = timeline
             .clips()
@@ -2626,18 +2637,17 @@ impl FrameRenderer {
         if decoded_frame_ready {
             self.last_signature = None;
         }
-        if render_cache.is_none() && timeline.is_playing() && !timeline.is_scrubbing() {
+        if render_cache.is_none() && timeline.is_playing() && !scrubbing {
             self.preload_upcoming_videos(project, timeline, preview_width, preview_height);
         }
-        if self.presentation.as_ref().is_some_and(|presentation| {
-            presentation.width != preview_width || presentation.height != preview_height
-        }) {
-            self.clear_frame_caches();
+        if presentation.width != preview_width || presentation.height != preview_height {
+            anyhow::bail!("headless presentation texture dimensions do not match preview size");
         }
         if let Some(gpu) = &mut self.gpu {
             gpu.retain_working_size(preview_width, preview_height);
         }
-        let mut signature = render_signature(project, timeline, preview_width, preview_height);
+        let mut signature =
+            render_signature(project, timeline, preview_width, preview_height, scrubbing);
         if let Some((_, pixels)) = captured_frame {
             let mut hasher = DefaultHasher::new();
             signature.hash(&mut hasher);
@@ -2653,10 +2663,13 @@ impl FrameRenderer {
             cache.frame.hash(&mut hasher);
             signature = hasher.finish();
         }
-        if self.last_signature == Some(signature) && self.texture.is_some() {
-            return Ok(());
+        if self.last_signature == Some(signature)
+            && self.last_presentation_identity == Some(presentation.identity())
+        {
+            return Ok(false);
         }
         self.waiting_for_video = false;
+        self.preview_missing_source = false;
 
         let cached_render_frame = if let Some(cache) = render_cache {
             if let Some(frame) = self.request_render_cache_frame(
@@ -2669,7 +2682,7 @@ impl FrameRenderer {
             } else {
                 self.waiting_for_video = true;
                 self.last_signature = None;
-                return Ok(());
+                return Ok(false);
             }
         } else {
             self.render_cache_decoder = None;
@@ -2678,24 +2691,11 @@ impl FrameRenderer {
         };
 
         if self.gpu.is_none() {
-            self.gpu = Some(VideoGpuRuntime::new(renderer.device()));
-        }
-        if self.presentation.is_none() {
-            let presentation =
-                PresentationTexture::new(renderer.device(), preview_width, preview_height);
-            if let Some(texture) = self.texture {
-                renderer.replace_external_texture(texture, presentation.external_view())?;
-            } else {
-                let texture = renderer.register_external_texture(presentation.external_view())?;
-                self.texture = Some(texture);
-            }
-            self.presentation = Some(presentation);
+            self.gpu = Some(VideoGpuRuntime::new(device));
         }
 
         let mut gpu = self.gpu.take().context("preview GPU not initialized")?;
         let result = (|| -> Result<()> {
-            let device = renderer.device();
-            let queue = renderer.queue();
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("kama playback render graph"),
             });
@@ -2727,7 +2727,7 @@ impl FrameRenderer {
                     effects,
                     plugins,
                     render_scale,
-                    scrubbing: timeline.is_scrubbing(),
+                    scrubbing,
                     blocking_decode: false,
                 };
                 self.render_project(
@@ -2737,10 +2737,6 @@ impl FrameRenderer {
                     timeline.playhead(),
                 )?
             };
-            let presentation = self
-                .presentation
-                .as_ref()
-                .context("preview presentation not initialized")?;
             gpu.present(PresentationArgs {
                 device,
                 encoder: &mut encoder,
@@ -2754,11 +2750,13 @@ impl FrameRenderer {
         self.gpu = Some(gpu);
         result?;
 
-        if let Some(texture) = self.texture {
-            renderer.invalidate_external_texture(texture)?;
+        if self.waiting_for_video {
+            self.last_signature = None;
+            return Ok(scrubbing && !self.preview_missing_source);
         }
         self.last_signature = Some(signature);
-        Ok(())
+        self.last_presentation_identity = Some(presentation.identity());
+        Ok(true)
     }
 
     fn preload_upcoming_videos(
@@ -2800,10 +2798,6 @@ impl FrameRenderer {
                 break;
             }
         }
-    }
-
-    pub(crate) const fn invalidate(&mut self) {
-        self.last_signature = None;
     }
 
     pub(crate) fn clear_media_caches(&mut self) {
@@ -2964,16 +2958,17 @@ fn render_signature(
     timeline: &TimelineState,
     preview_width: u32,
     preview_height: u32,
+    scrubbing: bool,
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
-    let preview_fps = if timeline.is_scrubbing() {
+    let preview_fps = if scrubbing {
         SCRUB_PREVIEW_FPS
     } else {
         project.active_settings().frame_rate.max(1.0)
     };
     let preview_frame = (f64::from(timeline.playhead().max(0.0)) * preview_fps).floor() as i64;
     preview_frame.hash(&mut hasher);
-    timeline.is_scrubbing().hash(&mut hasher);
+    scrubbing.hash(&mut hasher);
     preview_width.hash(&mut hasher);
     preview_height.hash(&mut hasher);
     project.active_settings().canvas_size[0].hash(&mut hasher);
@@ -3357,6 +3352,263 @@ fn placeholder_frame(label: &str, preview_width: u32, preview_height: u32) -> Cp
         }
     }
     frame
+}
+
+#[cfg(test)]
+mod headless_preview_tests {
+    use super::*;
+    use crate::{
+        effects::EffectRuntime, plugin::PluginRegistry, project::Project, timeline::TimelineState,
+    };
+
+    #[test]
+    fn decoded_video_changes_frames_without_releasing_scrub() {
+        use std::{
+            io::Write,
+            time::{Duration, Instant},
+        };
+
+        let path = std::env::temp_dir().join(format!("kama-live-scrub-{}.y4m", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"YUV4MPEG2 W16 H16 F24:1 Ip A1:1 C420mpeg2 XCOLORRANGE=LIMITED\n")
+            .unwrap();
+        for index in 0..48 {
+            file.write_all(b"FRAME\n").unwrap();
+            file.write_all(&[if index < 24 { 235 } else { 16 }; 256])
+                .unwrap();
+            file.write_all(&[128; 128]).unwrap();
+        }
+        drop(file);
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            ..Default::default()
+        }))
+        .unwrap();
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [16, 16];
+        let media = project.import_media(&path).unwrap();
+        assert_eq!(project.media(media).unwrap().kind, MediaKind::Video);
+        let mut timeline = TimelineState::default();
+        let track = timeline
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .unwrap()
+            .id;
+        assert!(timeline.insert_media_clip_at(
+            (track, 0.0),
+            media,
+            "Scrub fixture".into(),
+            false,
+            Some(2.0),
+            crate::effects::PipelineInstance::effect_default(),
+        ));
+        let effects = EffectRuntime::default();
+        let plugins = PluginRegistry::load_default("").unwrap();
+        let mut renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+        let output = PresentationTexture::new(&device, 16, 16);
+        for (time, white) in [(0.0, true), (1.0, false)] {
+            timeline.set_worker_transport(time, false);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let rendered = renderer
+                    .refresh_preview_on(
+                        &device,
+                        &queue,
+                        &project,
+                        &timeline,
+                        &effects,
+                        &plugins,
+                        None,
+                        [16, 16],
+                        1.0,
+                        true,
+                        None,
+                        &output,
+                    )
+                    .unwrap();
+                if rendered && !renderer.is_waiting_for_video() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "decode a frame while scrub remains active"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("live scrub decoded pixels"),
+                size: 256 * 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                output.texture().as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(16),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 16,
+                    height: 16,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = tx.send(result);
+                });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(5)),
+                })
+                .unwrap();
+            rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+            let pixels = buffer.slice(..).get_mapped_range().unwrap();
+            let pixel = &pixels[8 * 256 + 8 * 8..8 * 256 + 8 * 8 + 8];
+            for component in pixel[..6].chunks_exact(2) {
+                let value = u16::from_le_bytes([component[0], component[1]]);
+                if white {
+                    assert!(
+                        value > 0x3a00,
+                        "first scrub target must show the white video frame, got {value:#x}"
+                    );
+                } else {
+                    assert!(
+                        value < 0x2800,
+                        "second scrub target must show the black video frame, got {value:#x}"
+                    );
+                }
+            }
+            assert_eq!(u16::from_le_bytes([pixel[6], pixel[7]]), 0x3c00);
+        }
+        drop(renderer);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn headless_preview_writes_expected_rgba16float_background() {
+        pollster::block_on(async {
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::LowPower,
+                    compatible_surface: None,
+                    force_fallback_adapter: false,
+                    apply_limit_buckets: false,
+                })
+                .await
+                .expect("headless wgpu adapter is available for GPU preview test");
+            let required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+            assert!(
+                adapter.features().contains(required_features),
+                "GPU preview adapter must support the app's required texture formats"
+            );
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("headless preview test"),
+                    required_features,
+                    required_limits: wgpu::Limits::default(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
+                })
+                .await
+                .expect("request test device");
+
+            let mut project = Project::new();
+            let composition = project.active_composition_mut();
+            composition.settings.canvas_size = [4, 4];
+            composition.settings.background = ProjectBackground::Solid {
+                color: [0.25, 0.5, 0.75, 1.0],
+            };
+            let timeline = TimelineState::default();
+            let mut effects = EffectRuntime::default();
+            effects.rebuild(&project.pipelines);
+            let plugins = PluginRegistry::load_default("").expect("load built-in plugins");
+            let mut renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+            let output = PresentationTexture::new(&device, 4, 4);
+            let did_render = renderer
+                .refresh_preview_on(
+                    &device,
+                    &queue,
+                    &project,
+                    &timeline,
+                    &effects,
+                    &plugins,
+                    None,
+                    [4, 4],
+                    1.0,
+                    false,
+                    None,
+                    &output,
+                )
+                .expect("headless preview render");
+            assert!(did_render);
+
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("headless preview pixel readback"),
+                size: 256 * 4,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            encoder.copy_texture_to_buffer(
+                output.texture().as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(4),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            let slice = buffer.slice(..);
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("wait for preview readback");
+            rx.recv()
+                .expect("readback callback")
+                .expect("map preview pixels");
+            let mapped = slice.get_mapped_range().expect("mapped preview pixels");
+            let expected = [0x00, 0x34, 0x00, 0x38, 0x00, 0x3a, 0x00, 0x3c];
+            for row in mapped.chunks_exact(256).take(4) {
+                for pixel in row[..32].chunks_exact(8) {
+                    assert_eq!(
+                        pixel, expected,
+                        "expected exact RGBA16Float solid-background pixel"
+                    );
+                }
+            }
+        });
+    }
 }
 
 fn srgb_to_linear(value: f32) -> f32 {

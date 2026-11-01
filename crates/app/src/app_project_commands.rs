@@ -7,7 +7,7 @@ use crate::{
     app_events::remember_recent_project,
     app_shared::{missing_project_media, sanitize_file_name},
     model3d, next_media_check,
-    project::{MediaKind, Project},
+    project::Project,
     project_io, sync_missing_media_entries,
 };
 
@@ -39,11 +39,12 @@ impl EditorApp {
         );
         self.editor.history_gesture = None;
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.render_panel.clear_project_cache();
-        self.playback.clear_caches();
-        self.monitor.clear_captured_frame();
-        self.playback
+        self.export_renderer.clear_caches();
+        self.export_renderer
             .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
+        self.render_panel.clear_project_cache();
+        self.video.invalidate();
+        self.monitor.clear_captured_frame();
         self.sync_inactive_windows_after_project_reset();
         self.request_redraw_all();
     }
@@ -152,13 +153,6 @@ impl EditorApp {
                 Ok(()) => {
                     changed = true;
                     self.prompted_missing_media.remove(&media);
-                    if path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"))
-                    {
-                        let _ = self.playback.precompile_wasm(&path);
-                    }
                 }
                 Err(error) => crate::messages::warning("Relink media", format!("{error:#}")),
             }
@@ -172,9 +166,9 @@ impl EditorApp {
             self.waveform_textures.clear();
             self.waveform_textures.queue_missing(&self.editor.project);
             self.warm_project_scrub_thumbnails();
-            self.playback.clear_media_caches();
+            self.export_renderer.clear_media_caches();
             self.audio.clear();
-            self.playback.invalidate();
+            self.video.invalidate();
             self.editor.history.record_after(
                 "Relink media",
                 &before,
@@ -212,11 +206,6 @@ impl EditorApp {
             .map(|(media, _)| media)
             .collect();
         self.next_media_presence_check = next_media_check(Instant::now());
-        for asset in &self.editor.project.media {
-            if matches!(asset.kind, MediaKind::WasmPlugin) {
-                let _ = self.playback.precompile_wasm(&asset.path);
-            }
-        }
         self.mark_document_saved();
         remember_recent_project(path);
         #[cfg(target_os = "macos")]

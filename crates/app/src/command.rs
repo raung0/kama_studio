@@ -21,6 +21,12 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum PaletteAction {
+    #[cfg(debug_assertions)]
+    CrashAudioWorker,
+    #[cfg(debug_assertions)]
+    CrashVideoWorker,
+    RestartAudioWorker,
+    RestartVideoWorker,
     NewProject,
     NewComposition,
     OpenProject,
@@ -673,6 +679,41 @@ impl CommandRegistry {
             registry.register_editor_command(id, label, description, shortcut, icon, command);
         }
 
+        #[cfg(debug_assertions)]
+        registry.register_editor_command(
+            "developer.crash-audio-process",
+            "Developer: Crash audio process",
+            Some("Abort the audio worker process to test recovery"),
+            None,
+            None,
+            EditorCommand::Action(PaletteAction::CrashAudioWorker),
+        );
+        registry.register_editor_command(
+            "audio.restart-process",
+            "Restart audio process",
+            Some("Restart a failed audio worker; playback remains paused"),
+            None,
+            None,
+            EditorCommand::Action(PaletteAction::RestartAudioWorker),
+        );
+        #[cfg(debug_assertions)]
+        registry.register_editor_command(
+            "developer.crash-video-process",
+            "Developer: Crash video process",
+            Some("Abort the video worker process to test recovery"),
+            None,
+            None,
+            EditorCommand::Action(PaletteAction::CrashVideoWorker),
+        );
+        registry.register_editor_command(
+            "video.restart-process",
+            "Restart video process",
+            Some("Restart the isolated video preview worker"),
+            None,
+            None,
+            EditorCommand::Action(PaletteAction::RestartVideoWorker),
+        );
+
         registry.register_scoped_editor_command(CommandRegistration {
             id: "media.import-clipboard".into(),
             label: "Import from Clipboard".into(),
@@ -1014,6 +1055,29 @@ pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_crash_commands_are_debug_only_and_target_the_named_worker() {
+        let registry = CommandRegistry::editor_defaults();
+        let audio = registry.command("developer.crash-audio-process");
+        let video = registry.command("developer.crash-video-process");
+        #[cfg(debug_assertions)]
+        {
+            assert!(matches!(
+                audio,
+                Some(EditorCommand::Action(PaletteAction::CrashAudioWorker))
+            ));
+            assert!(matches!(
+                video,
+                Some(EditorCommand::Action(PaletteAction::CrashVideoWorker))
+            ));
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            assert!(audio.is_none());
+            assert!(video.is_none());
+        }
+    }
 
     #[test]
     fn fuzzy_search_prefers_contiguous_matches_and_rejects_missing_letters() {

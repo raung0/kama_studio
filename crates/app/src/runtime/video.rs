@@ -515,13 +515,15 @@ impl GpuFrame {
 }
 
 pub struct PresentationTexture {
-    texture: wgpu::Texture,
+    _texture: wgpu::Texture,
     storage_view: wgpu::TextureView,
+    identity: u64,
     pub width: u32,
     pub height: u32,
 }
 
 impl PresentationTexture {
+    #[cfg(test)]
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("kama monitor presentation"),
@@ -534,13 +536,20 @@ impl PresentationTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
+        Self::from_texture(texture, width, height)
+    }
+
+    pub(crate) fn from_texture(texture: wgpu::Texture, width: u32, height: u32) -> Self {
         let storage_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
-            texture,
+            _texture: texture,
             storage_view,
+            identity: NEXT_GPU_SURFACE_ID.fetch_add(1, Ordering::Relaxed),
             width: width.max(1),
             height: height.max(1),
         }
@@ -550,9 +559,13 @@ impl PresentationTexture {
         &self.storage_view
     }
 
-    pub fn external_view(&self) -> wgpu::TextureView {
-        self.texture
-            .create_view(&wgpu::TextureViewDescriptor::default())
+    #[cfg(test)]
+    pub(crate) const fn texture(&self) -> &wgpu::Texture {
+        &self._texture
+    }
+
+    pub(crate) const fn identity(&self) -> u64 {
+        self.identity
     }
 }
 
@@ -707,7 +720,7 @@ pub struct VideoGpuRuntime {
     present: wgpu::ComputePipeline,
     export_rgba16: wgpu::ComputePipeline,
     export_ayuv64: wgpu::ComputePipeline,
-    export_yuva10: wgpu::ComputePipeline,
+    export_yuva10: Option<wgpu::ComputePipeline>,
     export_nv12_buffer: wgpu::ComputePipeline,
     export_p010_buffer: wgpu::ComputePipeline,
     export_p210_buffer: wgpu::ComputePipeline,
@@ -827,12 +840,12 @@ impl VideoGpuRuntime {
                 &export_shader(EXPORT_AYUV64_WGSL, true),
                 ComputeLayout::ExportAyuv64,
             ),
-            export_yuva10: compute_pipeline(
+            export_yuva10: Some(compute_pipeline(
                 device,
                 "kama export YUVA444P10 conversion",
                 &export_shader(EXPORT_YUVA10_WGSL, true),
                 ComputeLayout::ExportYuva10,
-            ),
+            )),
             export_nv12_buffer: compute_pipeline(
                 device,
                 "kama export NV12 direct buffer conversion",
@@ -2070,13 +2083,21 @@ impl VideoGpuRuntime {
         );
     }
 
-    pub fn export_yuva10_into(&self, args: ExportPassArgs<'_>, outputs: [&wgpu::TextureView; 4]) {
+    pub fn export_yuva10_into(
+        &self,
+        args: ExportPassArgs<'_>,
+        outputs: [&wgpu::TextureView; 4],
+    ) -> anyhow::Result<()> {
         let ExportPassArgs {
             device,
             encoder,
             input,
         } = args;
-        let layout = self.export_yuva10.get_bind_group_layout(0);
+        let pipeline = self
+            .export_yuva10
+            .as_ref()
+            .context("YUVA444P10 texture export pipeline is unavailable")?;
+        let layout = pipeline.get_bind_group_layout(0);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kama export YUVA444P10 bind group"),
             layout: &layout,
@@ -2088,13 +2109,8 @@ impl VideoGpuRuntime {
                 storage_entry(4, outputs[3]),
             ],
         });
-        dispatch(
-            encoder,
-            &self.export_yuva10,
-            &bind_group,
-            input.width,
-            input.height,
-        );
+        dispatch(encoder, pipeline, &bind_group, input.width, input.height);
+        Ok(())
     }
 
     fn export_to_buffer(

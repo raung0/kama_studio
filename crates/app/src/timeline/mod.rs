@@ -1664,6 +1664,7 @@ pub struct TimelineState {
     mixer_knobs: HashMap<(u32, MixerParameter), Knob>,
     selection_frame: Instant,
     playing: bool,
+    seek_revision: u64,
     playback_just_started: bool,
     tool: TimelineTool,
     frame_rate: f32,
@@ -2181,6 +2182,7 @@ impl TimelineState {
             mixer_knobs: knobs,
             selection_frame: Instant::now(),
             playing: false,
+            seek_revision: 0,
             playback_just_started: false,
             tool: TimelineTool::Select,
             frame_rate: FRAME_RATE,
@@ -2330,12 +2332,26 @@ impl TimelineState {
         self.playhead
     }
 
+    pub(crate) const fn seek_revision(&self) -> u64 {
+        self.seek_revision
+    }
+
     pub const fn is_scrubbing(&self) -> bool {
         matches!(self.drag, Some(Drag::Playhead))
     }
 
     pub const fn is_playing(&self) -> bool {
         self.playing
+    }
+
+    pub(crate) fn set_worker_transport(&mut self, playhead: f32, playing: bool) {
+        self.playhead = if playhead.is_finite() {
+            playhead.max(0.0)
+        } else {
+            0.0
+        };
+        self.playing = playing;
+        self.drag = None;
     }
 
     pub fn set_audio_levels(&mut self, levels: HashMap<u32, [f32; 2]>) {
@@ -5013,7 +5029,10 @@ impl TimelineState {
                         self.playhead = end;
                         self.playing = false;
                     }
-                    EndBehavior::Restart => self.playhead = 0.0,
+                    EndBehavior::Restart => {
+                        self.playhead = 0.0;
+                        self.seek_revision = self.seek_revision.wrapping_add(1);
+                    }
                 }
             }
             self.follow_playhead(snapshot);
@@ -5384,6 +5403,7 @@ impl TimelineState {
     }
 
     fn set_playhead(&mut self, time: f32) {
+        self.seek_revision = self.seek_revision.wrapping_add(1);
         self.playhead = if self.frame_snap {
             (time * self.frame_rate).round() / self.frame_rate
         } else {
@@ -5396,6 +5416,7 @@ impl TimelineState {
             let snapped = self.snap_time_with_options(layout, time, &[], false);
             if !self.snap_times.is_empty() {
                 self.playhead = snapped.max(0.0);
+                self.seek_revision = self.seek_revision.wrapping_add(1);
                 return;
             }
         }
@@ -5407,6 +5428,7 @@ impl TimelineState {
     }
 
     fn step_frames(&mut self, frames: i32) {
+        self.seek_revision = self.seek_revision.wrapping_add(1);
         let fps = f64::from(self.frame_rate.max(1.0));
         let delta = f64::from(frames) / fps;
         self.playhead = ((f64::from(self.playhead.max(0.0)) + delta).max(0.0)) as f32;

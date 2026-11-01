@@ -100,6 +100,16 @@ fn snapshot() -> Vec<MessageEntry> {
         .unwrap_or_default()
 }
 
+pub(crate) fn drain_for_worker() -> Vec<(MessageSeverity, String, String)> {
+    let Ok(mut log) = log().lock() else {
+        return Vec::new();
+    };
+    std::mem::take(&mut log.entries)
+        .into_iter()
+        .map(|entry| (entry.severity, entry.source, entry.message))
+        .collect()
+}
+
 #[derive(Default)]
 pub struct MessagesState {
     scroll: ScrollState,

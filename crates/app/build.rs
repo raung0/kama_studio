@@ -29,6 +29,19 @@ fn variant(path: &Path) -> String {
 }
 
 fn main() {
+    if matches!(env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("macos")) {
+        println!("cargo:rerun-if-changed=src/runtime/shared_surface.m");
+        cc::Build::new()
+            .file("src/runtime/shared_surface.m")
+            .flag("-fobjc-arc")
+            .flag("-Werror=unguarded-availability-new")
+            .compile("kama_shared_surface");
+        for framework in ["Foundation", "Metal", "IOSurface"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+        println!("cargo:rustc-link-lib=bsm");
+    }
+
     if matches!(std::env::var("CARGO_CFG_TARGET_OS"), Ok(value) if value == "windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("icon.ico");

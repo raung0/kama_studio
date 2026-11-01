@@ -84,8 +84,10 @@ mod timeline;
 mod ui_layout;
 mod updater;
 mod version;
+mod video_worker;
 mod waveform;
 mod widgets;
+mod worker;
 #[cfg(target_os = "macos")]
 use app_menu::NativeMenu;
 #[cfg(not(target_os = "macos"))]
@@ -144,7 +146,7 @@ use panels::{
     InspectorState, MediaAction, MediaDragItem, MediaPanelState, MediaStream, PipelineGraphAction,
     PipelineGraphState, ProjectOptionsState,
 };
-use playback::FrameRenderer;
+use playback::{FrameRenderer, PreviewOutput};
 use plugin::PluginRegistry;
 use preferences::{KeybindsDialog, SettingsDialog};
 use project::{CompositionId, MediaAsset, MediaId, MediaKind, Project};
@@ -172,6 +174,7 @@ use muda::{
 use winit::platform::macos::EventLoopBuilderExtMacOS;
 
 const MEDIA_PRESENCE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const WORKER_STATUS_HEIGHT: f32 = 27.0;
 
 fn next_media_check(now: Instant) -> Instant {
     now.checked_add(MEDIA_PRESENCE_CHECK_INTERVAL)
@@ -964,7 +967,6 @@ struct EditorWindowState {
     modal: Option<Modal>,
     modal_queue: VecDeque<Modal>,
     waveform_textures: waveform::WaveformTextures,
-    playback: FrameRenderer,
     monitor: MonitorState,
     touch_gesture_cursor: Option<CursorIcon>,
     value_drag_cursor_anchor: Option<[f64; 2]>,
@@ -976,8 +978,7 @@ impl EditorWindowState {
         event_loop: &ActiveEventLoop,
         dock: DockState,
         project: &Project,
-        effects: &EffectRuntime,
-        plugins: &PluginRegistry,
+        shared_renderer: &Renderer,
         position: Option<PhysicalPosition<i32>>,
     ) -> Result<Self> {
         let mut attributes = Window::default_attributes()
@@ -992,23 +993,13 @@ impl EditorWindowState {
                 .context("create detached editor window")?,
         );
         theme::set_system_appearance(matches!(window.theme(), Some(WindowTheme::Light)));
-        let mut renderer = pollster::block_on(Renderer::new(window.clone()))?;
+        let mut renderer =
+            pollster::block_on(Renderer::new_shared(window.clone(), shared_renderer))?;
         let icons = Icons::load(&mut renderer)?;
         let about_logos = AboutLogos::load(&mut renderer)?;
         let mut waveform_textures = waveform::WaveformTextures::default();
         waveform_textures.queue_missing(project);
         let monitor = MonitorState::default();
-        let mut playback = FrameRenderer::new(&renderer, effects, plugins);
-        for asset in &project.media {
-            if matches!(asset.kind, MediaKind::WasmPlugin)
-                && let Err(error) = playback.precompile_wasm(&asset.path)
-            {
-                messages::error(
-                    "WASM plugin",
-                    format!("precompile failed for {}: {error:#}", asset.path.display()),
-                );
-            }
-        }
         Ok(Self {
             window,
             renderer,
@@ -1035,7 +1026,6 @@ impl EditorWindowState {
             modal: None,
             modal_queue: VecDeque::new(),
             waveform_textures,
-            playback,
             monitor,
             touch_gesture_cursor: None,
             value_drag_cursor_anchor: None,
@@ -1111,7 +1101,8 @@ struct EditorApp {
     history_panel: HistoryPanelState,
     audio: AudioPlayback,
     media: MediaPanelState,
-    playback: FrameRenderer,
+    export_renderer: FrameRenderer,
+    video: video_worker::VideoPlayback,
     monitor: MonitorState,
     inspector: InspectorState,
     project_options: ProjectOptionsState,
@@ -1164,19 +1155,10 @@ impl EditorApp {
         let mut effects = EffectRuntime::default();
         effects.rebuild(&project.pipelines);
         let monitor = MonitorState::default();
-        let mut playback = FrameRenderer::new(&renderer, &effects, &plugins);
-        for asset in &project.media {
-            if matches!(asset.kind, MediaKind::WasmPlugin)
-                && let Err(error) = playback.precompile_wasm(&asset.path)
-            {
-                messages::error(
-                    "WASM plugin",
-                    format!("precompile failed for {}: {error:#}", asset.path.display()),
-                );
-            }
-        }
         let render_panel = RenderPanelState::new(&project, &timeline);
         let editor = EditorSession::new(project, timeline, project_path);
+        let export_renderer = FrameRenderer::new(&renderer, &effects, &plugins);
+        let video = video_worker::VideoPlayback::new(&plugin_paths, renderer.device_handle());
         let mut editor_app = Self {
             window,
             renderer,
@@ -1190,7 +1172,7 @@ impl EditorApp {
             dock: default_dock(),
             palette: PaletteState::default(),
             command_registry,
-            plugin_paths,
+            plugin_paths: plugin_paths.clone(),
             command_queue: CommandQueue::default(),
             event_proxy,
             snapshot: LayoutSnapshot::default(),
@@ -1217,9 +1199,10 @@ impl EditorApp {
             effects,
             waveform_textures,
             history_panel: HistoryPanelState::default(),
-            audio: AudioPlayback::new(),
+            audio: AudioPlayback::new(&plugin_paths),
+            video,
             media: MediaPanelState::default(),
-            playback,
+            export_renderer,
             monitor,
             inspector: InspectorState::default(),
             project_options: ProjectOptionsState::default(),
@@ -1246,7 +1229,7 @@ impl EditorApp {
         Ok(editor_app)
     }
 
-    const fn swap_window_state(&mut self, state: &mut EditorWindowState) {
+    fn swap_window_state(&mut self, state: &mut EditorWindowState) {
         std::mem::swap(&mut self.window, &mut state.window);
         std::mem::swap(&mut self.renderer, &mut state.renderer);
         std::mem::swap(&mut self.icons, &mut state.icons);
@@ -1278,7 +1261,6 @@ impl EditorApp {
         std::mem::swap(&mut self.modal, &mut state.modal);
         std::mem::swap(&mut self.modal_queue, &mut state.modal_queue);
         std::mem::swap(&mut self.waveform_textures, &mut state.waveform_textures);
-        std::mem::swap(&mut self.playback, &mut state.playback);
         std::mem::swap(&mut self.monitor, &mut state.monitor);
         std::mem::swap(
             &mut self.touch_gesture_cursor,
@@ -1347,8 +1329,7 @@ impl EditorApp {
             event_loop,
             dock,
             &self.editor.project,
-            &self.effects,
-            &self.plugins,
+            &self.renderer,
             position,
         )?;
         let id = state.window.id();
@@ -1509,11 +1490,7 @@ impl EditorApp {
         for state in self.secondary_windows.values_mut() {
             state.waveform_textures.clear();
             state.waveform_textures.queue_missing(&self.editor.project);
-            state.playback.clear_caches();
             state.monitor.clear_captured_frame();
-            state
-                .playback
-                .sync_compiled_effects(&state.renderer, &self.effects, &self.plugins);
         }
     }
 
@@ -1561,7 +1538,12 @@ impl EditorApp {
         let height = self.renderer.logical_height();
         let top = app_menu_height();
         kama_ui::layout::column(
-            Rect::new(0.0, 0.0, width, height.max(top + 1.0)),
+            Rect::new(
+                0.0,
+                0.0,
+                width,
+                (height - WORKER_STATUS_HEIGHT).max(top + 1.0),
+            ),
             &[
                 kama_ui::layout::Item::height(top),
                 kama_ui::layout::Item::fill(),
@@ -1593,14 +1575,20 @@ impl EditorApp {
         );
         self.refresh_window_title_if_needed();
         self.audio.set_master_muted(self.monitor.master_muted());
-        self.audio
-            .sync(&self.editor.project, &self.editor.timeline, &self.plugins);
-        let audio_lead = self.audio.clock_lead();
-        if audio_lead > 0.0 {
-            self.editor.timeline.sync_forward_playhead(
-                self.editor.timeline.playhead() + audio_lead,
-                &self.snapshot,
-            );
+        if self.audio.sync(
+            &self.editor.project,
+            &self.editor.timeline,
+            self.editor.history.revision(),
+            self.editor.history_gesture.is_some(),
+        ) {
+            self.editor
+                .timeline
+                .set_worker_transport(self.editor.timeline.playhead(), false);
+        }
+        if let Some(target) = self.audio.take_clock_target() {
+            self.editor
+                .timeline
+                .sync_forward_playhead(target, &self.snapshot);
         }
         self.editor
             .timeline
@@ -1630,17 +1618,29 @@ impl EditorApp {
         let preview_size = self.monitor.preview_render_size(&self.editor.project);
         let render_scale = self.monitor.preview_render_scale(&self.editor.project);
         let captured_preview = self.monitor.captured_preview();
-        self.playback.refresh_preview(
+        let video_failed = self.video.sync(
             &mut self.renderer,
             &self.editor.project,
             &self.editor.timeline,
-            &self.effects,
-            &self.plugins,
-            render_cache_preview.as_ref(),
+            render_edit_revision,
             preview_size,
             render_scale,
+            render_cache_preview.as_ref(),
             captured_preview,
+            render_editing,
         )?;
+        if video_failed {
+            self.editor
+                .timeline
+                .set_worker_transport(self.editor.timeline.playhead(), false);
+            self.audio.sync(
+                &self.editor.project,
+                &self.editor.timeline,
+                self.editor.history.revision(),
+                self.editor.history_gesture.is_some(),
+            );
+            self.window.request_redraw();
+        }
         self.inspector
             .sync_color_picker_textures(&mut self.renderer)?;
         self.pipeline_graph
@@ -1674,6 +1674,32 @@ impl EditorApp {
                 &self.command_registry,
             )
         });
+        #[cfg(debug_assertions)]
+        let palette_entries = {
+            let mut palette_entries = palette_entries;
+            if let Some(entries) = &mut palette_entries {
+                entries.retain(|entry| match &entry.target {
+                    PaletteTarget::Command(EditorCommand::Action(
+                        PaletteAction::CrashAudioWorker,
+                    )) => {
+                        matches!(
+                            self.audio.status(),
+                            crate::audio::AudioWorkerStatus::Ready { .. }
+                        )
+                    }
+                    PaletteTarget::Command(EditorCommand::Action(
+                        PaletteAction::CrashVideoWorker,
+                    )) => {
+                        matches!(
+                            self.video.status(),
+                            video_worker::VideoWorkerStatus::Ready { .. }
+                        )
+                    }
+                    _ => true,
+                });
+            }
+            palette_entries
+        };
         let snapshot = &self.snapshot;
         let drag = &self.drag;
         let external_drag_items = &self.external_drag_items;
@@ -1715,9 +1741,10 @@ impl EditorApp {
         let render_animating = self.render_panel.is_animating();
         let meters_animating = self.meters.is_animating();
         let modal_animating = self.modal.as_ref().is_some_and(Modal::is_animating);
-        let monitor_waiting = self.playback.is_waiting_for_video();
+        let monitor_waiting = self.video.is_waiting_for_video();
         let monitor = &self.monitor;
-        let playback = &self.playback;
+        let playback_output = self.video.preview_output();
+        let playback = &playback_output;
         let widgets = &mut self.widgets;
         let meters = &self.meters;
         let messages = &self.messages;
@@ -1960,6 +1987,68 @@ impl EditorApp {
         });
 
         let focus_levels = &self.focus_levels;
+        let audio_status = self.audio.status();
+        let audio_failed = matches!(
+            audio_status,
+            crate::audio::AudioWorkerStatus::Crashed
+                | crate::audio::AudioWorkerStatus::Unresponsive
+                | crate::audio::AudioWorkerStatus::StartupFailed
+        );
+        let audio_metrics = self.audio.resource_metrics().filter(|_| width >= 560.0);
+        let audio_name = self
+            .audio
+            .pid()
+            .map_or_else(|| "Audio".to_owned(), |pid| format!("Audio({pid})"));
+        let audio_label = match audio_status {
+            crate::audio::AudioWorkerStatus::Starting => format!("{audio_name}: Starting"),
+            crate::audio::AudioWorkerStatus::Ready { pid } => {
+                let resources = audio_metrics.map_or_else(String::new, |(cpu, ram)| {
+                    format!(": CPU {cpu:.1}%, RAM {:.0}MB", ram as f64 / 1_000_000.0)
+                });
+                format!("Audio({pid}){resources}")
+            }
+            crate::audio::AudioWorkerStatus::Crashed => format!("{audio_name}: Crashed"),
+            crate::audio::AudioWorkerStatus::Unresponsive => format!("{audio_name}: Unresponsive"),
+            crate::audio::AudioWorkerStatus::Restarting => format!("{audio_name}: Restarting"),
+            crate::audio::AudioWorkerStatus::StartupFailed => {
+                format!("{audio_name}: Startup failed")
+            }
+        };
+        let video_status = self.video.status();
+        let video_failed = matches!(
+            video_status,
+            video_worker::VideoWorkerStatus::Crashed
+                | video_worker::VideoWorkerStatus::Unresponsive
+                | video_worker::VideoWorkerStatus::StartupFailed
+        );
+        let video_metrics = self.video.resource_metrics().filter(|_| width >= 560.0);
+        let video_name = self
+            .video
+            .pid()
+            .map_or_else(|| "Video".to_owned(), |pid| format!("Video({pid})"));
+        let video_label = match video_status {
+            video_worker::VideoWorkerStatus::Starting => format!("{video_name}: Starting"),
+            video_worker::VideoWorkerStatus::Ready { pid } => {
+                let resources = video_metrics.map_or_else(String::new, |(cpu, ram)| {
+                    format!(": CPU {cpu:.1}%, RAM {:.0}MB", ram as f64 / 1_000_000.0)
+                });
+                format!("Video({pid}){resources}")
+            }
+            video_worker::VideoWorkerStatus::Crashed => format!("{video_name}: Crashed"),
+            video_worker::VideoWorkerStatus::Unresponsive => format!("{video_name}: Unresponsive"),
+            video_worker::VideoWorkerStatus::Restarting => format!("{video_name}: Restarting"),
+            video_worker::VideoWorkerStatus::StartupFailed => {
+                format!("{video_name}: Startup failed")
+            }
+            video_worker::VideoWorkerStatus::Unsupported => "Video: Unsupported".to_owned(),
+        };
+        let audio_status_width = (self
+            .gui
+            .measure_text_ink_width(&audio_label, 10.0, text_scale)
+            + 24.0)
+            .min((width - 132.0).max(0.0));
+        let restart_audio_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let restart_video_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut ctx = self.gui.begin(&mut self.renderer, self.input);
         ui::ui!(ctx, {
             Block {
@@ -2030,8 +2119,74 @@ impl EditorApp {
                         interactive;
                     }
                 }
+
+                Block {
+                    id: "worker-status-bar";
+                    bounds: (0.0, height - WORKER_STATUS_HEIGHT, width, WORKER_STATUS_HEIGHT);
+                    fill: theme::panel();
+                    border: 1;
+                    border_color: theme::line_soft();
+                    font_size: 10.0;
+                    text_color: theme::popup_text();
+                }
+
+                Block {
+                    id: "audio-worker-status";
+                    bounds: (8.0, height - WORKER_STATUS_HEIGHT, (audio_status_width - 8.0).max(0.0), WORKER_STATUS_HEIGHT);
+                    font_size: 10.0;
+                    text_color: theme::popup_text();
+                    text: audio_label;
+                    tooltip: "CPU is the OS-reported average; 100% represents one logical CPU. RAM is resident memory in decimal MB.";
+                }
+
+                Block {
+                    id: "video-worker-status";
+                    bounds: (audio_status_width + 12.0, height - WORKER_STATUS_HEIGHT, (width - audio_status_width - if audio_failed || video_failed { 224.0 } else { 16.0 }).max(0.0), WORKER_STATUS_HEIGHT);
+                    font_size: 10.0;
+                    text_color: theme::popup_text();
+                    text: video_label;
+                    tooltip: "Video preview runs in an isolated process when macOS Metal IOSurface sharing is available. Export rendering remains in the application process.";
+                }
+
+                Block {
+                    id: "worker-status-divider";
+                    bounds: (audio_status_width, height - WORKER_STATUS_HEIGHT + 6.0, 1.0, 14.0);
+                    fill: theme::line_soft();
+                }
             }
         });
+
+        if audio_failed {
+            let clicked = std::sync::Arc::clone(&restart_audio_clicked);
+            let x = if video_failed {
+                width - 208.0
+            } else {
+                width - 104.0
+            };
+            let _ = ctx
+                .rect(
+                    "audio-worker-restart",
+                    Rect::new(x, height - 25.0, 96.0, 22.0),
+                )
+                .fill(theme::accent())
+                .text("Restart audio")
+                .text_color(theme::popup_text())
+                .font_size(10.0)
+                .on_click(move |_| clicked.store(true, std::sync::atomic::Ordering::Relaxed));
+        }
+        if video_failed {
+            let clicked = std::sync::Arc::clone(&restart_video_clicked);
+            let _ = ctx
+                .rect(
+                    "video-worker-restart",
+                    Rect::new(width - 104.0, height - 25.0, 96.0, 22.0),
+                )
+                .fill(theme::accent())
+                .text("Restart video")
+                .text_color(theme::popup_text())
+                .font_size(10.0)
+                .on_click(move |_| clicked.store(true, std::sync::atomic::Ordering::Relaxed));
+        }
 
         #[cfg(not(target_os = "macos"))]
         build_app_menu(
@@ -2162,11 +2317,20 @@ impl EditorApp {
         }
 
         ctx.finish()?;
+        if restart_audio_clicked.load(std::sync::atomic::Ordering::Relaxed) {
+            self.restart_audio_worker();
+            self.window.request_redraw();
+        }
+        if restart_video_clicked.load(std::sync::atomic::Ordering::Relaxed) {
+            self.restart_video_worker();
+            self.window.request_redraw();
+        }
         self.sync_cursor();
         self.palette.advance_after_frame();
         if self.gui.has_active_animations()
             || self.palette.is_animating()
             || self.editor.timeline.is_playing()
+            || self.audio.needs_polling()
             || self.editor.timeline.is_animating()
             || widgets_animating
             || media_animating
@@ -2301,11 +2465,11 @@ impl EditorApp {
         self.waveform_textures.clear();
         self.waveform_textures.queue_missing(&self.editor.project);
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.playback.clear_caches();
-        self.monitor.clear_captured_frame();
-        self.playback
+        self.export_renderer.clear_caches();
+        self.export_renderer
             .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
-        self.playback.invalidate();
+        self.video.invalidate();
+        self.monitor.clear_captured_frame();
         self.sync_inactive_windows_after_project_reset();
         self.request_redraw_all();
         self.update_window_title();
@@ -2429,10 +2593,10 @@ impl EditorApp {
                         plugins: &self.plugins,
                         graph_selection,
                         timeline: &mut self.editor.timeline,
-                        source_geometry: self.playback.preview_output().source_geometry,
+                        source_geometry: self.video.preview_output().source_geometry,
                     },
                 ) {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                 }
             }
             PanelKind::Render if self.render_panel.popup_contains(content, point) => {
@@ -3056,14 +3220,14 @@ impl EditorApp {
                             plugins: &self.plugins,
                             graph_selection,
                             timeline: &mut self.editor.timeline,
-                            source_geometry: self.playback.preview_output().source_geometry,
+                            source_geometry: self.video.preview_output().source_geometry,
                         },
                     ) {
                         if let Some(action) = self.monitor.take_action() {
                             self.handle_monitor_action(action);
                         }
                         self.media.clear_selection();
-                        self.playback.invalidate();
+                        self.video.invalidate();
                         return;
                     }
                 }
@@ -3196,7 +3360,7 @@ impl EditorApp {
                     );
                     if handled {
                         self.set_history_gesture_label("Reset property");
-                        self.playback.invalidate();
+                        self.video.invalidate();
                     }
                     self.finish_history_gesture();
                     if handled {
@@ -3348,7 +3512,7 @@ impl EditorApp {
             &self.plugins,
             &mut self.editor.timeline,
         ) {
-            self.playback.invalidate();
+            self.video.invalidate();
             return;
         }
         let timeline_focused = self.focused_kind() == Some(PanelKind::Timeline);
@@ -3374,7 +3538,7 @@ impl EditorApp {
                     &mut self.editor.project,
                     composition,
                 ) {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                     return;
                 }
             } else if self.inspector.pointer_moved(
@@ -3383,7 +3547,7 @@ impl EditorApp {
                 &mut self.editor.timeline,
             ) {
                 if self.inspector.is_cursor_lock_dragging() {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                 }
                 return;
             }
@@ -3395,7 +3559,7 @@ impl EditorApp {
                 &mut self.editor.project,
                 composition,
             ) {
-                self.playback.invalidate();
+                self.video.invalidate();
                 return;
             }
         }
@@ -3410,7 +3574,7 @@ impl EditorApp {
             if let Some(label) = self.editor.timeline.history_gesture_label() {
                 self.set_history_gesture_label(label);
             }
-            self.playback.invalidate();
+            self.video.invalidate();
             return;
         }
         if render_focused
@@ -3572,7 +3736,7 @@ impl EditorApp {
                     && self.insert_media_drag_items(&items, track, time)
                 {
                     self.media.clear_selection();
-                    self.playback.invalidate();
+                    self.video.invalidate();
                 }
             } else if let Some(composition) = open_on_click {
                 self.switch_composition(composition);
@@ -3595,7 +3759,7 @@ impl EditorApp {
                 self.inspector.pointer_released()
             };
             if handled {
-                self.playback.invalidate();
+                self.video.invalidate();
                 return;
             }
         }
@@ -3603,7 +3767,7 @@ impl EditorApp {
             && project_options_focused
             && self.project_options.pointer_released()
         {
-            self.playback.invalidate();
+            self.video.invalidate();
             return;
         }
         if button == MouseButton::Left && render_focused && self.render_panel.pointer_released() {
@@ -3641,7 +3805,7 @@ impl EditorApp {
                 self.handle_timeline_action(action);
             }
             if handled {
-                self.playback.invalidate();
+                self.video.invalidate();
             }
         }
     }
@@ -3797,11 +3961,11 @@ impl EditorApp {
                         self.cursor,
                         &self.editor.project,
                         &mut self.editor.timeline,
-                        self.playback.preview_output().source_geometry,
+                        self.video.preview_output().source_geometry,
                         direction,
                     )
                 }) {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                     return;
                 }
             }
@@ -3824,9 +3988,9 @@ impl EditorApp {
                     &mut self.editor.timeline,
                     &self.plugins,
                     graph_selection,
-                    self.playback.preview_output().source_geometry,
+                    self.video.preview_output().source_geometry,
                 ) {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                     return;
                 }
             }
@@ -3948,7 +4112,7 @@ impl EditorApp {
                     false
                 };
                 if handled {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                     return;
                 }
             }
@@ -3960,7 +4124,7 @@ impl EditorApp {
                     &mut self.editor.project,
                     composition,
                 ) {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                     return;
                 }
             }
@@ -3980,7 +4144,7 @@ impl EditorApp {
                 if let Some(action) = self.pipeline_graph.take_action() {
                     self.handle_pipeline_graph_action(action);
                 }
-                self.playback.invalidate();
+                self.video.invalidate();
                 return;
             }
             if focused_panel == Some(PanelKind::Pipeline)
@@ -4190,7 +4354,7 @@ impl EditorApp {
                     false
                 };
                 if handled {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                 }
             }
             Some(PanelKind::ProjectOptions) => {
@@ -4199,7 +4363,7 @@ impl EditorApp {
                     .project_options
                     .handle_ime(event, &mut self.editor.project, composition)
                 {
-                    self.playback.invalidate();
+                    self.video.invalidate();
                 }
             }
             Some(PanelKind::Render) => {
@@ -4365,7 +4529,7 @@ impl EditorApp {
             ) {
                 return false;
             }
-            self.playback.invalidate();
+            self.video.invalidate();
             return true;
         }
         if !self.inspector.pointer_pressed(
@@ -4381,7 +4545,7 @@ impl EditorApp {
         ) {
             return false;
         }
-        self.playback.invalidate();
+        self.video.invalidate();
         if let Some(action) = self.inspector.take_action() {
             self.handle_inspector_action(action);
         }
@@ -4399,7 +4563,7 @@ impl EditorApp {
         ) {
             return false;
         }
-        self.playback.invalidate();
+        self.video.invalidate();
         true
     }
 
@@ -4488,16 +4652,16 @@ impl EditorApp {
     fn handle_monitor_action(&mut self, action: MonitorAction) {
         let size = self.editor.project.active_settings().canvas_size;
         let playhead = self.editor.timeline.playhead();
-        let captured = self
-            .playback
-            .render_export_rgba16_on(crate::playback::ExportRgba16Args {
-                device: self.renderer.device(),
-                queue: self.renderer.queue(),
-                project: &self.editor.project,
-                timeline: &self.editor.timeline,
-                runtime: (&self.effects, &self.plugins),
-                timeline_time: playhead,
-            });
+        let captured =
+            self.export_renderer
+                .render_export_rgba16_on(crate::playback::ExportRgba16Args {
+                    device: self.renderer.device(),
+                    queue: self.renderer.queue(),
+                    project: &self.editor.project,
+                    timeline: &self.editor.timeline,
+                    runtime: (&self.effects, &self.plugins),
+                    timeline_time: playhead,
+                });
         let pixels = match captured {
             Ok(pixels) => pixels,
             Err(error) => {
@@ -4602,10 +4766,6 @@ impl EditorApp {
     }
 
     fn import_media_path(&mut self, path: &Path) -> Result<MediaId> {
-        let is_wasm = path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("wasm"));
         let media = project_io::import_media(&mut self.editor.project, path)?;
         if let Some(project_path) = self.editor.project_path.as_deref() {
             let base = project_path.parent().unwrap_or_else(|| Path::new("."));
@@ -4615,10 +4775,7 @@ impl EditorApp {
             self.waveform_textures.queue_asset(asset);
             Self::warm_media_scrub_thumbnails(asset);
         }
-        self.playback.clear_media_caches();
-        if is_wasm {
-            self.playback.precompile_wasm(path)?;
-        }
+        self.video.invalidate();
         Ok(media)
     }
 
@@ -4764,7 +4921,7 @@ impl EditorApp {
             target.is_some_and(|(track, time)| self.insert_media_drag_items(&items, track, time));
         if inserted {
             self.media.clear_selection();
-            self.playback.invalidate();
+            self.video.invalidate();
         }
         self.editor.history.record_after(
             if inserted {
@@ -5082,8 +5239,42 @@ impl EditorApp {
         }
     }
 
+    fn restart_audio_worker(&mut self) {
+        if matches!(
+            self.audio.status(),
+            crate::audio::AudioWorkerStatus::Crashed
+                | crate::audio::AudioWorkerStatus::Unresponsive
+                | crate::audio::AudioWorkerStatus::StartupFailed
+        ) {
+            self.editor
+                .timeline
+                .set_worker_transport(self.editor.timeline.playhead(), false);
+            self.audio.restart();
+        }
+    }
+
+    fn restart_video_worker(&mut self) {
+        if matches!(
+            self.video.status(),
+            video_worker::VideoWorkerStatus::Crashed
+                | video_worker::VideoWorkerStatus::Unresponsive
+                | video_worker::VideoWorkerStatus::StartupFailed
+        ) {
+            self.editor
+                .timeline
+                .set_worker_transport(self.editor.timeline.playhead(), false);
+            self.video.restart(self.renderer.device_handle());
+        }
+    }
+
     fn execute_palette_action(&mut self, action: PaletteAction) {
         let history_label = match &action {
+            #[cfg(debug_assertions)]
+            PaletteAction::CrashAudioWorker => "Crash audio worker",
+            #[cfg(debug_assertions)]
+            PaletteAction::CrashVideoWorker => "Crash video worker",
+            PaletteAction::RestartAudioWorker => "Restart audio worker",
+            PaletteAction::RestartVideoWorker => "Restart video worker",
             PaletteAction::ImportMedia | PaletteAction::ImportClipboard => "Import media",
             PaletteAction::InsertGenerator { .. } => "Insert generator clip",
             PaletteAction::InsertMedia { .. } | PaletteAction::InsertAudioMedia { .. } => {
@@ -5116,7 +5307,15 @@ impl EditorApp {
                 | PaletteAction::SaveProjectAs
                 | PaletteAction::ResetLayout
                 | PaletteAction::AddPanel(_, _)
+                | PaletteAction::RestartAudioWorker
+                | PaletteAction::RestartVideoWorker
         );
+        #[cfg(debug_assertions)]
+        let records_history = records_history
+            && !matches!(
+                action,
+                PaletteAction::CrashAudioWorker | PaletteAction::CrashVideoWorker
+            );
         let before = records_history.then(|| {
             crate::history::HistorySnapshot::capture(
                 &self.editor.project,
@@ -5126,6 +5325,12 @@ impl EditorApp {
         self.editor.history_gesture = None;
         let mut graph_changed = false;
         match action {
+            #[cfg(debug_assertions)]
+            PaletteAction::CrashAudioWorker => self.audio.crash_for_test(),
+            #[cfg(debug_assertions)]
+            PaletteAction::CrashVideoWorker => self.video.crash_for_test(),
+            PaletteAction::RestartAudioWorker => self.restart_audio_worker(),
+            PaletteAction::RestartVideoWorker => self.restart_video_worker(),
             PaletteAction::NewProject => self.new_project(),
             PaletteAction::NewComposition => {
                 self.open_modal(Modal::Composition(NewCompositionDialog::new(
@@ -5380,7 +5585,7 @@ impl EditorApp {
         if graph_changed {
             self.sync_effect_runtime();
         }
-        self.playback.invalidate();
+        self.video.invalidate();
         if let Some(before) = before {
             self.editor.history.record_after(
                 history_label,
@@ -5410,7 +5615,7 @@ struct StackBuildState<'a> {
     plugins: &'a PluginRegistry,
     timeline: &'a TimelineState,
     media: &'a MediaPanelState,
-    playback: &'a FrameRenderer,
+    playback: &'a PreviewOutput<'a>,
     monitor: &'a MonitorState,
     history: &'a HistoryState,
     history_panel: &'a mut HistoryPanelState,
@@ -5657,7 +5862,7 @@ fn build_stack(
                                     timeline,
                                     plugins,
                                     graph_selection: pipeline_graph.monitor_selection(timeline),
-                                    output: playback.preview_output(),
+                                    output: *playback,
                                     popup_bounds,
                                     icons,
                                 },
@@ -6603,6 +6808,14 @@ pub fn run() -> Result<()> {
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut App::new(app_proxy))?;
     Ok(())
+}
+
+/// Runs the headless worker protocol entry point without initializing the UI.
+///
+/// # Errors
+/// Returns an error when the worker protocol cannot be read or written.
+pub fn run_worker(kind: &str) -> Result<()> {
+    worker::run(kind)
 }
 
 #[cfg(test)]

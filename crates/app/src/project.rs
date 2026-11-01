@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -91,6 +91,61 @@ pub struct Project {
 
     #[serde(skip)]
     pub active_composition: CompositionId,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct WorkerProjectState {
+    active_composition: CompositionId,
+    media_paths: Vec<(MediaId, PathBuf)>,
+}
+
+impl WorkerProjectState {
+    pub(crate) fn capture(project: &Project) -> Self {
+        Self {
+            active_composition: project.active_composition,
+            media_paths: project
+                .media
+                .iter()
+                .map(|asset| (asset.id, asset.path.clone()))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn restore(self, project: &mut Project) -> Result<()> {
+        anyhow::ensure!(
+            project.set_active_composition(self.active_composition),
+            "worker snapshot references missing composition {}",
+            self.active_composition
+        );
+        let mut paths = HashMap::with_capacity(self.media_paths.len());
+        for (id, path) in self.media_paths {
+            anyhow::ensure!(
+                paths.insert(id, path).is_none(),
+                "worker snapshot contains duplicate runtime paths for media id {id}"
+            );
+        }
+        for asset in &mut project.media {
+            let path = paths.remove(&asset.id).with_context(|| {
+                format!(
+                    "worker snapshot has no runtime path for media '{}' (id {})",
+                    asset.name, asset.id
+                )
+            })?;
+            anyhow::ensure!(
+                !path.as_os_str().is_empty(),
+                "runtime path for media '{}' (id {}) is empty",
+                asset.name,
+                asset.id
+            );
+            asset.path = path;
+        }
+        anyhow::ensure!(
+            paths.is_empty(),
+            "worker snapshot contains runtime paths for unknown media ids: {:?}",
+            paths.keys().collect::<Vec<_>>()
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2600,6 +2655,49 @@ mod tests {
         assert!(project.remove_composition(first));
         assert_ne!(project.active_composition, first);
         assert!(project.composition(project.active_composition).is_some());
+    }
+
+    #[test]
+    fn worker_project_state_restores_runtime_paths_and_active_composition() {
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [320, 180];
+        let selected = project.create_composition("Selected");
+        project
+            .composition_mut(selected)
+            .unwrap()
+            .settings
+            .canvas_size = [854, 480];
+        assert!(project.set_active_composition(selected));
+        project.media.push(MediaAsset {
+            id: 71,
+            name: "voice.wav".into(),
+            path: PathBuf::from("/resolved/unsaved-relink/voice.wav"),
+            absolute_path: PathBuf::from("/stale/saved/voice.wav"),
+            relative_path: PathBuf::from("audio/voice.wav"),
+            kind: MediaKind::Unknown,
+            duration: None,
+            frame_rate: None,
+            video_width: None,
+            video_height: None,
+            has_audio: true,
+            tracks: Vec::new(),
+            waveform: None,
+            legacy_model: None,
+        });
+
+        let project_json = serde_json::to_vec(&project).unwrap();
+        let state_json = serde_json::to_vec(&WorkerProjectState::capture(&project)).unwrap();
+        let mut child_project: Project = serde_json::from_slice(&project_json).unwrap();
+        let state: WorkerProjectState = serde_json::from_slice(&state_json).unwrap();
+        assert!(child_project.media[0].path.as_os_str().is_empty());
+        state.restore(&mut child_project).unwrap();
+
+        assert_eq!(
+            child_project.media[0].path,
+            PathBuf::from("/resolved/unsaved-relink/voice.wav")
+        );
+        assert_eq!(child_project.active_composition, selected);
+        assert_eq!(child_project.active_settings().canvas_size, [854, 480]);
     }
 
     #[test]

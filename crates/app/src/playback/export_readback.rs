@@ -265,7 +265,7 @@ impl EncodeReadbackSurface {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         frame: &GpuFrame,
-    ) {
+    ) -> Result<()> {
         if self.direct_mapped_storage {
             match self.format {
                 ExportPixelFormat::Nv12 => {
@@ -319,7 +319,7 @@ impl EncodeReadbackSurface {
                     );
                 }
             }
-            return;
+            return Ok(());
         }
         match self.format {
             ExportPixelFormat::Nv12 | ExportPixelFormat::P010Le | ExportPixelFormat::P210Le => {
@@ -358,9 +358,10 @@ impl EncodeReadbackSurface {
                         input: frame,
                     },
                     [y, u, v, a],
-                );
+                )?;
             }
         }
+        Ok(())
     }
 
     pub(super) fn copy_to_buffer(&self, encoder: &mut wgpu::CommandEncoder) {

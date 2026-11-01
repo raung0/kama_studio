@@ -1,7 +1,10 @@
 mod atlas;
 mod types;
 pub use atlas::{AtlasEntry, AtlasFull};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 pub use types::*;
 
 use anyhow::{Context, Result, bail};
@@ -16,6 +19,7 @@ const INITIAL_COMMAND_CAPACITY: usize = 16_384;
 const INITIAL_VERTEX_CAPACITY: usize = 65_536;
 const MAX_TILE_REFERENCES: usize = 1_048_576;
 pub const MAX_EXTERNAL_TEXTURES: usize = 8;
+static NEXT_RENDERER_ID: AtomicUsize = AtomicUsize::new(1);
 
 macro_rules! dispatch {
     ($encoder:expr, $label:expr, $pipeline:expr, $bind_group:expr, $method:ident($($arg:expr),*)) => {{
@@ -304,6 +308,9 @@ struct ManagedEntry {
 }
 
 pub struct Renderer {
+    id: usize,
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -349,61 +356,92 @@ impl Renderer {
     /// Returns error when GPU setup or surface configuration fails.
     #[allow(clippy::too_many_lines)]
     pub async fn new(window: Arc<Window>) -> Result<Self> {
+        Self::new_internal(window, None).await
+    }
+
+    /// Shares GPU resources across windows while keeping their texture registrations independent.
+    ///
+    /// # Errors
+    /// Returns an error if the shared adapter cannot present to the new window.
+    pub async fn new_shared(window: Arc<Window>, shared: &Self) -> Result<Self> {
+        Self::new_internal(window, Some(shared)).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn new_internal(window: Arc<Window>, shared: Option<&Self>) -> Result<Self> {
         let size = window.inner_size();
         let scale_factor = window.scale_factor() as f32;
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = shared.map_or_else(
+            || wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()),
+            |renderer| renderer.instance.clone(),
+        );
         let surface = instance
             .create_surface(window)
             .context("create wgpu surface")?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .context("no suitable graphics adapter")?;
-        let adapter_features = adapter.features();
-        let mut required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-        if !adapter_features.contains(required_features) {
-            anyhow::bail!(
-                "graphics adapter does not support the texture-format features required for native high-bit-depth video"
+        let (adapter, device, queue) = if let Some(shared) = shared {
+            anyhow::ensure!(
+                shared.adapter.is_surface_supported(&surface),
+                "shared graphics adapter cannot present to this window"
             );
-        }
-        let r16uint_features = adapter.get_texture_format_features(wgpu::TextureFormat::R16Uint);
-        if !r16uint_features
-            .allowed_usages
-            .contains(wgpu::TextureUsages::STORAGE_BINDING)
-        {
-            anyhow::bail!("graphics adapter does not support R16Uint storage textures");
-        }
-        let _ = format_args!(
-            "gpu: enabled native adapter texture-format features for high-bit-depth video"
-        );
+            (
+                shared.adapter.clone(),
+                Arc::clone(&shared.device),
+                Arc::clone(&shared.queue),
+            )
+        } else {
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    apply_limit_buckets: false,
+                })
+                .await
+                .context("no suitable graphics adapter")?;
+            let adapter_features = adapter.features();
+            let mut required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+            if !adapter_features.contains(required_features) {
+                anyhow::bail!(
+                    "graphics adapter does not support the texture-format features required for native high-bit-depth video"
+                );
+            }
+            let r16uint_features =
+                adapter.get_texture_format_features(wgpu::TextureFormat::R16Uint);
+            if !r16uint_features
+                .allowed_usages
+                .contains(wgpu::TextureUsages::STORAGE_BINDING)
+            {
+                anyhow::bail!("graphics adapter does not support R16Uint storage textures");
+            }
+            let _ = format_args!(
+                "gpu: enabled native adapter texture-format features for high-bit-depth video"
+            );
 
-        if cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            && adapter_features.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
-        {
-            required_features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
-            let _ =
-                format_args!("gpu: enabled MAPPABLE_PRIMARY_BUFFERS for zero-copy export readback");
-        }
+            if cfg!(all(target_os = "macos", target_arch = "aarch64"))
+                && adapter_features.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+            {
+                required_features |= wgpu::Features::MAPPABLE_PRIMARY_BUFFERS;
+                let _ = format_args!(
+                    "gpu: enabled MAPPABLE_PRIMARY_BUFFERS for zero-copy export readback"
+                );
+            }
 
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("block-ui device"),
-                required_features,
-                required_limits: wgpu::Limits::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::default(),
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .context("request wgpu device")?;
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("block-ui device"),
+                    required_features,
+                    required_limits: wgpu::Limits::default(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    memory_hints: wgpu::MemoryHints::default(),
+                    trace: wgpu::Trace::Off,
+                })
+                .await
+                .context("request wgpu device")?;
+            let device = Arc::new(device);
+            let queue = Arc::new(queue);
+            (adapter, device, queue)
+        };
 
         let caps = surface.get_capabilities(&adapter);
         let fallback_format = caps
@@ -576,6 +614,9 @@ impl Renderer {
 
         let size_resources = create_size_resources(&device, &queue, config.width, config.height);
         let mut renderer = Self {
+            id: NEXT_RENDERER_ID.fetch_add(1, Ordering::Relaxed),
+            instance,
+            adapter,
             surface,
             device,
             queue,
@@ -667,6 +708,10 @@ impl Renderer {
 
     pub fn device(&self) -> &wgpu::Device {
         self.device.as_ref()
+    }
+
+    pub const fn registration_id(&self) -> usize {
+        self.id
     }
 
     pub fn queue(&self) -> &wgpu::Queue {
