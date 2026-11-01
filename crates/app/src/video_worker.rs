@@ -17,7 +17,7 @@ use crate::{
     playback::{FrameRenderer, PreviewOutput, RenderCachePreview, SourceGeometry},
     plugin::PluginRegistry,
     project::{Project, WorkerProjectState},
-    runtime::{shared_surface, video::PresentationTexture},
+    runtime::{cpu_surface, shared_surface, video::PresentationTexture},
     timeline::{TimelineDocument, TimelineState},
 };
 
@@ -37,7 +37,38 @@ struct Snapshot {
     preview_size: [u32; 2],
     render_scale: f32,
     render_cache: Option<RenderCachePreview>,
-    captured_frame: Option<([u32; 2], Vec<u8>)>,
+    captured_frame: Option<cpu_surface::CpuCaptureDescriptor>,
+    cpu_slots: Vec<cpu_surface::CpuSurfaceDescriptor>,
+    force_cpu: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FrameTransport {
+    seek_revision: u64,
+    playhead: f32,
+    playing: bool,
+    scrubbing: bool,
+    preview_size: [u32; 2],
+    render_scale: f32,
+    render_cache: Option<RenderCachePreview>,
+    captured_frame: Option<cpu_surface::CpuCaptureDescriptor>,
+    cpu_slots: Vec<cpu_surface::CpuSurfaceDescriptor>,
+    force_cpu: bool,
+}
+
+impl FrameTransport {
+    fn apply(self, snapshot: &mut Snapshot) {
+        snapshot.seek_revision = self.seek_revision;
+        snapshot.playhead = self.playhead;
+        snapshot.playing = self.playing;
+        snapshot.scrubbing = self.scrubbing;
+        snapshot.preview_size = self.preview_size;
+        snapshot.render_scale = self.render_scale;
+        snapshot.render_cache = self.render_cache;
+        snapshot.captured_frame = self.captured_frame;
+        snapshot.cpu_slots = self.cpu_slots;
+        snapshot.force_cpu = self.force_cpu;
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,12 +77,18 @@ enum Request {
     Hello {
         protocol: u16,
         parent_pid: i32,
-        metal_registry_id: u64,
+        metal_registry_id: Option<u64>,
+        cpu_session: cpu_surface::CpuSurfaceSessionDescriptor,
         plugin_paths: String,
     },
     Render {
         generation: u64,
         snapshot: Snapshot,
+    },
+    RenderCached {
+        generation: u64,
+        revision: u64,
+        transport: FrameTransport,
     },
     Release {
         channel: String,
@@ -75,7 +112,7 @@ enum WireResponse {
         seek_revision: u64,
         playhead: f32,
         pending: bool,
-        descriptor: shared_surface::SharedSurfaceDescriptor,
+        descriptor: FrameSurfaceDescriptor,
         source_geometry: HashMap<String, SourceGeometry>,
     },
     Error {
@@ -89,6 +126,13 @@ enum WireResponse {
     },
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "descriptor", rename_all = "snake_case")]
+enum FrameSurfaceDescriptor {
+    Metal(shared_surface::SharedSurfaceDescriptor),
+    Cpu(cpu_surface::CpuSurfaceDescriptor),
+}
+
 enum Response {
     Ready {
         pid: u32,
@@ -99,7 +143,7 @@ enum Response {
         seek_revision: u64,
         playhead: f32,
         pending: bool,
-        channel: String,
+        channel: Option<String>,
         texture: wgpu::Texture,
         source_geometry: HashMap<u32, SourceGeometry>,
     },
@@ -120,7 +164,6 @@ pub enum VideoWorkerStatus {
     Unresponsive,
     Restarting,
     StartupFailed,
-    Unsupported,
 }
 
 struct Process {
@@ -134,16 +177,23 @@ struct Process {
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     diagnostics_reader: Option<thread::JoinHandle<()>>,
     releases: Arc<Mutex<VecDeque<String>>>,
+    cpu_surfaces: Arc<cpu_surface::CpuSurfaceSession>,
+    force_cpu: Arc<std::sync::atomic::AtomicBool>,
 }
 
-struct ChildGuard(Option<Child>);
+struct ChildGuard {
+    child: Option<Child>,
+    cpu_surfaces: Option<Arc<cpu_surface::CpuSurfaceSession>>,
+}
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
+        if let Some(mut child) = self.child.take() {
+            let cpu_surfaces = self.cpu_surfaces.take();
             let _ = child.kill();
             thread::spawn(move || {
                 let _ = child.wait();
+                drop(cpu_surfaces);
             });
         }
     }
@@ -153,8 +203,10 @@ impl Process {
     fn spawn(
         plugin_paths: &str,
         parent_pid: i32,
-        metal_registry_id: u64,
+        metal_registry_id: Option<u64>,
         device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        force_cpu: bool,
     ) -> Result<Self> {
         let executable = std::env::current_exe().context("locate video worker executable")?;
         let mut command = Command::new(executable);
@@ -166,19 +218,31 @@ impl Process {
             .arg("video_worker::tests::video_worker_child_entry")
             .arg("--quiet")
             .arg("--nocapture")
-            .env("KAMA_VIDEO_WORKER_TEST_CHILD", "1");
+            .env("KAMA_VIDEO_WORKER_TEST_CHILD", "1")
+            .env(
+                "KAMA_VIDEO_FORCE_CPU_SURFACE_TEST_CHILD",
+                if force_cpu { "1" } else { "0" },
+            );
         let child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .context("spawn video worker")?;
-        let mut child_guard = ChildGuard(Some(child));
+        let mut child_guard = ChildGuard {
+            child: Some(child),
+            cpu_surfaces: None,
+        };
         let child = child_guard
-            .0
+            .child
             .as_mut()
             .context("video worker process unavailable")?;
         let pid = child.id();
+        let cpu_surfaces = Arc::new(cpu_surface::CpuSurfaceSession::create(
+            parent_pid,
+            i32::try_from(pid).unwrap_or(i32::MAX),
+        )?);
+        child_guard.cpu_surfaces = Some(Arc::clone(&cpu_surfaces));
         let stdin = child
             .stdin
             .take()
@@ -222,19 +286,36 @@ impl Process {
             .name(format!("kama-video-stdout-{pid}"))
             .spawn(move || read_responses(stdout, wire_tx, cfg!(all(test, debug_assertions))))?;
         let importer = Arc::clone(&device);
+        let importer_queue = Arc::clone(&queue);
+        let importer_cpu_surfaces = Arc::clone(&cpu_surfaces);
+        let importer_force_cpu = Arc::new(std::sync::atomic::AtomicBool::new(force_cpu));
+        let importer_force_cpu_response = Arc::clone(&importer_force_cpu);
+        let importer_releases = Arc::clone(&releases);
         thread::Builder::new()
             .name(format!("kama-video-import-{pid}"))
-            .spawn(move || import_responses(wire_rx, response_tx, importer, pid))?;
+            .spawn(move || {
+                import_responses(
+                    wire_rx,
+                    response_tx,
+                    importer,
+                    importer_queue,
+                    importer_cpu_surfaces,
+                    importer_force_cpu_response,
+                    importer_releases,
+                    pid,
+                );
+            })?;
         request_tx
             .try_send(Request::Hello {
                 protocol: PROTOCOL,
                 parent_pid,
                 metal_registry_id,
+                cpu_session: cpu_surfaces.descriptor(),
                 plugin_paths: plugin_paths.to_owned(),
             })
             .map_err(|error| anyhow::anyhow!("send video worker handshake: {error}"))?;
         Ok(Self {
-            child: child_guard.0.take(),
+            child: child_guard.child.take(),
             requests: request_tx,
             responses: response_rx,
             pid,
@@ -244,15 +325,19 @@ impl Process {
             diagnostics,
             diagnostics_reader: Some(diagnostics_reader),
             releases,
+            cpu_surfaces,
+            force_cpu: importer_force_cpu,
         })
     }
 
     fn stop(&mut self) {
         let _ = self.requests.try_send(Request::Shutdown);
         if let Some(mut child) = self.child.take() {
+            let cpu_surfaces = Arc::clone(&self.cpu_surfaces);
             let _ = child.kill();
             thread::spawn(move || {
                 let _ = child.wait();
+                drop(cpu_surfaces);
             });
         }
         self.reader.take();
@@ -327,7 +412,48 @@ impl Drop for Process {
 
 fn write_requests(stdin: impl Write, requests: mpsc::Receiver<Request>) -> Result<()> {
     let mut writer = BufWriter::new(stdin);
+    let mut cached_project = None;
     for request in requests {
+        let request = match request {
+            Request::Render {
+                generation,
+                snapshot,
+            } if cached_project
+                == Some((snapshot.revision, snapshot.project.active_composition)) =>
+            {
+                Request::RenderCached {
+                    generation,
+                    revision: snapshot.revision,
+                    transport: FrameTransport {
+                        seek_revision: snapshot.seek_revision,
+                        playhead: snapshot.playhead,
+                        playing: snapshot.playing,
+                        scrubbing: snapshot.scrubbing,
+                        preview_size: snapshot.preview_size,
+                        render_scale: snapshot.render_scale,
+                        render_cache: snapshot.render_cache,
+                        captured_frame: snapshot.captured_frame,
+                        cpu_slots: snapshot.cpu_slots,
+                        force_cpu: snapshot.force_cpu,
+                    },
+                }
+            }
+            Request::Render {
+                generation,
+                snapshot,
+            } => {
+                cached_project = Some((snapshot.revision, snapshot.project.active_composition));
+                Request::Render {
+                    generation,
+                    snapshot,
+                }
+            }
+            Request::Invalidate => {
+                cached_project = None;
+                Request::Invalidate
+            }
+            other => other,
+        };
         serde_json::to_writer(&mut writer, &request).context("serialize video worker request")?;
         writer
             .write_all(b"\n")
@@ -368,6 +494,13 @@ fn frame_matches_current_request(
                 }
         })
         && playhead.is_finite()
+}
+
+fn transport_readiness_matches(
+    ready: Option<(u64, bool, bool, u64)>,
+    current: (u64, bool, bool, u64),
+) -> bool {
+    ready == Some(current)
 }
 
 fn processing_identity(
@@ -466,6 +599,10 @@ fn import_responses(
     responses: mpsc::Receiver<WireResponse>,
     output: mpsc::SyncSender<Response>,
     device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    cpu_surfaces: Arc<cpu_surface::CpuSurfaceSession>,
+    force_cpu: Arc<std::sync::atomic::AtomicBool>,
+    releases: Arc<Mutex<VecDeque<String>>>,
     pid: u32,
 ) {
     let mut imported = HashMap::<String, wgpu::Texture>::new();
@@ -487,30 +624,83 @@ fn import_responses(
                     .into_iter()
                     .filter_map(|(id, geometry)| id.parse().ok().map(|id| (id, geometry)))
                     .collect();
-                let channel = descriptor.channel.clone();
-                let texture = if let Some(texture) = imported.get(&channel) {
-                    Ok(texture.clone())
-                } else {
-                    shared_surface::ImportedSurface::receive(
-                        &device,
-                        &descriptor,
-                        i32::try_from(pid).unwrap_or(i32::MAX),
-                        Duration::from_secs(2),
-                    )
-                    .map(|surface| surface.into_texture())
+                let (channel, texture) = match descriptor {
+                    FrameSurfaceDescriptor::Metal(descriptor) => {
+                        let channel = descriptor.channel.clone();
+                        let texture = if let Some(texture) = imported.get(&channel) {
+                            Ok(texture.clone())
+                        } else {
+                            shared_surface::ImportedSurface::receive(
+                                &device,
+                                &descriptor,
+                                i32::try_from(pid).unwrap_or(i32::MAX),
+                                Duration::from_secs(2),
+                            )
+                            .map(|surface| surface.into_texture())
+                        };
+                        (Some(channel), texture)
+                    }
+                    FrameSurfaceDescriptor::Cpu(descriptor) => {
+                        force_cpu.store(true, std::sync::atomic::Ordering::Release);
+                        let texture =
+                            cpu_surfaces
+                                .read_frame(&descriptor, pid)
+                                .and_then(|pixels| {
+                                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                                        label: Some("Kama imported CPU preview frame"),
+                                        size: wgpu::Extent3d {
+                                            width: descriptor.width,
+                                            height: descriptor.height,
+                                            depth_or_array_layers: 1,
+                                        },
+                                        mip_level_count: 1,
+                                        sample_count: 1,
+                                        dimension: wgpu::TextureDimension::D2,
+                                        format: wgpu::TextureFormat::Rgba16Float,
+                                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                            | wgpu::TextureUsages::STORAGE_BINDING
+                                            | wgpu::TextureUsages::COPY_DST
+                                            | wgpu::TextureUsages::COPY_SRC,
+                                        view_formats: &[],
+                                    });
+                                    queue.write_texture(
+                                        wgpu::TexelCopyTextureInfo {
+                                            texture: &texture,
+                                            mip_level: 0,
+                                            origin: wgpu::Origin3d::ZERO,
+                                            aspect: wgpu::TextureAspect::All,
+                                        },
+                                        &pixels,
+                                        wgpu::TexelCopyBufferLayout {
+                                            offset: 0,
+                                            bytes_per_row: Some(descriptor.stride),
+                                            rows_per_image: Some(descriptor.height),
+                                        },
+                                        wgpu::Extent3d {
+                                            width: descriptor.width,
+                                            height: descriptor.height,
+                                            depth_or_array_layers: 1,
+                                        },
+                                    );
+                                    Ok(texture)
+                                });
+                        (None, texture)
+                    }
                 };
                 match texture {
                     Ok(texture) => {
-                        imported.insert(channel.clone(), texture.clone());
-                        while imported.len() > 3 {
-                            let evict = imported
-                                .keys()
-                                .find(|candidate| **candidate != channel)
-                                .cloned();
-                            if let Some(evict) = evict {
-                                imported.remove(&evict);
-                            } else {
-                                break;
+                        if let Some(channel) = &channel {
+                            imported.insert(channel.clone(), texture.clone());
+                            while imported.len() > 3 {
+                                let evict = imported
+                                    .keys()
+                                    .find(|candidate| **candidate != *channel)
+                                    .cloned();
+                                if let Some(evict) = evict {
+                                    imported.remove(&evict);
+                                } else {
+                                    break;
+                                }
                             }
                         }
                         Response::Frame {
@@ -524,7 +714,13 @@ fn import_responses(
                             source_geometry,
                         }
                     }
-                    Err(error) => Response::Error(format!("import video frame: {error:#}")),
+                    Err(error) => {
+                        if let Some(channel) = channel {
+                            queue_release(Arc::clone(&releases), channel);
+                        }
+                        force_cpu.store(true, std::sync::atomic::Ordering::Release);
+                        Response::Error(format!("import video frame: {error:#}"))
+                    }
                 }
             }
             WireResponse::Error { message } => Response::Error(message),
@@ -552,7 +748,7 @@ pub struct VideoPlayback {
     last_pid: Option<u32>,
     plugin_paths: String,
     status: VideoWorkerStatus,
-    registry_id: u64,
+    registry_id: Option<u64>,
     generation: u64,
     key: Option<(u64, u64, i64, [u32; 2])>,
     pending: Option<(u64, Snapshot)>,
@@ -571,23 +767,30 @@ pub struct VideoPlayback {
     scrubbing: bool,
     invalidate_pending: bool,
     deferred_releases: VecDeque<String>,
+    current_capture: Option<cpu_surface::CpuCaptureDescriptor>,
+    inflight_capture: Option<cpu_surface::CpuCaptureDescriptor>,
+    capture_identity: Option<(usize, usize, [u32; 2])>,
+    capture_epoch: u64,
+    transport_key: Option<(u64, bool, bool)>,
+    readiness_revision: Option<u64>,
+    readiness_editing: bool,
+    ready_transport: Option<(u64, bool, bool, u64)>,
     #[cfg(debug_assertions)]
     crash_requested: bool,
 }
 
 impl VideoPlayback {
-    pub fn new(plugin_paths: &str, device: Arc<wgpu::Device>) -> Self {
-        let registry_id = match shared_surface::metal_registry_id(&device) {
-            Ok(id) => id,
-            Err(error) => {
-                messages::error(
-                    "Video worker",
-                    format!("unsupported GPU isolation: {error:#}"),
-                );
-                return Self::unavailable(plugin_paths, VideoWorkerStatus::Unsupported);
-            }
-        };
-        let process = Self::spawn(plugin_paths, registry_id, device);
+    pub fn new(plugin_paths: &str, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+        let registry_id = shared_surface::metal_registry_id(&device).ok();
+        let force_cpu = std::env::var_os("KAMA_VIDEO_FORCE_CPU_SURFACE_TEST_CHILD")
+            .is_some_and(|value| value == "1");
+        let process = Self::spawn(
+            plugin_paths,
+            registry_id,
+            device,
+            Arc::clone(&queue),
+            force_cpu,
+        );
         let status = if process.is_ok() {
             VideoWorkerStatus::Starting
         } else {
@@ -621,18 +824,60 @@ impl VideoPlayback {
             scrubbing: false,
             invalidate_pending: false,
             deferred_releases: VecDeque::new(),
+            current_capture: None,
+            inflight_capture: None,
+            capture_identity: None,
+            capture_epoch: 0,
+            transport_key: None,
+            readiness_revision: None,
+            readiness_editing: false,
+            ready_transport: None,
             #[cfg(debug_assertions)]
             crash_requested: false,
         }
     }
 
+    pub(crate) fn playback_ready(
+        &self,
+        timeline: &TimelineState,
+        revision: u64,
+        editing: bool,
+    ) -> bool {
+        if !timeline.is_playing() || timeline.is_scrubbing() {
+            return true;
+        }
+        if self.transport_key
+            != Some((
+                timeline.seek_revision(),
+                timeline.is_playing(),
+                timeline.is_scrubbing(),
+            ))
+        {
+            return false;
+        }
+        self.readiness_revision == Some(revision)
+            && self.readiness_editing == editing
+            && transport_readiness_matches(
+                self.ready_transport,
+                (
+                    timeline.seek_revision(),
+                    timeline.is_playing(),
+                    timeline.is_scrubbing(),
+                    revision,
+                ),
+            )
+            && self.texture.is_some()
+            && matches!(self.status, VideoWorkerStatus::Ready { .. })
+    }
+
+    #[cfg(test)]
     fn unavailable(plugin_paths: &str, status: VideoWorkerStatus) -> Self {
         Self {
             process: None,
             last_pid: None,
             plugin_paths: plugin_paths.to_owned(),
             status,
-            registry_id: 0,
+            registry_id: None,
             generation: 0,
             key: None,
             pending: None,
@@ -651,17 +896,33 @@ impl VideoPlayback {
             scrubbing: false,
             invalidate_pending: false,
             deferred_releases: VecDeque::new(),
+            current_capture: None,
+            inflight_capture: None,
+            capture_identity: None,
+            capture_epoch: 0,
+            transport_key: None,
+            readiness_revision: None,
+            readiness_editing: false,
+            ready_transport: None,
             #[cfg(debug_assertions)]
             crash_requested: false,
         }
     }
 
-    fn spawn(plugin_paths: &str, registry_id: u64, device: Arc<wgpu::Device>) -> Result<Process> {
+    fn spawn(
+        plugin_paths: &str,
+        registry_id: Option<u64>,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        force_cpu: bool,
+    ) -> Result<Process> {
         Process::spawn(
             plugin_paths,
             i32::try_from(std::process::id()).unwrap_or(i32::MAX),
             registry_id,
             device,
+            queue,
+            force_cpu,
         )
     }
 
@@ -706,13 +967,12 @@ impl VideoPlayback {
         self.crash_requested = matches!(self.status, VideoWorkerStatus::Ready { .. });
     }
 
-    pub fn restart(&mut self, device: Arc<wgpu::Device>) {
+    pub fn restart(&mut self, device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) {
         if !matches!(
             self.status,
             VideoWorkerStatus::Crashed
                 | VideoWorkerStatus::Unresponsive
                 | VideoWorkerStatus::StartupFailed
-                | VideoWorkerStatus::Unsupported
         ) {
             return;
         }
@@ -725,27 +985,23 @@ impl VideoPlayback {
         self.key = None;
         self.pending = None;
         self.retry_pending = false;
+        self.current_capture = None;
+        self.inflight_capture = None;
+        self.capture_identity = None;
+        self.capture_epoch = self.capture_epoch.wrapping_add(1);
         self.request_pending = false;
         self.invalidate_pending = false;
         self.deferred_releases.clear();
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.status = VideoWorkerStatus::Unsupported;
-            return;
-        }
-        #[cfg(target_os = "macos")]
-        match shared_surface::metal_registry_id(&device) {
-            Ok(registry_id) => self.registry_id = registry_id,
-            Err(error) => {
-                self.status = VideoWorkerStatus::Unsupported;
-                messages::error(
-                    "Video worker",
-                    format!("GPU isolation is unavailable after window switch: {error:#}"),
-                );
-                return;
-            }
-        }
-        match Self::spawn(&self.plugin_paths, self.registry_id, device) {
+        self.registry_id = shared_surface::metal_registry_id(&device).ok();
+        let force_cpu = std::env::var_os("KAMA_VIDEO_FORCE_CPU_SURFACE_TEST_CHILD")
+            .is_some_and(|value| value == "1");
+        match Self::spawn(
+            &self.plugin_paths,
+            self.registry_id,
+            device,
+            queue,
+            force_cpu,
+        ) {
             Ok(process) => {
                 self.last_pid = Some(process.pid);
                 self.process = Some(process);
@@ -769,6 +1025,7 @@ impl VideoPlayback {
         self.retry_pending = false;
         self.active_renderer_key = None;
         self.source_geometry.clear();
+        self.ready_transport = None;
     }
 
     fn queue_snapshot(&mut self, key: (u64, u64, i64, [u32; 2]), snapshot: Snapshot) {
@@ -793,6 +1050,11 @@ impl VideoPlayback {
         captured_frame: Option<([u32; 2], &[u8])>,
         live_editing: bool,
     ) -> Result<bool> {
+        self.transport_key = Some((
+            timeline.seek_revision(),
+            timeline.is_playing(),
+            timeline.is_scrubbing(),
+        ));
         let previous_status = self.status;
         if live_editing
             && self
@@ -804,8 +1066,16 @@ impl VideoPlayback {
         } else if !live_editing {
             self.last_live_snapshot = None;
         }
+        self.readiness_revision = Some(revision);
+        self.readiness_editing = live_editing;
         let frame =
             (f64::from(timeline.playhead()) * project.active_settings().frame_rate.max(1.0)) as i64;
+        let capture_identity =
+            captured_frame.map(|(size, pixels)| (pixels.as_ptr() as usize, pixels.len(), size));
+        if capture_identity != self.capture_identity {
+            self.capture_epoch = self.capture_epoch.wrapping_add(1);
+            self.capture_identity = capture_identity;
+        }
         let mut content_hasher = std::collections::hash_map::DefaultHasher::new();
         revision.hash(&mut content_hasher);
         self.live_edit_revision.hash(&mut content_hasher);
@@ -818,7 +1088,8 @@ impl VideoPlayback {
         }
         if let Some((size, pixels)) = captured_frame {
             size.hash(&mut content_hasher);
-            pixels.hash(&mut content_hasher);
+            (pixels.as_ptr() as usize).hash(&mut content_hasher);
+            pixels.len().hash(&mut content_hasher);
         }
         let content_revision = content_hasher.finish();
         let key = (
@@ -831,6 +1102,17 @@ impl VideoPlayback {
             advance_processing_generation(self.key, key, self.generation, timeline.is_scrubbing());
         self.scrubbing = timeline.is_scrubbing();
         if self.should_queue_snapshot(key) {
+            let captured_frame = match (captured_frame, self.process.as_ref()) {
+                (Some((size, pixels)), Some(process)) => Some(process.cpu_surfaces.cache_capture(
+                    size,
+                    pixels,
+                    self.capture_epoch,
+                    self.inflight_capture.as_ref(),
+                )?),
+                _ => None,
+            };
+            self.current_capture = captured_frame.clone();
+            self.retain_capture_files();
             let mut snapshot_project = project.clone();
             snapshot_project.sync_active_timeline(timeline.document());
             let snapshot = Snapshot {
@@ -845,9 +1127,12 @@ impl VideoPlayback {
                 preview_size,
                 render_scale,
                 render_cache: render_cache.cloned(),
-                captured_frame: captured_frame.map(|(size, pixels)| (size, pixels.to_vec())),
+                captured_frame,
+                cpu_slots: Vec::new(),
+                force_cpu: false,
             };
             self.queue_snapshot(key, snapshot);
+            self.retain_capture_files();
         }
         self.poll(renderer);
         self.present_current(renderer)?;
@@ -896,8 +1181,14 @@ impl VideoPlayback {
             }
         }
         if !self.request_pending
-            && let Some((generation, snapshot)) = self.pending.take()
+            && let Some((generation, mut snapshot)) = self.pending.take()
         {
+            snapshot.cpu_slots = process.cpu_surfaces.prepare([
+                snapshot.preview_size[0].max(1),
+                snapshot.preview_size[1].max(1),
+            ])?;
+            snapshot.force_cpu = process.force_cpu.load(std::sync::atomic::Ordering::Acquire);
+            let sent_capture = snapshot.captured_frame.clone();
             match process.requests.try_send(Request::Render {
                 generation,
                 snapshot,
@@ -905,6 +1196,7 @@ impl VideoPlayback {
                 Ok(()) => {
                     self.request_pending = true;
                     self.request_started = Some(Instant::now());
+                    self.inflight_capture = sent_capture;
                     self.retry_pending = false;
                 }
                 Err(mpsc::TrySendError::Full(Request::Render {
@@ -967,6 +1259,8 @@ impl VideoPlayback {
                 {
                     self.request_pending = false;
                     self.request_started = None;
+                    self.inflight_capture = None;
+                    self.retain_capture_files();
                     let renderer_key = renderer.registration_id();
                     let view = texture.create_view(&Default::default());
                     let id = match self.texture_ids.get(&renderer_key).copied() {
@@ -977,32 +1271,42 @@ impl VideoPlayback {
                         Ok(id) => {
                             self.texture_ids.insert(renderer_key, id);
                             self.active_renderer_key = Some(renderer_key);
-                            let old_channel = self.channel.replace(channel);
+                            let old_channel = std::mem::replace(&mut self.channel, channel);
                             let old_texture = self.texture.replace(texture);
                             self.source_geometry = source_geometry;
                             self.waiting_for_video = pending;
                             self.retry_pending = pending;
+                            if !pending {
+                                self.ready_transport = Some((
+                                    seek_revision,
+                                    self.transport_key.is_some_and(|key| key.1),
+                                    self.transport_key.is_some_and(|key| key.2),
+                                    self.readiness_revision.unwrap_or_default(),
+                                ));
+                            }
                             self.status = match self.status {
                                 VideoWorkerStatus::Ready { pid } => {
                                     VideoWorkerStatus::Ready { pid }
                                 }
                                 other => other,
                             };
-                            if let (Some(channel), Some(old_texture)) = (old_channel, old_texture) {
+                            if let Some(old_texture) = old_texture {
                                 let releases = self
                                     .process
                                     .as_ref()
                                     .map(|process| Arc::clone(&process.releases));
                                 renderer.queue().on_submitted_work_done(move || {
                                     drop(old_texture);
-                                    if let Some(releases) = releases {
+                                    if let (Some(channel), Some(releases)) = (old_channel, releases)
+                                    {
                                         queue_release(releases, channel);
                                     }
                                 });
                             }
                         }
                         Err(error) => {
-                            if let Some(process) = self.process.as_ref() {
+                            if let (Some(process), Some(channel)) = (self.process.as_ref(), channel)
+                            {
                                 queue_release(Arc::clone(&process.releases), channel);
                             }
                             messages::error(
@@ -1015,13 +1319,30 @@ impl VideoPlayback {
                 Response::Frame { channel, .. } => {
                     self.request_pending = false;
                     self.request_started = None;
-                    if let Some(process) = self.process.as_ref() {
+                    self.inflight_capture = None;
+                    self.retain_capture_files();
+                    if let (Some(channel), Some(process)) = (channel, self.process.as_ref()) {
                         queue_release(Arc::clone(&process.releases), channel);
                     }
                 }
                 Response::Error(message) => {
                     self.request_pending = false;
                     self.request_started = None;
+                    self.inflight_capture = None;
+                    self.retain_capture_files();
+                    if message.starts_with("import video frame:")
+                        && let Some(process) = self.process.as_ref()
+                    {
+                        process
+                            .force_cpu
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        self.retry_pending = true;
+                        messages::warning(
+                            "Video worker",
+                            format!("retrying preview through shared CPU memory: {message}"),
+                        );
+                        continue;
+                    }
                     if matches!(
                         message.as_str(),
                         "preview source is not ready" | "video frame slots are full"
@@ -1110,6 +1431,23 @@ impl VideoPlayback {
         self.stop();
     }
 
+    fn retain_capture_files(&self) {
+        if let Some(process) = self.process.as_ref() {
+            let keep = self
+                .current_capture
+                .iter()
+                .chain(self.inflight_capture.iter())
+                .chain(
+                    self.pending
+                        .iter()
+                        .filter_map(|(_, snapshot)| snapshot.captured_frame.as_ref()),
+                )
+                .cloned()
+                .collect::<Vec<_>>();
+            process.cpu_surfaces.retain_captures(&keep);
+        }
+    }
+
     fn present_current(&mut self, renderer: &mut kama_ui::Renderer) -> Result<()> {
         let key = renderer.registration_id();
         if self.active_renderer_key == Some(key) || self.texture.is_none() {
@@ -1149,17 +1487,37 @@ pub(super) fn run_video_worker() -> Result<()> {
         protocol,
         parent_pid,
         metal_registry_id,
+        cpu_session,
         plugin_paths,
     } = serde_json::from_str(&line).context("decode video worker handshake")?
     else {
         anyhow::bail!("video worker handshake expected");
     };
     anyhow::ensure!(protocol == PROTOCOL, "unsupported video worker protocol");
-    let (instance, adapter, device, queue) = create_matching_metal_device(metal_registry_id)?;
+    cpu_surface::validate_session(&cpu_session, parent_pid)?;
+    anyhow::ensure!(
+        cpu_session.exporter_pid == i32::try_from(std::process::id()).unwrap_or(i32::MAX),
+        "CPU surface session is not owned by this video worker"
+    );
+    let (instance, adapter, device, queue) = if let Some(registry_id) = metal_registry_id {
+        create_matching_metal_device(registry_id)?
+    } else {
+        crate::render::create_processing_device(None)?
+    };
     let mut plugins = PluginRegistry::load_default(&plugin_paths)?;
     plugins.validate_gpu(&device);
     let mut effects = EffectRuntime::default();
-    let mut renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+    let mut renderer = FrameRenderer::new_preview_worker(
+        Arc::new(device.clone()),
+        Arc::new(queue.clone()),
+        &effects,
+        &plugins,
+    );
+    #[cfg(test)]
+    let force_cpu_test_child = std::env::var_os("KAMA_VIDEO_FORCE_CPU_SURFACE_TEST_CHILD")
+        .is_some_and(|value| value == "1");
+    #[cfg(not(test))]
+    let force_cpu_test_child = false;
     let mut effects_revision = None;
     write_response(&WireResponse::Ready {
         protocol: PROTOCOL,
@@ -1167,9 +1525,44 @@ pub(super) fn run_video_worker() -> Result<()> {
     })?;
     let mut surfaces = HashMap::<String, shared_surface::SharedSurface>::new();
     let mut free_surfaces = VecDeque::<String>::new();
+    let mut cached_snapshot: Option<Snapshot> = None;
     while let Some(line) = read_line(&mut reader)? {
         let request: Request =
             serde_json::from_str(&line).context("decode video worker request")?;
+        let request = match request {
+            Request::Render {
+                generation,
+                snapshot,
+            } => {
+                cached_snapshot = Some(snapshot.clone());
+                Request::Render {
+                    generation,
+                    snapshot,
+                }
+            }
+            Request::RenderCached {
+                generation,
+                revision,
+                transport,
+            } => {
+                let Some(mut snapshot) = cached_snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.revision == revision)
+                    .cloned()
+                else {
+                    write_response(&WireResponse::Error {
+                        message: "video frame references an unavailable project revision".into(),
+                    })?;
+                    continue;
+                };
+                transport.apply(&mut snapshot);
+                Request::Render {
+                    generation,
+                    snapshot,
+                }
+            }
+            other => other,
+        };
         match request {
             Request::Render {
                 generation,
@@ -1190,53 +1583,120 @@ pub(super) fn run_video_worker() -> Result<()> {
                 let mut timeline = TimelineState::default();
                 timeline.load_document(snapshot.timeline.clone());
                 timeline.set_worker_transport(snapshot.playhead, snapshot.playing);
-                let [width, height] = snapshot.preview_size;
-                let dimensions = [width.max(1), height.max(1)];
-                while let Some(channel) = free_surfaces.pop_front() {
-                    if surfaces.get(&channel).is_some_and(|surface| {
-                        surface.descriptor().width != dimensions[0]
-                            || surface.descriptor().height != dimensions[1]
-                    }) {
-                        surfaces.remove(&channel);
-                    } else {
-                        free_surfaces.push_front(channel);
-                        break;
-                    }
-                }
-                let reusable = free_surfaces.pop_front();
-                let channel = if let Some(channel) = reusable {
-                    channel
-                } else if surfaces.len() < 2 {
-                    let surface = match shared_surface::SharedSurface::allocate(
-                        &device,
-                        dimensions[0],
-                        dimensions[1],
-                        parent_pid,
-                    ) {
-                        Ok(surface) => surface,
+                let captured_frame = if let Some(capture) = snapshot.captured_frame.as_ref() {
+                    match cpu_surface::read_capture(&cpu_session, capture, std::process::id()) {
+                        Ok(pixels) => Some(((capture.width, capture.height), pixels)),
                         Err(error) => {
                             write_response(&WireResponse::Error {
-                                message: format!("allocate preview surface: {error:#}"),
+                                message: format!("read parent-owned capture frame: {error:#}"),
                             })?;
                             continue;
                         }
-                    };
-                    let channel = surface.descriptor().channel.clone();
-                    surfaces.insert(channel.clone(), surface);
-                    channel
+                    }
                 } else {
-                    write_response(&WireResponse::Error {
-                        message: "video frame slots are full".into(),
-                    })?;
-                    continue;
+                    None
                 };
-                let surface = surfaces
-                    .get(&channel)
-                    .context("reusable frame slot disappeared")?;
+                let [width, height] = snapshot.preview_size;
+                let dimensions = [width.max(1), height.max(1)];
+                let mut channel = None;
+                let mut gpu_surface_error = None;
+                let mut cpu_slot = None;
+                let output_texture = if !snapshot.force_cpu
+                    && !force_cpu_test_child
+                    && metal_registry_id.is_some()
+                {
+                    while let Some(candidate) = free_surfaces.pop_front() {
+                        if surfaces.get(&candidate).is_some_and(|surface| {
+                            surface.descriptor().width != dimensions[0]
+                                || surface.descriptor().height != dimensions[1]
+                        }) {
+                            surfaces.remove(&candidate);
+                        } else {
+                            free_surfaces.push_front(candidate);
+                            break;
+                        }
+                    }
+                    let reusable = free_surfaces.pop_front();
+                    if let Some(candidate) = reusable {
+                        channel = Some(candidate.clone());
+                        surfaces
+                            .get(&candidate)
+                            .map(|surface| surface.texture().clone())
+                    } else if surfaces.len() < 2 {
+                        match shared_surface::SharedSurface::allocate(
+                            &device,
+                            dimensions[0],
+                            dimensions[1],
+                            parent_pid,
+                        ) {
+                            Ok(surface) => {
+                                let candidate = surface.descriptor().channel.clone();
+                                let texture = surface.texture().clone();
+                                surfaces.insert(candidate.clone(), surface);
+                                channel = Some(candidate);
+                                Some(texture)
+                            }
+                            Err(error) => {
+                                gpu_surface_error =
+                                    Some(format!("allocate preview surface: {error:#}"));
+                                None
+                            }
+                        }
+                    } else {
+                        gpu_surface_error = Some("GPU preview surface slots are full".into());
+                        None
+                    }
+                } else {
+                    None
+                };
+                let output_texture = if let Some(texture) = output_texture {
+                    texture
+                } else {
+                    if let Some(error) = gpu_surface_error {
+                        messages::warning(
+                            "Video worker",
+                            format!("falling back to CPU preview transfer: {error}"),
+                        );
+                    }
+                    let Some(slot) = snapshot
+                        .cpu_slots
+                        .get(usize::try_from(
+                            generation % cpu_surface::SLOT_COUNT as u64,
+                        )?)
+                        .cloned()
+                    else {
+                        write_response(&WireResponse::Error {
+                            message: "CPU preview slots are unavailable".into(),
+                        })?;
+                        continue;
+                    };
+                    slot.validate()?;
+                    anyhow::ensure!(
+                        slot.width == dimensions[0] && slot.height == dimensions[1],
+                        "CPU preview slot dimensions do not match the frame"
+                    );
+                    cpu_slot = Some(slot);
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("Kama private CPU-transfer preview target"),
+                        size: wgpu::Extent3d {
+                            width: dimensions[0],
+                            height: dimensions[1],
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::STORAGE_BINDING
+                            | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    })
+                };
                 let output = PresentationTexture::from_texture(
-                    surface.texture().clone(),
-                    width.max(1),
-                    height.max(1),
+                    output_texture.clone(),
+                    dimensions[0],
+                    dimensions[1],
                 );
                 let rendered = renderer.refresh_preview_on(
                     &device,
@@ -1249,16 +1709,19 @@ pub(super) fn run_video_worker() -> Result<()> {
                     [width.max(1), height.max(1)],
                     snapshot.render_scale,
                     snapshot.scrubbing,
-                    snapshot
-                        .captured_frame
+                    captured_frame
                         .as_ref()
-                        .map(|(size, pixels)| (*size, pixels.as_slice())),
+                        .map(|((capture_width, capture_height), pixels)| {
+                            ([*capture_width, *capture_height], pixels.as_slice())
+                        }),
                     &output,
                 );
                 let rendered = match rendered {
                     Ok(rendered) => rendered,
                     Err(error) => {
-                        free_surfaces.push_back(channel.clone());
+                        if let Some(channel) = channel {
+                            free_surfaces.push_back(channel);
+                        }
                         write_response(&WireResponse::Error {
                             message: format!("render preview: {error:#}"),
                         })?;
@@ -1266,19 +1729,40 @@ pub(super) fn run_video_worker() -> Result<()> {
                     }
                 };
                 if !rendered {
-                    free_surfaces.push_back(channel.clone());
+                    if let Some(channel) = channel {
+                        free_surfaces.push_back(channel);
+                    }
                     write_response(&WireResponse::Error {
                         message: "preview source is not ready".into(),
                     })?;
                     continue;
                 }
-                device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: None,
-                        timeout: Some(Duration::from_secs(5)),
-                    })
-                    .context("wait for child GPU render")?;
-                let descriptor = surface.descriptor().clone();
+                let descriptor = if let Some(channel) = channel {
+                    device
+                        .poll(wgpu::PollType::Wait {
+                            submission_index: None,
+                            timeout: Some(Duration::from_secs(5)),
+                        })
+                        .context("wait for child GPU render")?;
+                    FrameSurfaceDescriptor::Metal(
+                        surfaces
+                            .get(&channel)
+                            .context("rendered GPU surface disappeared")?
+                            .descriptor()
+                            .clone(),
+                    )
+                } else {
+                    let slot = cpu_slot.context("CPU preview slot disappeared")?;
+                    let pixels = cpu_surface::readback_rgba16(
+                        &device,
+                        &queue,
+                        &output_texture,
+                        dimensions[0],
+                        dimensions[1],
+                    )?;
+                    cpu_surface::write_frame(&cpu_session, &slot, &pixels, std::process::id())?;
+                    FrameSurfaceDescriptor::Cpu(slot)
+                };
                 let source_geometry = renderer
                     .source_geometry()
                     .iter()
@@ -1318,6 +1802,7 @@ pub(super) fn run_video_worker() -> Result<()> {
                 }
             }
             Request::Invalidate => {
+                cached_snapshot = None;
                 effects_revision = None;
                 renderer.clear_caches();
             }
@@ -1327,6 +1812,7 @@ pub(super) fn run_video_worker() -> Result<()> {
             Request::Hello { .. } => write_response(&WireResponse::Error {
                 message: "duplicate video handshake".into(),
             })?,
+            Request::RenderCached { .. } => anyhow::bail!("unresolved cached video frame request"),
         }
     }
     drop(surfaces);
@@ -1382,7 +1868,85 @@ fn write_response(response: &WireResponse) -> Result<()> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{SourceGeometry, WireResponse};
+    use super::{FrameSurfaceDescriptor, SourceGeometry, WireResponse};
+
+    #[test]
+    fn frame_transport_reuses_project_until_explicit_invalidation() {
+        use super::{Request, Snapshot};
+        use crate::{
+            project::{Project, WorkerProjectState},
+            timeline::TimelineState,
+        };
+
+        let mut project = Project::new();
+        project.name = "Retained processing document".into();
+        let snapshot = |playhead| Snapshot {
+            worker_state: WorkerProjectState::capture(&project),
+            project: project.clone(),
+            timeline: TimelineState::default().document(),
+            revision: 41,
+            seek_revision: 3,
+            playhead,
+            playing: true,
+            scrubbing: false,
+            preview_size: [640, 360],
+            render_scale: 0.5,
+            render_cache: None,
+            captured_frame: None,
+            cpu_slots: Vec::new(),
+            force_cpu: false,
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(Request::Render {
+            generation: 1,
+            snapshot: snapshot(1.25),
+        })
+        .unwrap();
+        tx.send(Request::Render {
+            generation: 1,
+            snapshot: snapshot(1.5),
+        })
+        .unwrap();
+        tx.send(Request::Invalidate).unwrap();
+        tx.send(Request::Render {
+            generation: 2,
+            snapshot: snapshot(2.0),
+        })
+        .unwrap();
+        drop(tx);
+        let mut output = Vec::new();
+        super::write_requests(&mut output, rx).unwrap();
+        let mut requests = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Request>(line).unwrap());
+        match requests.next().unwrap() {
+            Request::Render { snapshot, .. } => {
+                assert_eq!(snapshot.project.name, "Retained processing document")
+            }
+            _ => panic!("first frame must transfer its processing document"),
+        }
+        match requests.next().unwrap() {
+            Request::RenderCached {
+                revision,
+                transport,
+                ..
+            } => {
+                assert_eq!(revision, 41);
+                assert_eq!(transport.playhead, 1.5);
+                assert_eq!(transport.preview_size, [640, 360]);
+            }
+            _ => panic!("advancing a frame must not retransmit the processing document"),
+        }
+        assert!(matches!(requests.next(), Some(Request::Invalidate)));
+        match requests.next().unwrap() {
+            Request::Render { snapshot, .. } => assert_eq!(snapshot.playhead, 2.0),
+            _ => panic!(
+                "invalidation must refresh the processing document even at the same revision"
+            ),
+        }
+        assert!(requests.next().is_none());
+    }
 
     #[test]
     fn frame_response_round_trips_numeric_source_ids() {
@@ -1392,16 +1956,18 @@ mod tests {
             seek_revision: 3,
             playhead: 1.5,
             pending: true,
-            descriptor: crate::runtime::shared_surface::SharedSurfaceDescriptor {
-                channel: "test".into(),
-                session_token: [0; 32],
-                width: 2,
-                height: 2,
-                pixel_format: 0,
-                metal_registry_id: 0,
-                importer_pid: 1,
-                exporter_pid: 2,
-            },
+            descriptor: FrameSurfaceDescriptor::Metal(
+                crate::runtime::shared_surface::SharedSurfaceDescriptor {
+                    channel: "test".into(),
+                    session_token: [0; 32],
+                    width: 2,
+                    height: 2,
+                    pixel_format: 0,
+                    metal_registry_id: 0,
+                    importer_pid: 1,
+                    exporter_pid: 2,
+                },
+            ),
             source_geometry: HashMap::from([("42".to_owned(), SourceGeometry::canvas(2, 2))]),
         };
 
@@ -1420,10 +1986,163 @@ mod tests {
     }
 
     #[test]
+    fn cached_video_readiness_is_invalidated_by_seek_and_project_revision() {
+        let ready = Some((14, true, false, 27));
+        assert!(super::transport_readiness_matches(
+            ready,
+            (14, true, false, 27)
+        ));
+        assert!(!super::transport_readiness_matches(
+            ready,
+            (15, true, false, 27)
+        ));
+        assert!(!super::transport_readiness_matches(
+            ready,
+            (14, true, false, 28)
+        ));
+    }
+
+    #[test]
     fn video_worker_child_entry() {
         if std::env::var_os("KAMA_VIDEO_WORKER_TEST_CHILD").is_some() {
             super::run_video_worker().expect("video worker child protocol exits cleanly");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn forced_cpu_surface_worker_transfers_distinct_cross_process_frames() {
+        use std::{sync::Arc, time::Duration};
+
+        use super::{Process, Request, Response, Snapshot};
+        use crate::{
+            project::{Project, ProjectBackground, WorkerProjectState},
+            runtime::shared_surface,
+            timeline::TimelineState,
+        };
+
+        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_descriptor.backends = wgpu::Backends::METAL;
+        let instance = wgpu::Instance::new(instance_descriptor);
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+            .expect("Metal adapter available for CPU transfer fallback");
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
+            .expect("request parent GPU for CPU upload");
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+        let registry_id = shared_surface::metal_registry_id(&device).expect("Metal device ID");
+        let process = Process::spawn(
+            "",
+            i32::try_from(std::process::id()).unwrap(),
+            Some(registry_id),
+            Arc::clone(&device),
+            Arc::clone(&queue),
+            true,
+        )
+        .expect("spawn forced-CPU video worker subprocess");
+        assert!(matches!(
+            process.responses.recv_timeout(Duration::from_secs(15)),
+            Ok(Response::Ready { pid }) if pid == process.pid
+        ));
+
+        let cpu_slots = process.cpu_surfaces.prepare([4, 4]).unwrap();
+        let timeline = TimelineState::default();
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [4, 4];
+        project.active_composition_mut().settings.background = ProjectBackground::Solid {
+            color: [0.9, 0.1, 0.2, 1.0],
+        };
+        let snapshot =
+            |revision, project: &Project, seek_revision, preview_size, cpu_slots| Snapshot {
+                worker_state: WorkerProjectState::capture(project),
+                project: project.clone(),
+                timeline: timeline.document(),
+                revision,
+                seek_revision,
+                playhead: 0.0,
+                playing: false,
+                scrubbing: false,
+                preview_size,
+                render_scale: 1.0,
+                render_cache: None,
+                captured_frame: None,
+                cpu_slots,
+                force_cpu: true,
+            };
+        process
+            .requests
+            .send(Request::Render {
+                generation: 1,
+                snapshot: snapshot(1, &project, 1, [4, 4], cpu_slots.clone()),
+            })
+            .unwrap();
+        let first_texture = match process
+            .responses
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+        {
+            Response::Frame {
+                channel: None,
+                texture,
+                ..
+            } => texture,
+            Response::Frame {
+                channel: Some(channel),
+                ..
+            } => panic!("forced CPU frame used GPU surface {channel}"),
+            Response::Error(error) => panic!("CPU preview failed: {error}"),
+            _ => panic!("expected CPU frame response"),
+        };
+        let first_pixels =
+            crate::runtime::cpu_surface::readback_rgba16(&device, &queue, &first_texture, 4, 4)
+                .unwrap();
+        drop(first_texture);
+
+        project.active_composition_mut().settings.background = ProjectBackground::Solid {
+            color: [0.25, 0.5, 0.75, 1.0],
+        };
+        let resized_slots = process.cpu_surfaces.prepare([8, 4]).unwrap();
+        process
+            .requests
+            .send(Request::Render {
+                generation: 2,
+                snapshot: snapshot(2, &project, 2, [8, 4], resized_slots),
+            })
+            .unwrap();
+        let second_texture = match process
+            .responses
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+        {
+            Response::Frame {
+                channel: None,
+                texture,
+                ..
+            } => texture,
+            Response::Frame {
+                channel: Some(channel),
+                ..
+            } => panic!("CPU fallback switched to GPU surface {channel}"),
+            Response::Error(error) => panic!("second CPU preview failed: {error}"),
+            _ => panic!("expected second CPU frame response"),
+        };
+        let second_pixels =
+            crate::runtime::cpu_surface::readback_rgba16(&device, &queue, &second_texture, 8, 4)
+                .unwrap();
+        let expected_blue = [0x00, 0x34, 0x00, 0x38, 0x00, 0x3a, 0x00, 0x3c];
+        assert!(
+            first_pixels
+                .chunks_exact(8)
+                .all(|pixel| pixel != expected_blue)
+        );
+        assert!(
+            second_pixels
+                .chunks_exact(8)
+                .all(|pixel| pixel == expected_blue)
+        );
+
+        drop(second_texture);
+        let _ = process.requests.try_send(Request::Shutdown);
     }
 
     #[cfg(target_os = "macos")]
@@ -1502,8 +2221,10 @@ mod tests {
         let process = Process::spawn(
             &plugin_paths,
             i32::try_from(std::process::id()).unwrap(),
-            registry_id,
+            Some(registry_id),
             Arc::new(device.clone()),
+            Arc::new(queue.clone()),
+            false,
         )
         .expect("spawn production video worker");
         let startup_deadline = Instant::now() + Duration::from_secs(20);
@@ -1549,6 +2270,8 @@ mod tests {
                 render_scale: 1.0,
                 render_cache: None,
                 captured_frame: None,
+                cpu_slots: Vec::new(),
+                force_cpu: false,
             };
             let mut request = Request::Render {
                 generation,
@@ -1593,7 +2316,9 @@ mod tests {
                         channel, texture, ..
                     }) => {
                         drop(texture);
-                        let _ = process.requests.try_send(Request::Release { channel });
+                        if let Some(channel) = channel {
+                            let _ = process.requests.try_send(Request::Release { channel });
+                        }
                     }
                     Ok(Response::Error(error)) if error == "preview source is not ready" => {
                         not_ready_count += 1;
@@ -1676,12 +2401,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         };
         let (initial_channel, texture) = frame;
-        process
-            .requests
-            .try_send(Request::Release {
-                channel: initial_channel,
-            })
-            .expect("release initial reproduction frame");
+        if let Some(channel) = initial_channel {
+            process
+                .requests
+                .try_send(Request::Release { channel })
+                .expect("release initial reproduction frame");
+        }
         let mut scrub_frames = 0;
         for seek_step in 1..=5 {
             timeline.seek_relative(0.25);
@@ -1699,6 +2424,8 @@ mod tests {
                 render_scale: 1.0,
                 render_cache: None,
                 captured_frame: None,
+                cpu_slots: Vec::new(),
+                force_cpu: false,
             };
             process
                 .requests
@@ -1723,17 +2450,21 @@ mod tests {
                         assert_eq!(playhead, expected_playhead);
                         scrub_frames += 1;
                         drop(texture);
-                        process
-                            .requests
-                            .send(Request::Release { channel })
-                            .expect("release scrub frame");
+                        if let Some(channel) = channel {
+                            process
+                                .requests
+                                .send(Request::Release { channel })
+                                .expect("release scrub frame");
+                        }
                         break;
                     }
                     Ok(Response::Frame {
                         channel, texture, ..
                     }) => {
                         drop(texture);
-                        let _ = process.requests.try_send(Request::Release { channel });
+                        if let Some(channel) = channel {
+                            let _ = process.requests.try_send(Request::Release { channel });
+                        }
                     }
                     Ok(Response::Error(error)) => panic!("scrub preview error: {error}"),
                     Ok(Response::Diagnostic { .. }) => {}
@@ -1900,8 +2631,10 @@ mod tests {
             render_scale: 1.0,
             render_cache: None,
             captured_frame: None,
+            cpu_slots: Vec::new(),
+            force_cpu: false,
         };
-        let mut playback = VideoPlayback::unavailable("", VideoWorkerStatus::Unsupported);
+        let mut playback = VideoPlayback::unavailable("", VideoWorkerStatus::StartupFailed);
         playback.generation = latest_generation;
         playback.key = Some(key);
         playback.retry_pending = true;
@@ -1920,7 +2653,7 @@ mod tests {
         use super::{VideoPlayback, VideoWorkerStatus};
 
         let key = (23, 100, 42, [640, 360]);
-        let mut playback = VideoPlayback::unavailable("", VideoWorkerStatus::Unsupported);
+        let mut playback = VideoPlayback::unavailable("", VideoWorkerStatus::StartupFailed);
         playback.scrubbing = true;
         playback.generation = 9;
         playback.key = Some(key);
@@ -1965,8 +2698,10 @@ mod tests {
         let process = Process::spawn(
             "",
             i32::try_from(std::process::id()).unwrap(),
-            registry_id,
+            Some(registry_id),
             Arc::clone(&device),
+            Arc::new(queue.clone()),
+            false,
         )
         .expect("spawn the production video worker protocol");
         assert!(matches!(
@@ -2004,6 +2739,8 @@ mod tests {
                     render_scale: 1.0,
                     render_cache: None,
                     captured_frame: None,
+                    cpu_slots: Vec::new(),
+                    force_cpu: false,
                 },
             })
             .expect("submit one bounded preview request");
@@ -2086,7 +2823,9 @@ mod tests {
         }
         drop(mapped);
         drop(texture);
-        let _ = process.requests.try_send(Request::Release { channel });
+        if let Some(channel) = channel {
+            let _ = process.requests.try_send(Request::Release { channel });
+        }
 
         process
             .requests
@@ -2105,6 +2844,8 @@ mod tests {
                     render_scale: 1.0,
                     render_cache: None,
                     captured_frame: None,
+                    cpu_slots: Vec::new(),
+                    force_cpu: false,
                 },
             })
             .expect("submit resized preview request after releasing prior slot");
@@ -2124,9 +2865,11 @@ mod tests {
         };
         assert_eq!((resized_texture.width(), resized_texture.height()), (8, 4));
         drop(resized_texture);
-        let _ = process.requests.try_send(Request::Release {
-            channel: resized_channel.clone(),
-        });
+        if let Some(channel) = resized_channel.as_ref() {
+            let _ = process.requests.try_send(Request::Release {
+                channel: channel.clone(),
+            });
+        }
         process
             .requests
             .try_send(Request::Render {
@@ -2144,6 +2887,8 @@ mod tests {
                     render_scale: 1.0,
                     render_cache: None,
                     captured_frame: None,
+                    cpu_slots: Vec::new(),
+                    force_cpu: false,
                 },
             })
             .expect("render next playback frame into a released surface");
@@ -2153,10 +2898,12 @@ mod tests {
             }) => {
                 assert_eq!(channel, resized_channel, "reuse the released GPU surface");
                 assert_eq!(playhead, 0.5);
-                process
-                    .requests
-                    .try_send(Request::Release { channel })
-                    .unwrap();
+                if let Some(channel) = channel {
+                    process
+                        .requests
+                        .try_send(Request::Release { channel })
+                        .unwrap();
+                }
             }
             Ok(Response::Error(error)) => panic!("next playback frame failed: {error}"),
             _ => panic!("expected next playback frame"),
@@ -2181,9 +2928,11 @@ mod tests {
         descriptor.backends = wgpu::Backends::METAL;
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
         let device = Arc::new(device);
-        let mut playback = super::VideoPlayback::new("", Arc::clone(&device));
+        let queue = Arc::new(queue);
+        let mut playback = super::VideoPlayback::new("", Arc::clone(&device), Arc::clone(&queue));
         let original = playback
             .pid()
             .expect("worker has a PID immediately after spawning");
@@ -2193,7 +2942,7 @@ mod tests {
         assert_eq!(playback.pid(), Some(original));
         assert!(playback.process.is_none());
 
-        playback.restart(device);
+        playback.restart(device, queue);
         let replacement = playback.pid().expect("replacement worker has a PID");
         assert_ne!(replacement, original);
         assert_eq!(playback.status(), super::VideoWorkerStatus::Restarting);
@@ -2216,15 +2965,17 @@ mod tests {
         let instance = wgpu::Instance::new(descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
             .expect("Metal adapter available for subprocess crash test");
-        let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default()))
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .expect("request parent Metal device");
         let device = Arc::new(device);
         let registry_id = shared_surface::metal_registry_id(&device).expect("Metal registry ID");
         let mut process = Process::spawn(
             "",
             i32::try_from(std::process::id()).unwrap(),
-            registry_id,
+            Some(registry_id),
             Arc::clone(&device),
+            Arc::new(queue),
+            false,
         )
         .expect("spawn video worker");
         assert!(matches!(

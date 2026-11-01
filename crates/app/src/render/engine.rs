@@ -1,6 +1,6 @@
 static NEXT_CACHE_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum ChunkState {
     Pending,
     Rendering,
@@ -8,7 +8,7 @@ enum ChunkState {
     Dirty,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CacheChunk {
     start: u64,
     end: u64,
@@ -31,7 +31,7 @@ struct ActiveChunk {
     input_format: ExportPixelFormat,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderPhase {
     Idle,
     Rendering,
@@ -61,6 +61,7 @@ struct RenderJob {
 }
 
 impl RenderJob {
+    #[cfg(test)]
     fn new(
         settings: RenderSpec,
         fps: f64,
@@ -68,20 +69,19 @@ impl RenderJob {
         timeline: &TimelineState,
         shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
     ) -> Result<Self> {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let temp_dir = std::env::temp_dir();
-        let cache_id = NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed);
-        let cache_dir = temp_dir.join(format!(
-            "kama-render-{stamp}-{}-{cache_id}",
-            std::process::id()
-        ));
-        let audio_path = temp_dir.join(format!(
-            "kama-render-audio-{stamp}-{}-{cache_id}.wav",
-            std::process::id()
-        ));
+        let cache_dir = allocate_cache_dir()?;
+        Self::new_in_cache_dir(settings, fps, project, timeline, shared_cache, cache_dir)
+    }
+
+    fn new_in_cache_dir(
+        settings: RenderSpec,
+        fps: f64,
+        project: &Project,
+        timeline: &TimelineState,
+        shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
+        cache_dir: PathBuf,
+    ) -> Result<Self> {
+        let audio_path = cache_dir.join("audio.wav");
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("create {}", cache_dir.display()))?;
         let cached_chunks = shared_cache
@@ -722,7 +722,7 @@ impl Drop for RenderJob {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CachePreviewRange {
     start_frame: u64,
     end_frame: u64,
@@ -736,6 +736,7 @@ struct RenderWorkerStatus {
     phase: RenderPhase,
     ranges: Vec<RenderCacheRange>,
     preview_ranges: Vec<CachePreviewRange>,
+    cached_chunks: Vec<CacheChunk>,
     error: Option<String>,
     update_revision: u64,
 }
@@ -746,33 +747,145 @@ impl RenderWorkerStatus {
             phase: job.phase,
             ranges: job.timeline_ranges(),
             preview_ranges: job.preview_ranges(),
+            cached_chunks: job.cached_chunks.clone(),
             error: job.error.clone(),
             update_revision,
         }
     }
 }
 
+#[derive(Serialize, Deserialize)]
 enum RenderWorkerCommand {
     Pause,
     Resume,
     Stop,
     Restart(RenderSpec),
+    SetEndFrame(u64),
     SetBackground(bool),
     SetEditing(bool),
     SetInteractive(bool),
     Update {
         revision: u64,
         project: Project,
+        worker_state: crate::project::WorkerProjectState,
         video_changed: bool,
     },
     Cancel,
+    #[cfg(debug_assertions)]
+    Crash,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RenderProcessStart {
+    settings: RenderSpec,
+    edit_revision: u64,
+    editing: bool,
+    interactive: bool,
+    project: Project,
+    worker_state: crate::project::WorkerProjectState,
+    timeline: TimelineDocument,
+    plugin_paths: String,
+    cache_dir: PathBuf,
+    cached_chunks: Vec<CacheChunk>,
+    expected_gpu: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum RenderProcessMessage {
+    Start(RenderProcessStart),
+    Command(RenderWorkerCommand),
+}
+
+#[derive(Serialize, Deserialize)]
+enum RenderProcessResponse {
+    Ready { pid: u32 },
+    Status(RenderStatusWire),
+    Error { message: String },
+}
+
+#[derive(Serialize, Deserialize)]
+struct RenderStatusWire {
+    phase: RenderPhase,
+    ranges: Vec<RenderRangeWire>,
+    preview_ranges: Vec<CachePreviewRange>,
+    cached_chunks: Vec<CacheChunk>,
+    error: Option<String>,
+    update_revision: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RenderRangeWire {
+    start: f32,
+    end: f32,
+    state: RenderRangeStateWire,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+enum RenderRangeStateWire {
+    Rendered,
+    Rendering,
+    Dirty,
+}
+
+impl From<RenderWorkerStatus> for RenderStatusWire {
+    fn from(status: RenderWorkerStatus) -> Self {
+        Self {
+            phase: status.phase,
+            ranges: status
+                .ranges
+                .into_iter()
+                .map(|range| RenderRangeWire {
+                    start: range.start,
+                    end: range.end,
+                    state: match range.state {
+                        RenderCacheState::Rendered => RenderRangeStateWire::Rendered,
+                        RenderCacheState::Rendering => RenderRangeStateWire::Rendering,
+                        RenderCacheState::Dirty => RenderRangeStateWire::Dirty,
+                    },
+                })
+                .collect(),
+            preview_ranges: status.preview_ranges,
+            cached_chunks: status.cached_chunks,
+            error: status.error,
+            update_revision: status.update_revision,
+        }
+    }
+}
+
+impl From<RenderStatusWire> for RenderWorkerStatus {
+    fn from(status: RenderStatusWire) -> Self {
+        Self {
+            phase: status.phase,
+            ranges: status
+                .ranges
+                .into_iter()
+                .map(|range| RenderCacheRange {
+                    start: range.start,
+                    end: range.end,
+                    state: match range.state {
+                        RenderRangeStateWire::Rendered => RenderCacheState::Rendered,
+                        RenderRangeStateWire::Rendering => RenderCacheState::Rendering,
+                        RenderRangeStateWire::Dirty => RenderCacheState::Dirty,
+                    },
+                })
+                .collect(),
+            preview_ranges: status.preview_ranges,
+            cached_chunks: status.cached_chunks,
+            error: status.error,
+            update_revision: status.update_revision,
+        }
+    }
 }
 
 struct RenderTask {
     settings: RenderSpec,
-    command_tx: Sender<RenderWorkerCommand>,
-    status_rx: Receiver<RenderWorkerStatus>,
-    worker: Option<JoinHandle<()>>,
+    command_tx: SyncSender<RenderProcessMessage>,
+    latest_status: Arc<Mutex<Option<RenderWorkerStatus>>>,
+    last_response_at: Arc<Mutex<Instant>>,
+    process: Option<std::process::Child>,
+    diagnostics: Arc<Mutex<VecDeque<String>>>,
+    queued_commands: VecDeque<RenderWorkerCommand>,
+    pid: u32,
     cache_dir: PathBuf,
     status: RenderWorkerStatus,
     last_sent_revision: u64,
@@ -782,11 +895,11 @@ struct RenderTask {
     pending_video_revision: Option<u64>,
     last_editing: bool,
     last_interactive: bool,
+    reported_error: Option<String>,
     status_version: u64,
     canvas_size: [u32; 2],
     fps: f64,
     composition: CompositionId,
-    live_end_frame: Arc<AtomicU64>,
 }
 
 impl RenderTask {
@@ -796,7 +909,7 @@ impl RenderTask {
         renderer: &Renderer,
         project: &Project,
         timeline: &TimelineState,
-        plugins: &PluginRegistry,
+        _plugins: &PluginRegistry,
         shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
         interaction: (u64, bool, bool),
     ) -> Result<Self> {
@@ -804,52 +917,124 @@ impl RenderTask {
         let composition = project.active_composition;
         let fps = project.active_settings().frame_rate.max(1.0);
         let canvas_size = project.active_settings().canvas_size;
-        let job = RenderJob::new(settings.clone(), fps, project, timeline, shared_cache)?;
-        let cache_dir = job.cache_dir.clone();
-        let initial_status = RenderWorkerStatus::from_job(&job, edit_revision);
         let device = renderer.device_handle();
-        let queue = renderer.queue_handle();
         let worker_document = timeline.document();
         let last_content_signature = render_content_signature(project, &worker_document);
         let last_video_signature = video_content_signature(project, &worker_document);
-        let mut worker_project = render_worker_project_snapshot(project, worker_document.clone());
-        let worker_plugins = plugins.clone();
-        let (command_tx, command_rx) = mpsc::channel();
-        let (status_tx, status_rx) = mpsc::sync_channel(1);
-        let live_end_frame = Arc::new(AtomicU64::new(settings.end_frame));
-        let worker_live_end_frame = Arc::clone(&live_end_frame);
-        let worker = thread::Builder::new()
-            .name("kama-render".into())
+        let cache_dir = allocate_cache_dir()?;
+        let cached_chunks = shared_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let start = RenderProcessStart {
+            settings: settings.clone(),
+            edit_revision,
+            editing,
+            interactive,
+            project: render_worker_project_snapshot(project, worker_document.clone()),
+            worker_state: crate::project::WorkerProjectState::capture(project),
+            timeline: worker_document,
+            plugin_paths: crate::preferences::load_plugin_paths(),
+            cache_dir: cache_dir.clone(),
+            cached_chunks: cached_chunks.clone(),
+            expected_gpu: crate::runtime::shared_surface::metal_registry_id(&device).ok(),
+        };
+        let mut child_command = std::process::Command::new(
+            std::env::current_exe().context("find application executable for render worker")?,
+        );
+        #[cfg(test)]
+        child_command
+            .args([
+                "--exact",
+                "render::engine::tests::render_worker_child_entry",
+                "--quiet",
+            ])
+            .env("KAMA_RENDER_WORKER_TEST_CHILD", "1");
+        #[cfg(not(test))]
+        child_command.arg("--kama-worker=render");
+        let child = child_command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawn isolated render worker")?;
+        let mut child = RenderChildGuard::new(child);
+        let pid = child.id();
+        let child_stdin = child
+            .child_mut()
+            .stdin
+            .take()
+            .context("render worker stdin missing")?;
+        let child_stdout = child
+            .child_mut()
+            .stdout
+            .take()
+            .context("render worker stdout missing")?;
+        let child_stderr = child
+            .child_mut()
+            .stderr
+            .take()
+            .context("render worker stderr missing")?;
+        let (command_tx, command_rx) = mpsc::sync_channel(8);
+        thread::Builder::new()
+            .name(format!("kama-render-write-{pid}"))
+            .spawn(move || render_process_writer(child_stdin, command_rx))
+            .context("start render worker command writer")?;
+        let latest_status = Arc::new(Mutex::new(None));
+        let reader_status = Arc::clone(&latest_status);
+        let reader_cache = Arc::clone(&shared_cache);
+        let last_response_at = Arc::new(Mutex::new(Instant::now()));
+        let reader_last_response_at = Arc::clone(&last_response_at);
+        let diagnostics = Arc::new(Mutex::new(VecDeque::with_capacity(32)));
+        let reader_diagnostics = Arc::clone(&diagnostics);
+        thread::Builder::new()
+            .name(format!("kama-render-read-{pid}"))
             .spawn(move || {
-                let mut worker_timeline = TimelineState::from_document(worker_document);
-                let mut effects = EffectRuntime::default();
-                effects.rebuild(&worker_project.pipelines);
-                let mut frame_renderer =
-                    FrameRenderer::new_export_worker(&device, &effects, &worker_plugins);
-                run_render_worker(
-                    job,
-                    edit_revision,
-                    editing,
-                    interactive,
-                    &device,
-                    &queue,
-                    &mut worker_project,
-                    &mut worker_timeline,
-                    &mut effects,
-                    &worker_plugins,
-                    &command_rx,
-                    &status_tx,
-                    &mut frame_renderer,
-                    composition,
-                    &worker_live_end_frame,
+                render_process_reader(
+                    child_stdout,
+                    reader_status,
+                    reader_cache,
+                    reader_diagnostics,
+                    reader_last_response_at,
                 );
             })
-            .context("start render worker thread")?;
+            .context("start render worker response reader")?;
+        let stderr_diagnostics = Arc::clone(&diagnostics);
+        thread::Builder::new()
+            .name(format!("kama-render-stderr-{pid}"))
+            .spawn(move || render_process_stderr(child_stderr, stderr_diagnostics))
+            .context("start render worker diagnostic reader")?;
+        command_tx
+            .try_send(RenderProcessMessage::Start(start))
+            .map_err(|error| anyhow::anyhow!("queue render worker startup: {error}"))?;
+        let child = child.into_child();
+        let initial_status = RenderWorkerStatus {
+            phase: RenderPhase::Rendering,
+            ranges: Vec::new(),
+            preview_ranges: cached_chunks
+                .iter()
+                .filter(|chunk| chunk.state == ChunkState::Rendered && chunk.path.exists())
+                .map(|chunk| CachePreviewRange {
+                    start_frame: chunk.start,
+                    end_frame: chunk.end,
+                    source_start_frame: chunk.source_start,
+                    path: chunk.path.clone(),
+                    generation: chunk.generation,
+                })
+                .collect(),
+            cached_chunks,
+            error: None,
+            update_revision: edit_revision,
+        };
         Ok(Self {
             settings,
             command_tx,
-            status_rx,
-            worker: Some(worker),
+            latest_status,
+            last_response_at,
+            process: Some(child),
+            diagnostics,
+            queued_commands: VecDeque::with_capacity(16),
+            pid,
             cache_dir,
             status: initial_status,
             last_sent_revision: edit_revision,
@@ -859,16 +1044,22 @@ impl RenderTask {
             pending_video_revision: None,
             last_editing: editing,
             last_interactive: interactive,
+            reported_error: None,
             status_version: 0,
             canvas_size,
             fps,
             composition,
-            live_end_frame,
         })
     }
 
     fn poll(&mut self) {
-        while let Ok(status) = self.status_rx.try_recv() {
+        self.flush_commands();
+        let next_status = self
+            .latest_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(status) = next_status.filter(|_| self.process.is_some()) {
             self.status = status;
             if self
                 .pending_video_revision
@@ -878,16 +1069,97 @@ impl RenderTask {
             }
             self.status_version = self.status_version.wrapping_add(1);
         }
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-            && self.status.phase != RenderPhase::Error
+        if let Some(process) = self.process.as_mut() {
+            match process.try_wait() {
+                Ok(Some(exit)) if self.status.phase != RenderPhase::Done => {
+                    self.process = None;
+                    self.status.phase = RenderPhase::Error;
+                    let protocol_error = self.status.error.take();
+                    let diagnostics = self
+                        .diagnostics
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let diagnostic_summary = if diagnostics.is_empty() {
+                        "no child diagnostics were emitted".to_owned()
+                    } else {
+                        diagnostics
+                    };
+                    self.status.error = Some(match protocol_error {
+                        Some(error) => format!(
+                            "{error}; render worker pid {} exited {exit}; {diagnostic_summary}",
+                            self.pid
+                        ),
+                        None => format!(
+                            "render worker pid {} exited {exit}; {diagnostic_summary}",
+                            self.pid
+                        ),
+                    });
+                    cleanup_render_artifacts_async(
+                        self.cache_dir.clone(),
+                        self.settings.output.clone(),
+                        self.pid,
+                    );
+                }
+                Ok(Some(_)) => self.process = None,
+                Ok(None) => {}
+                Err(error) => {
+                    self.status.phase = RenderPhase::Error;
+                    self.status.error =
+                        Some(format!("inspect render worker pid {}: {error}", self.pid));
+                }
+            }
+        }
+        if self.process.is_some()
+            && render_worker_timed_out(
+                *self
+                    .last_response_at
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Instant::now(),
+            )
         {
+            let diagnostic_tail = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let error = format!(
+                "render worker pid {} is unresponsive (no protocol response for 30 seconds){}",
+                self.pid,
+                if diagnostic_tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("; recent diagnostics: {diagnostic_tail}")
+                }
+            );
             self.status.phase = RenderPhase::Error;
-            self.status.error = Some("render worker thread panicked".into());
+            self.status.error = Some(error);
+            if let Some(mut process) = self.process.take() {
+                let _ = process.kill();
+                let cache_dir = self.cache_dir.clone();
+                let output = self.settings.output.clone();
+                let pid = self.pid;
+                let _ = thread::Builder::new()
+                    .name(format!("kama-render-watchdog-reap-{pid}"))
+                    .spawn(move || {
+                        let _ = process.wait();
+                        cleanup_render_artifacts(&cache_dir, &output, pid);
+                    });
+            }
+        }
+        if self.status.phase == RenderPhase::Error
+            && let Some(error) = self.status.error.as_ref()
+            && self.reported_error.as_ref() != Some(error)
+        {
+            crate::messages::error("Render worker", error.clone());
+            self.reported_error = Some(error.clone());
         }
     }
 
@@ -900,29 +1172,28 @@ impl RenderTask {
         if edit_revision == self.last_seen_revision || self.has_pending_update() {
             return;
         }
-        self.last_seen_revision = edit_revision;
         let document = timeline.document();
         let signature = render_content_signature(project, &document);
 
         if signature == self.last_content_signature {
+            self.last_seen_revision = edit_revision;
             return;
         }
         let video_signature = video_content_signature(project, &document);
         let video_changed = video_signature != self.last_video_signature;
-        self.last_content_signature = signature;
-        self.last_video_signature = video_signature;
-        self.last_sent_revision = edit_revision;
         let snapshot = render_worker_project_snapshot(project, document);
-        if self
-            .command_tx
-            .send(RenderWorkerCommand::Update {
-                revision: edit_revision,
-                project: snapshot,
-                video_changed,
-            })
-            .is_ok()
-            && video_changed
-        {
+        if self.send_command(RenderWorkerCommand::Update {
+            revision: edit_revision,
+            project: snapshot,
+            worker_state: crate::project::WorkerProjectState::capture(project),
+            video_changed,
+        }) {
+            self.last_seen_revision = edit_revision;
+            self.last_content_signature = signature;
+            self.last_video_signature = video_signature;
+            self.last_sent_revision = edit_revision;
+        }
+        if self.last_sent_revision == edit_revision && video_changed {
             self.pending_video_revision = Some(edit_revision);
         }
     }
@@ -931,20 +1202,18 @@ impl RenderTask {
         if self.last_editing == editing {
             return;
         }
-        self.last_editing = editing;
-        let _ = self
-            .command_tx
-            .send(RenderWorkerCommand::SetEditing(editing));
+        if self.send_command(RenderWorkerCommand::SetEditing(editing)) {
+            self.last_editing = editing;
+        }
     }
 
     fn update_interactive(&mut self, interactive: bool) {
         if self.last_interactive == interactive {
             return;
         }
-        self.last_interactive = interactive;
-        let _ = self
-            .command_tx
-            .send(RenderWorkerCommand::SetInteractive(interactive));
+        if self.send_command(RenderWorkerCommand::SetInteractive(interactive)) {
+            self.last_interactive = interactive;
+        }
     }
 
     fn has_pending_update(&self) -> bool {
@@ -957,72 +1226,198 @@ impl RenderTask {
     }
 
     fn pause(&mut self) {
-        let _ = self.command_tx.send(RenderWorkerCommand::Pause);
-        if self.status.phase == RenderPhase::Rendering {
+        if self.send_command(RenderWorkerCommand::Pause)
+            && self.status.phase == RenderPhase::Rendering
+        {
             self.status.phase = RenderPhase::Paused;
         }
     }
 
     fn resume(&mut self) {
-        let _ = self.command_tx.send(RenderWorkerCommand::Resume);
-        if self.status.phase == RenderPhase::Paused {
+        if self.send_command(RenderWorkerCommand::Resume)
+            && self.status.phase == RenderPhase::Paused
+        {
             self.status.phase = RenderPhase::Rendering;
         }
     }
 
     fn restart(&mut self, settings: RenderSpec) {
-        self.live_end_frame
-            .store(settings.end_frame, Ordering::Release);
-        self.settings = settings.clone();
-        if self
-            .command_tx
-            .send(RenderWorkerCommand::Restart(settings))
-            .is_ok()
-        {
+        if self.send_command(RenderWorkerCommand::Restart(settings.clone())) {
+            self.settings = settings;
             self.status.phase = RenderPhase::Rendering;
             self.status.error = None;
+            self.reported_error = None;
         }
     }
 
     fn can_restart(&self, project: &Project) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
+        self.process.is_some()
+            && self.status.phase != RenderPhase::Error
             && project.active_composition == self.composition
             && self.canvas_size == project.active_settings().canvas_size
             && (self.fps - project.active_settings().frame_rate.max(1.0)).abs() <= f64::EPSILON
     }
 
     fn set_background(&mut self, background: bool) {
-        self.settings.background = background;
-        let _ = self
-            .command_tx
-            .send(RenderWorkerCommand::SetBackground(background));
+        if self.send_command(RenderWorkerCommand::SetBackground(background)) {
+            self.settings.background = background;
+        }
     }
 
     fn set_end_frame(&mut self, end_frame: u64) {
         let end_frame = end_frame.max(self.settings.begin_frame);
-        self.settings.end_frame = end_frame;
-
-        self.live_end_frame.store(end_frame, Ordering::Release);
+        if self.send_command(RenderWorkerCommand::SetEndFrame(end_frame)) {
+            self.settings.end_frame = end_frame;
+        }
     }
 
-    fn cancel(&self) {
-        let _ = self.command_tx.send(RenderWorkerCommand::Cancel);
+    fn cancel(&mut self) {
+        let _ = self.send_command(RenderWorkerCommand::Cancel);
     }
 
     fn stop(&mut self) {
-        let _ = self.command_tx.send(RenderWorkerCommand::Stop);
-        self.status.phase = RenderPhase::Idle;
+        if self.send_command(RenderWorkerCommand::Stop) {
+            self.status.phase = RenderPhase::Idle;
+        }
     }
+
+    fn send_command(&mut self, command: RenderWorkerCommand) -> bool {
+        if !self.queued_commands.is_empty() {
+            return self.queue_command(command);
+        }
+        match self
+            .command_tx
+            .try_send(RenderProcessMessage::Command(command))
+        {
+            Ok(()) => true,
+            Err(mpsc::TrySendError::Full(RenderProcessMessage::Command(command))) => {
+                self.queue_command(command)
+            }
+            Err(mpsc::TrySendError::Full(RenderProcessMessage::Start(_)))
+            | Err(mpsc::TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    fn queue_command(&mut self, command: RenderWorkerCommand) -> bool {
+        if let Some(index) = self
+            .queued_commands
+            .iter()
+            .rposition(|queued| same_coalescing_class(queued, &command))
+        {
+            self.queued_commands[index] = command;
+            return true;
+        }
+        if self.queued_commands.len() < 16 {
+            self.queued_commands.push_back(command);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn flush_commands(&mut self) {
+        while let Some(command) = self.queued_commands.pop_front() {
+            match self
+                .command_tx
+                .try_send(RenderProcessMessage::Command(command))
+            {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(RenderProcessMessage::Command(command))) => {
+                    self.queued_commands.push_front(command);
+                    break;
+                }
+                Err(mpsc::TrySendError::Full(RenderProcessMessage::Start(_)))
+                | Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.queued_commands.clear();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn render_worker_timed_out(last_response_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_response_at) >= Duration::from_secs(30)
+}
+
+fn same_coalescing_class(left: &RenderWorkerCommand, right: &RenderWorkerCommand) -> bool {
+    matches!(
+        (left, right),
+        (
+            RenderWorkerCommand::Pause | RenderWorkerCommand::Resume,
+            RenderWorkerCommand::Pause | RenderWorkerCommand::Resume
+        ) | (
+            RenderWorkerCommand::Restart(_),
+            RenderWorkerCommand::Restart(_)
+        ) | (
+            RenderWorkerCommand::SetBackground(_),
+            RenderWorkerCommand::SetBackground(_)
+        ) | (
+            RenderWorkerCommand::SetEditing(_),
+            RenderWorkerCommand::SetEditing(_)
+        ) | (
+            RenderWorkerCommand::SetInteractive(_),
+            RenderWorkerCommand::SetInteractive(_)
+        ) | (
+            RenderWorkerCommand::SetEndFrame(_),
+            RenderWorkerCommand::SetEndFrame(_)
+        ) | (
+            RenderWorkerCommand::Update { .. },
+            RenderWorkerCommand::Update { .. }
+        )
+    )
 }
 
 impl Drop for RenderTask {
     fn drop(&mut self) {
         self.cancel();
+        if let Some(mut process) = self.process.take() {
+            let _ = process.kill();
+            let cache_dir = self.cache_dir.clone();
+            let output = self.settings.output.clone();
+            let pid = self.pid;
+            let _ = thread::Builder::new()
+                .name(format!("kama-render-reap-{}", self.pid))
+                .spawn(move || {
+                    let _ = process.wait();
+                    cleanup_render_artifacts(&cache_dir, &output, pid);
+                });
+        }
+    }
+}
 
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+struct RenderChildGuard {
+    child: Option<std::process::Child>,
+}
+
+impl RenderChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut std::process::Child {
+        self.child.as_mut().expect("guarded render child exists")
+    }
+
+    fn id(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("guarded render child exists")
+            .id()
+    }
+
+    fn into_child(mut self) -> std::process::Child {
+        self.child.take().expect("guarded render child exists")
+    }
+}
+
+impl Drop for RenderChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
         }
     }
 }
@@ -1053,7 +1448,12 @@ fn run_render_worker(
     let _ = status_tx.try_send(RenderWorkerStatus::from_job(&job, update_revision));
     loop {
         let mut cancelled = false;
-        while let Ok(command) = command_rx.try_recv() {
+        loop {
+            let command = match command_rx.try_recv() {
+                Ok(command) => command,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return,
+            };
             match command {
                 RenderWorkerCommand::Pause => job.pause(),
                 RenderWorkerCommand::Resume => job.resume(),
@@ -1068,11 +1468,21 @@ fn run_render_worker(
                 RenderWorkerCommand::SetInteractive(value) => {
                     interactive = value;
                 }
+                RenderWorkerCommand::SetEndFrame(value) => {
+                    live_end_frame.store(value, Ordering::Release);
+                }
                 RenderWorkerCommand::Update {
                     revision,
                     project: mut updated_project,
+                    worker_state,
                     video_changed,
                 } => {
+                    if let Err(error) = worker_state.restore(&mut updated_project) {
+                        job.phase = RenderPhase::Error;
+                        job.error = Some(format!("restore render update: {error:#}"));
+                        update_revision = revision;
+                        continue;
+                    }
                     if updated_project.set_active_composition(target_composition) {
                         let target_document = updated_project.active_composition().timeline.clone();
                         *project = updated_project;
@@ -1088,6 +1498,8 @@ fn run_render_worker(
                     cancelled = true;
                     break;
                 }
+                #[cfg(debug_assertions)]
+                RenderWorkerCommand::Crash => std::process::abort(),
             }
         }
         if cancelled {
@@ -1096,6 +1508,7 @@ fn run_render_worker(
 
         job.update_live_end(live_end_frame.load(Ordering::Acquire), project, timeline);
 
+        let cached_chunk_count = job.cached_chunks.len();
         let step = (|| -> Result<()> {
             match job.phase {
                 RenderPhase::Transcoding => {
@@ -1199,7 +1612,17 @@ fn run_render_worker(
             job.error = Some(format!("{error:#}"));
         }
         let phase_changed = job.phase != last_status_phase;
-        if phase_changed || last_status_at.elapsed() >= Duration::from_millis(33) {
+        let cache_committed = job.cached_chunks.len() != cached_chunk_count;
+        if phase_changed || cache_committed {
+            if status_tx
+                .send(RenderWorkerStatus::from_job(&job, update_revision))
+                .is_err()
+            {
+                return;
+            }
+            last_status_at = Instant::now();
+            last_status_phase = job.phase;
+        } else if last_status_at.elapsed() >= Duration::from_millis(33) {
             match status_tx.try_send(RenderWorkerStatus::from_job(&job, update_revision)) {
                 Ok(()) => {
                     last_status_at = Instant::now();
@@ -1227,6 +1650,20 @@ fn run_render_worker(
 
 const fn cache_chunk_seconds() -> f64 {
     DEFAULT_CACHE_CHUNK_SECONDS
+}
+
+fn allocate_cache_dir() -> Result<PathBuf> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let cache_id = NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed);
+    let cache_dir = std::env::temp_dir().join(format!(
+        "kama-render-{stamp}-{}-{cache_id}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&cache_dir).with_context(|| format!("create {}", cache_dir.display()))?;
+    Ok(cache_dir)
 }
 
 fn validate_cache_chunk(path: &Path, expected_size: [u32; 2], expected_frames: u64) -> Result<()> {
@@ -1292,6 +1729,463 @@ fn render_encoder_threads(background: bool) -> usize {
     } else {
         cores.max(1)
     }
+}
+
+fn render_process_writer(
+    mut stdin: std::process::ChildStdin,
+    commands: Receiver<RenderProcessMessage>,
+) {
+    for command in commands {
+        if serde_json::to_writer(&mut stdin, &command).is_err()
+            || stdin.write_all(b"\n").is_err()
+            || stdin.flush().is_err()
+        {
+            break;
+        }
+    }
+}
+
+fn render_process_command_reader<R: std::io::BufRead>(
+    mut reader: R,
+    commands: SyncSender<RenderWorkerCommand>,
+) {
+    loop {
+        let mut bytes = Vec::new();
+        let read = read_bounded_line(&mut reader, &mut bytes, 64 * 1024 * 1024);
+        let command = match read {
+            Ok(Some(false)) => match serde_json::from_slice::<RenderProcessMessage>(&bytes) {
+                Ok(RenderProcessMessage::Command(command)) => command,
+                Ok(RenderProcessMessage::Start(_)) | Err(_) => RenderWorkerCommand::Cancel,
+            },
+            Ok(Some(true)) | Ok(None) | Err(_) => RenderWorkerCommand::Cancel,
+        };
+        let cancel = matches!(command, RenderWorkerCommand::Cancel);
+        if commands.send(command).is_err() || cancel {
+            return;
+        }
+    }
+}
+
+fn render_process_reader(
+    stdout: std::process::ChildStdout,
+    latest_status: Arc<Mutex<Option<RenderWorkerStatus>>>,
+    shared_cache: Arc<Mutex<Vec<CacheChunk>>>,
+    diagnostics: Arc<Mutex<VecDeque<String>>>,
+    last_response_at: Arc<Mutex<Instant>>,
+) {
+    let mut reader = std::io::BufReader::new(stdout);
+    loop {
+        let mut bytes = Vec::new();
+        match read_bounded_line(&mut reader, &mut bytes, 64 * 1024 * 1024) {
+            Ok(Some(false)) => {}
+            Ok(Some(true)) => {
+                let status = error_status_from_cache(
+                    "render worker protocol line exceeded the 64 MiB limit".into(),
+                    &latest_status,
+                    &shared_cache,
+                );
+                *latest_status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status);
+                break;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                push_render_diagnostic(&diagnostics, format!("read worker protocol: {error}"));
+                break;
+            }
+        }
+        let line = String::from_utf8_lossy(&bytes);
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        #[cfg(test)]
+        let protocol_line = if line.starts_with('{') {
+            line
+        } else if is_render_test_harness_output(line) {
+            continue;
+        } else {
+            line
+        };
+        #[cfg(not(test))]
+        let protocol_line = line;
+        let response = match serde_json::from_str::<RenderProcessResponse>(protocol_line) {
+            Ok(response) => response,
+            #[cfg(test)]
+            Err(_) if is_render_test_harness_output(line.trim()) => continue,
+            Err(error) => {
+                let status = error_status_from_cache(
+                    format!("decode render worker response: {error}"),
+                    &latest_status,
+                    &shared_cache,
+                );
+                *latest_status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status);
+                break;
+            }
+        };
+        *last_response_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+        match response {
+            RenderProcessResponse::Ready { pid } => {
+                push_render_diagnostic(&diagnostics, format!("worker ready pid={pid}"));
+            }
+            RenderProcessResponse::Status(status) => {
+                shared_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone_from(&status.cached_chunks);
+                let mut latest = latest_status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *latest = Some(status.into());
+            }
+            RenderProcessResponse::Error { message } => {
+                let status = error_status_from_cache(message, &latest_status, &shared_cache);
+                *latest_status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status);
+            }
+        }
+    }
+}
+
+fn error_status_from_cache(
+    error: String,
+    latest_status: &Mutex<Option<RenderWorkerStatus>>,
+    shared_cache: &Mutex<Vec<CacheChunk>>,
+) -> RenderWorkerStatus {
+    let previous = latest_status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cached_chunks = shared_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let preview_ranges = previous
+        .as_ref()
+        .map(|status| status.preview_ranges.clone())
+        .filter(|ranges| !ranges.is_empty())
+        .unwrap_or_else(|| {
+            cached_chunks
+                .iter()
+                .filter(|chunk| chunk.state == ChunkState::Rendered && chunk.path.exists())
+                .map(|chunk| CachePreviewRange {
+                    start_frame: chunk.start,
+                    end_frame: chunk.end,
+                    source_start_frame: chunk.source_start,
+                    path: chunk.path.clone(),
+                    generation: chunk.generation,
+                })
+                .collect()
+        });
+    RenderWorkerStatus {
+        phase: RenderPhase::Error,
+        ranges: previous
+            .as_ref()
+            .map_or_else(Vec::new, |status| status.ranges.clone()),
+        preview_ranges,
+        cached_chunks,
+        error: Some(error),
+        update_revision: previous.as_ref().map_or(0, |status| status.update_revision),
+    }
+}
+
+fn render_process_stderr(
+    stderr: std::process::ChildStderr,
+    diagnostics: Arc<Mutex<VecDeque<String>>>,
+) {
+    let mut reader = std::io::BufReader::new(stderr);
+    loop {
+        let mut bytes = Vec::new();
+        match read_bounded_line(&mut reader, &mut bytes, 4 * 1024) {
+            Ok(Some(truncated)) => {
+                let mut line = String::from_utf8_lossy(&bytes).into_owned();
+                if truncated {
+                    line.push_str(" [line truncated at 4 KiB]");
+                }
+                push_render_diagnostic(&diagnostics, line);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                push_render_diagnostic(&diagnostics, format!("read worker stderr: {error}"));
+                break;
+            }
+        }
+    }
+}
+
+fn read_bounded_line<R: std::io::BufRead>(
+    reader: &mut R,
+    output: &mut Vec<u8>,
+    max_bytes: usize,
+) -> std::io::Result<Option<bool>> {
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok((!output.is_empty() || truncated).then_some(truncated));
+        }
+        let consumed = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        let payload_len = if available.get(consumed.saturating_sub(1)) == Some(&b'\n') {
+            consumed.saturating_sub(1)
+        } else {
+            consumed
+        };
+        let remaining = max_bytes.saturating_sub(output.len());
+        let copied = payload_len.min(remaining);
+        output.extend_from_slice(&available[..copied]);
+        truncated |= copied < payload_len;
+        let has_newline = available
+            .get(consumed.saturating_sub(1))
+            .is_some_and(|byte| *byte == b'\n');
+        reader.consume(consumed);
+        if has_newline {
+            return Ok(Some(truncated));
+        }
+    }
+}
+
+fn push_render_diagnostic(diagnostics: &Mutex<VecDeque<String>>, message: String) {
+    let mut diagnostics = diagnostics
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if diagnostics.len() == 32 {
+        diagnostics.pop_front();
+    }
+    diagnostics.push_back(message);
+}
+
+#[cfg(test)]
+fn is_render_test_harness_output(line: &str) -> bool {
+    line.starts_with("running ")
+        || line.starts_with("test ")
+        || line.starts_with("failures:")
+        || line.starts_with("test result:")
+}
+
+fn cleanup_partial_files(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(".partial."))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn cleanup_render_artifacts(cache_dir: &Path, output: &Path, pid: u32) {
+    cleanup_partial_files(cache_dir);
+    let stem = output
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("render");
+    let extension = output.extension().and_then(|value| value.to_str());
+    let partial_name = extension.map_or_else(
+        || format!(".{stem}.kama-partial-{pid}"),
+        |extension| format!(".{stem}.kama-partial-{pid}.{extension}"),
+    );
+    let _ = fs::remove_file(output.with_file_name(partial_name));
+}
+
+fn cleanup_render_artifacts_async(cache_dir: PathBuf, output: PathBuf, pid: u32) {
+    let _ = thread::Builder::new()
+        .name("kama-render-partial-cleanup".into())
+        .spawn(move || cleanup_render_artifacts(&cache_dir, &output, pid));
+}
+
+pub(super) fn run_render_process_worker() -> Result<()> {
+    let input = std::io::stdin();
+    let mut stdin = std::io::BufReader::new(input.lock());
+    let mut start_line = Vec::new();
+    match read_bounded_line(&mut stdin, &mut start_line, 64 * 1024 * 1024)? {
+        Some(false) => {}
+        Some(true) => anyhow::bail!("render worker startup line exceeded 64 MiB"),
+        None => anyhow::bail!("render worker input closed before startup"),
+    }
+    drop(stdin);
+    let start = match serde_json::from_slice::<RenderProcessMessage>(&start_line)
+        .context("decode render worker startup")?
+    {
+        RenderProcessMessage::Start(start) => start,
+        RenderProcessMessage::Command(_) => anyhow::bail!("render worker expected startup first"),
+    };
+    let startup = (|| -> Result<_> {
+        let (instance, adapter, device, queue) = create_render_device(start.expected_gpu)?;
+        let mut project = start.project;
+        start.worker_state.restore(&mut project)?;
+        let timeline = TimelineState::from_document(start.timeline);
+        let mut plugins = PluginRegistry::load_default(&start.plugin_paths)?;
+        plugins.validate_gpu(&device);
+        let mut effects = EffectRuntime::default();
+        effects.rebuild(&project.pipelines);
+        let frame_renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+        let shared_cache = Arc::new(Mutex::new(start.cached_chunks));
+        let job = RenderJob::new_in_cache_dir(
+            start.settings,
+            project.active_settings().frame_rate.max(1.0),
+            &project,
+            &timeline,
+            shared_cache,
+            start.cache_dir,
+        )?;
+        Ok((
+            instance,
+            adapter,
+            device,
+            queue,
+            project,
+            timeline,
+            plugins,
+            effects,
+            frame_renderer,
+            job,
+        ))
+    })();
+    let (
+        instance,
+        adapter,
+        device,
+        queue,
+        mut project,
+        mut timeline,
+        plugins,
+        mut effects,
+        mut frame_renderer,
+        job,
+    ) = match startup {
+        Ok(startup) => startup,
+        Err(error) => {
+            write_render_process_response(&RenderProcessResponse::Error {
+                message: format!("initialize render worker: {error:#}"),
+            })?;
+            return Err(error);
+        }
+    };
+    write_render_process_response(&RenderProcessResponse::Ready {
+        pid: std::process::id(),
+    })?;
+    let (command_tx, command_rx) = mpsc::sync_channel(32);
+    thread::Builder::new()
+        .name(format!("kama-render-command-read-{}", std::process::id()))
+        .spawn(move || {
+            let stdin = std::io::stdin();
+            render_process_command_reader(stdin.lock(), command_tx);
+        })
+        .context("start render worker command reader")?;
+    let (status_tx, status_rx) = mpsc::sync_channel::<RenderWorkerStatus>(1);
+    thread::Builder::new()
+        .name(format!("kama-render-status-write-{}", std::process::id()))
+        .spawn(move || {
+            for status in status_rx {
+                if write_render_process_response(&RenderProcessResponse::Status(status.into()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .context("start render worker status writer")?;
+    let target_composition = project.active_composition;
+    let live_end_frame = Arc::new(AtomicU64::new(job.settings.end_frame));
+    run_render_worker(
+        job,
+        start.edit_revision,
+        start.editing,
+        start.interactive,
+        &Arc::new(device.clone()),
+        &Arc::new(queue.clone()),
+        &mut project,
+        &mut timeline,
+        &mut effects,
+        &plugins,
+        &command_rx,
+        &status_tx,
+        &mut frame_renderer,
+        target_composition,
+        &live_end_frame,
+    );
+    drop(status_tx);
+    drop((adapter, instance));
+    Ok(())
+}
+
+pub(super) fn create_render_device(
+    expected_gpu: Option<u64>,
+) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = if cfg!(target_os = "macos") {
+        wgpu::Backends::METAL
+    } else {
+        wgpu::Backends::PRIMARY
+    };
+    let instance = wgpu::Instance::new(descriptor);
+    let backends = if cfg!(target_os = "macos") {
+        wgpu::Backends::METAL
+    } else {
+        wgpu::Backends::PRIMARY
+    };
+    let features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    let mut fallback = None;
+    for adapter in pollster::block_on(instance.enumerate_adapters(backends)) {
+        if !adapter.features().contains(features)
+            || !adapter
+                .get_texture_format_features(wgpu::TextureFormat::R16Uint)
+                .allowed_usages
+                .contains(wgpu::TextureUsages::STORAGE_BINDING)
+        {
+            continue;
+        }
+        let device_descriptor = wgpu::DeviceDescriptor {
+            label: Some("kama isolated render device"),
+            required_features: features,
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&device_descriptor))
+        else {
+            continue;
+        };
+        if expected_gpu.is_none_or(|expected| {
+            crate::runtime::shared_surface::metal_registry_id(&device).ok() == Some(expected)
+        }) {
+            return Ok((instance, adapter, device, queue));
+        }
+        if expected_gpu.is_none() {
+            fallback.get_or_insert((adapter, device, queue));
+        }
+    }
+    if let Some((adapter, device, queue)) = fallback {
+        return Ok((instance, adapter, device, queue));
+    }
+    if expected_gpu.is_some() {
+        anyhow::bail!("the render worker could not reacquire the GPU used by the editor")
+    }
+    anyhow::bail!("no GPU supports render export's required texture formats")
+}
+
+fn write_render_process_response(response: &RenderProcessResponse) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer(&mut stdout, response)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    Ok(())
 }
 
 fn render_content_signature(project: &Project, timeline: &TimelineDocument) -> u64 {
@@ -1830,13 +2724,18 @@ impl Default for RenderSession {
 
 impl Drop for RenderSession {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
+        if let Some(mut task) = self.task.take() {
             task.cancel();
             drop(task);
         }
-        for path in self.cache_dirs.drain(..) {
-            let _ = fs::remove_dir_all(path);
-        }
+        let paths = std::mem::take(&mut self.cache_dirs);
+        let _ = thread::Builder::new()
+            .name("kama-render-cache-cleanup".into())
+            .spawn(move || {
+                for path in paths {
+                    let _ = fs::remove_dir_all(path);
+                }
+            });
     }
 }
 
@@ -2079,14 +2978,16 @@ impl RenderSession {
 }
 
 use std::{
-    collections::{BTreeSet, HashSet, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashSet, VecDeque, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -2094,7 +2995,7 @@ use std::{
 
 use anyhow::{Context, Error, Result};
 use kama_ui::Renderer;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{DEFAULT_CACHE_CHUNK_SECONDS, RenderSpec, cache_encoder::CacheEncoder};
 use crate::{
@@ -2113,10 +3014,293 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::{io::Write, process::Command};
 
     use super::*;
     use crate::project::{MediaAsset, MediaKind};
+
+    #[test]
+    fn render_worker_child_entry() {
+        if std::env::var_os("KAMA_RENDER_WORKER_TEST_CHILD").is_some() {
+            super::run_render_process_worker().expect("render worker child protocol exits cleanly");
+        }
+    }
+
+    #[test]
+    fn protocol_errors_retain_committed_cache_and_preview_ranges() {
+        let cache_path = std::env::temp_dir().join(format!(
+            "kama-render-cache-error-{}-{}.mov",
+            std::process::id(),
+            NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&cache_path, b"committed preview").unwrap();
+        let chunk = CacheChunk {
+            start: 4,
+            end: 9,
+            source_start: 4,
+            source_end: 9,
+            path: cache_path.clone(),
+            state: ChunkState::Rendered,
+            signature: 87,
+            generation: 2,
+        };
+        let latest_status = Mutex::new(None);
+        let shared_cache = Mutex::new(vec![chunk]);
+
+        let status = error_status_from_cache(
+            "malformed worker response".into(),
+            &latest_status,
+            &shared_cache,
+        );
+
+        assert_eq!(status.phase, RenderPhase::Error);
+        assert_eq!(status.cached_chunks.len(), 1);
+        assert_eq!(status.cached_chunks[0].path, cache_path);
+        assert_eq!(status.preview_ranges.len(), 1);
+        assert_eq!(
+            (
+                status.preview_ranges[0].start_frame,
+                status.preview_ranges[0].end_frame
+            ),
+            (4, 9)
+        );
+        fs::remove_file(cache_path).unwrap();
+    }
+
+    #[test]
+    fn command_pipe_eof_requests_child_cancellation() {
+        let (commands, receiver) = mpsc::sync_channel(1);
+        render_process_command_reader(std::io::Cursor::new(&b""[..]), commands);
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RenderWorkerCommand::Cancel)
+        ));
+    }
+
+    #[test]
+    fn bounded_line_reader_discards_oversized_tail_and_recovers_at_next_line() {
+        let mut reader = std::io::Cursor::new(b"abcdef\nok\n");
+        let mut line = Vec::new();
+
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 3).unwrap(),
+            Some(true)
+        );
+        assert_eq!(line, b"abc");
+        line.clear();
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut line, 3).unwrap(),
+            Some(false)
+        );
+        assert_eq!(line, b"ok");
+    }
+
+    #[test]
+    fn watchdog_times_out_after_30_seconds_without_protocol_activity() {
+        let now = Instant::now();
+        assert!(!render_worker_timed_out(now - Duration::from_secs(29), now));
+        assert!(render_worker_timed_out(now - Duration::from_secs(30), now));
+    }
+
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    #[test]
+    fn isolated_worker_transcodes_real_cache_and_crash_preserves_committed_chunk() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "kama-render-process-test-{}-{unique}",
+            std::process::id()
+        ));
+        let cache_dir = root.join("cache");
+        let output = root.join("render.mp4");
+        fs::create_dir_all(&root).unwrap();
+
+        let source = root.join("red-then-blue.y4m");
+        let mut file = fs::File::create(&source).unwrap();
+        file.write_all(b"YUV4MPEG2 W16 H16 F2:1 Ip A1:1 C420mpeg2 XCOLORRANGE=LIMITED\n")
+            .unwrap();
+        for (luma, cb, cr) in [(81, 90, 240), (41, 240, 110)] {
+            file.write_all(b"FRAME\n").unwrap();
+            file.write_all(&[luma; 256]).unwrap();
+            file.write_all(&[cb; 64]).unwrap();
+            file.write_all(&[cr; 64]).unwrap();
+        }
+        drop(file);
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [16, 16];
+        project.active_composition_mut().settings.frame_rate = 2.0;
+        project.active_composition_mut().settings.background =
+            crate::project::ProjectBackground::Solid {
+                color: [0.85, 0.12, 0.2, 1.0],
+            };
+        let media = project.import_media(&source).unwrap();
+        let mut timeline =
+            TimelineState::from_document(project.active_composition().timeline.clone());
+        let track = timeline.tracks()[0].id;
+        assert!(timeline.insert_media_clip_at(
+            (track, 0.0),
+            media,
+            "red-then-blue.y4m".into(),
+            false,
+            Some(1.0),
+            PipelineInstance::effect_default(),
+        ));
+        let mut preset = super::super::built_in_presets().remove(0);
+        preset.include_audio = false;
+        let settings = RenderSpec {
+            preset,
+            output: output.clone(),
+            overwrite: true,
+            begin_frame: 0,
+            end_frame: 1,
+            background: true,
+            transcode: true,
+        };
+        let start = RenderProcessStart {
+            settings,
+            edit_revision: 7,
+            editing: false,
+            interactive: false,
+            project: render_worker_project_snapshot(&project, timeline.document()),
+            worker_state: crate::project::WorkerProjectState::capture(&project),
+            timeline: timeline.document(),
+            plugin_paths: crate::preferences::load_plugin_paths(),
+            cache_dir: cache_dir.clone(),
+            cached_chunks: Vec::new(),
+            expected_gpu: None,
+        };
+        let mut child_guard = RenderChildGuard::new(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "render::engine::tests::render_worker_child_entry",
+                    "--quiet",
+                ])
+                .env("KAMA_RENDER_WORKER_TEST_CHILD", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn real render worker test process"),
+        );
+        let child = child_guard.child_mut();
+        let pid = child.id();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (command_tx, command_rx) = mpsc::sync_channel(8);
+        thread::spawn(move || render_process_writer(stdin, command_rx));
+        let latest_status = Arc::new(Mutex::new(None));
+        let shared_cache = Arc::new(Mutex::new(Vec::new()));
+        let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
+        {
+            let latest_status = Arc::clone(&latest_status);
+            let shared_cache = Arc::clone(&shared_cache);
+            let diagnostics = Arc::clone(&diagnostics);
+            let last_response_at = Arc::new(Mutex::new(Instant::now()));
+            thread::spawn(move || {
+                render_process_reader(
+                    stdout,
+                    latest_status,
+                    shared_cache,
+                    diagnostics,
+                    last_response_at,
+                );
+            });
+        }
+        {
+            let diagnostics = Arc::clone(&diagnostics);
+            thread::spawn(move || render_process_stderr(stderr, diagnostics));
+        }
+        command_tx.send(RenderProcessMessage::Start(start)).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let completed = loop {
+            if let Some(status) = latest_status.lock().unwrap().take() {
+                assert_ne!(status.phase, RenderPhase::Error, "{:?}", status.error);
+                if status.phase == RenderPhase::Done {
+                    break status;
+                }
+            }
+            assert!(Instant::now() < deadline, "render child did not finish");
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "render worker exited early"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(completed.cached_chunks.len(), 1);
+        let committed_cache = completed.cached_chunks[0].path.clone();
+        assert!(committed_cache.is_file());
+        assert!(output.is_file());
+
+        let mut input = ffmpeg_next::format::input(&output).unwrap();
+        let video = input
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .unwrap();
+        let stream_index = video.index();
+        let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(video.parameters())
+            .unwrap()
+            .decoder()
+            .video()
+            .unwrap();
+        let mut decoded = ffmpeg_next::frame::Video::empty();
+        let mut chroma = Vec::new();
+        for (stream, packet) in input.packets() {
+            if stream.index() != stream_index {
+                continue;
+            }
+            decoder.send_packet(&packet).unwrap();
+            while decoder.receive_frame(&mut decoded).is_ok() {
+                assert_eq!(decoded.format(), ffmpeg_next::format::Pixel::YUV420P);
+                chroma.push([decoded.data(1)[0], decoded.data(2)[0]]);
+            }
+        }
+        decoder.send_eof().unwrap();
+        while decoder.receive_frame(&mut decoded).is_ok() {
+            assert_eq!(decoded.format(), ffmpeg_next::format::Pixel::YUV420P);
+            chroma.push([decoded.data(1)[0], decoded.data(2)[0]]);
+        }
+        assert_eq!(chroma.len(), 2);
+        assert!(
+            i16::from(chroma[0][1]) - i16::from(chroma[0][0]) > 40,
+            "first frame must be red, got {chroma:?}"
+        );
+        assert!(
+            i16::from(chroma[1][0]) - i16::from(chroma[1][1]) > 40,
+            "second frame must be blue, got {chroma:?}"
+        );
+        drop(decoder);
+        drop(input);
+
+        command_tx
+            .send(RenderProcessMessage::Command(RenderWorkerCommand::Crash))
+            .unwrap();
+        let crash_deadline = Instant::now() + Duration::from_secs(15);
+        let exit = loop {
+            if let Some(exit) = child.try_wait().unwrap() {
+                break exit;
+            }
+            assert!(
+                Instant::now() < crash_deadline,
+                "crash command was not delivered"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(!exit.success(), "test crash must terminate only the child");
+        cleanup_render_artifacts(&cache_dir, &output, pid);
+        assert!(
+            committed_cache.is_file(),
+            "committed preview cache survives child crash"
+        );
+        validate_cache_chunk(&committed_cache, [16, 16], 2).unwrap();
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     struct Fixture {
         project: Project,
@@ -2473,13 +3657,55 @@ mod tests {
     fn cancelling_the_session_stops_work_without_losing_cached_playback() {
         let mut fixture = Fixture::new();
         fixture.commit_all();
-        let (command_tx, command_rx) = mpsc::channel();
-        let (_, status_rx) = mpsc::channel();
+        let (task, command_rx) = task_for_fixture(&fixture);
+        let mut session = RenderSession::default();
+        session.task = Some(task);
+
+        session.cancel();
+
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(RenderProcessMessage::Command(RenderWorkerCommand::Stop))
+        ));
+        assert_eq!(session.phase(), RenderPhase::Idle);
+        let preview = session
+            .cached_preview(3.0, 1.0, fixture.project.active_composition)
+            .unwrap();
+        assert_eq!(preview.path, fixture.job.chunks[0].path);
+        assert_eq!(preview.local_time, 3.0);
+    }
+
+    #[test]
+    fn delayed_status_cannot_revive_a_terminated_render_worker() {
+        let fixture = Fixture::new();
+        let (mut task, _commands) = task_for_fixture(&fixture);
+        task.status.phase = RenderPhase::Error;
+        task.status.error = Some("render worker is unresponsive".into());
+        let mut delayed = task.status.clone();
+        delayed.phase = RenderPhase::Rendering;
+        delayed.error = None;
+        *task.latest_status.lock().unwrap() = Some(delayed);
+
+        task.poll();
+
+        assert_eq!(task.status.phase, RenderPhase::Error);
+        assert_eq!(
+            task.status.error.as_deref(),
+            Some("render worker is unresponsive")
+        );
+    }
+
+    fn task_for_fixture(fixture: &Fixture) -> (RenderTask, Receiver<RenderProcessMessage>) {
+        let (command_tx, command_rx) = mpsc::sync_channel(8);
         let task = RenderTask {
             settings: fixture.job.settings.clone(),
             command_tx,
-            status_rx,
-            worker: None,
+            latest_status: Arc::new(Mutex::new(None)),
+            last_response_at: Arc::new(Mutex::new(Instant::now())),
+            process: None,
+            diagnostics: Arc::new(Mutex::new(VecDeque::new())),
+            queued_commands: VecDeque::new(),
+            pid: 0,
             cache_dir: fixture.job.cache_dir.clone(),
             status: RenderWorkerStatus::from_job(&fixture.job, 0),
             last_sent_revision: 0,
@@ -2489,26 +3715,12 @@ mod tests {
             pending_video_revision: None,
             last_editing: false,
             last_interactive: false,
+            reported_error: None,
             status_version: 0,
             canvas_size: [16, 16],
             fps: 1.0,
             composition: fixture.project.active_composition,
-            live_end_frame: Arc::new(AtomicU64::new(23)),
         };
-        let mut session = RenderSession::default();
-        session.task = Some(task);
-
-        session.cancel();
-
-        assert!(matches!(
-            command_rx.try_recv(),
-            Ok(RenderWorkerCommand::Stop)
-        ));
-        assert_eq!(session.phase(), RenderPhase::Idle);
-        let preview = session
-            .cached_preview(3.0, 1.0, fixture.project.active_composition)
-            .unwrap();
-        assert_eq!(preview.path, fixture.job.chunks[0].path);
-        assert_eq!(preview.local_time, 3.0);
+        (task, command_rx)
     }
 }

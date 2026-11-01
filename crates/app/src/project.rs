@@ -1069,12 +1069,34 @@ impl Project {
     }
 
     pub fn replace_media(&mut self, id: MediaId, path: &Path) -> Result<()> {
-        let Some(current) = self.media.iter_mut().find(|asset| asset.id == id) else {
+        let Some(index) = self.media.iter().position(|asset| asset.id == id) else {
             anyhow::bail!("media asset {id} does not exist");
         };
+        let current = &self.media[index];
         let replacement = media_asset_from_path(id, path)?;
         ensure_media_replacement_compatible(current.kind, replacement.kind)?;
-        *current = replacement;
+        let previous_name = current.name.clone();
+        let replacement_name = replacement.name.clone();
+        for composition in &mut self.compositions {
+            for clip in &mut composition.timeline.clips {
+                let references_media = matches!(
+                    clip.source,
+                    VisualSource::Media(clip_media) | VisualSource::Audio(clip_media)
+                        if clip_media == id
+                );
+                if references_media
+                    && let Some(name) = replacement_clip_name(
+                        &clip.source,
+                        &clip.name,
+                        &previous_name,
+                        &replacement_name,
+                    )
+                {
+                    clip.name = name;
+                }
+            }
+        }
+        self.media[index] = replacement;
         Ok(())
     }
 
@@ -2323,6 +2345,25 @@ fn next_u64_id(current: u64, ids: impl Iterator<Item = u64>) -> u64 {
     }
 }
 
+fn replacement_clip_name(
+    source: &VisualSource,
+    clip_name: &str,
+    previous_asset_name: &str,
+    replacement_asset_name: &str,
+) -> Option<String> {
+    if clip_name == previous_asset_name {
+        return Some(replacement_asset_name.to_owned());
+    }
+    if matches!(source, VisualSource::Audio(_)) {
+        for suffix in [" - Audio", " Audio"] {
+            if clip_name == format!("{previous_asset_name}{suffix}") {
+                return Some(format!("{replacement_asset_name}{suffix}"));
+            }
+        }
+    }
+    None
+}
+
 fn media_asset_from_path(id: MediaId, path: &Path) -> Result<MediaAsset> {
     let path = absolute_media_path(Path::new("."), path);
     let name = path
@@ -2631,6 +2672,152 @@ mod tests {
         assert!(ensure_media_replacement_compatible(MediaKind::Audio, MediaKind::Audio).is_ok());
         assert!(ensure_media_replacement_compatible(MediaKind::Audio, MediaKind::Video).is_err());
         assert!(ensure_media_replacement_compatible(MediaKind::Video, MediaKind::Audio).is_err());
+    }
+
+    #[test]
+    fn replacing_media_renames_generated_clip_labels_in_every_composition() {
+        use crate::timeline::TimelineState;
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "kama-media-replacement-name-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let replacement_path = directory.join("new_scene.png");
+        image::RgbImage::from_pixel(5, 3, image::Rgb([80, 120, 160]))
+            .save(&replacement_path)
+            .unwrap();
+
+        let mut project = Project::new();
+        project.media.push(MediaAsset {
+            id: 42,
+            name: "old_scene.png".into(),
+            path: directory.join("old_scene.png"),
+            absolute_path: directory.join("old_scene.png"),
+            relative_path: PathBuf::from("old_scene.png"),
+            kind: MediaKind::Image {
+                width: 5,
+                height: 3,
+            },
+            duration: None,
+            frame_rate: None,
+            video_width: Some(5),
+            video_height: Some(3),
+            has_audio: true,
+            tracks: Vec::new(),
+            waveform: None,
+            legacy_model: None,
+        });
+
+        let mut active_timeline = TimelineState::default();
+        assert!(active_timeline.insert_av_media_clip_at(
+            (1, 2.5),
+            42,
+            "old_scene.png".into(),
+            true,
+            Some(12.0),
+            PipelineInstance::effect_default(),
+        ));
+        project.sync_active_timeline(active_timeline.document());
+
+        let inactive_id = project.create_composition("Inactive");
+        let mut inactive_timeline = TimelineState::default();
+        assert!(inactive_timeline.insert_av_media_clip_at(
+            (1, 8.0),
+            42,
+            "old_scene.png".into(),
+            true,
+            Some(9.0),
+            PipelineInstance::effect_default(),
+        ));
+        assert!(inactive_timeline.insert_media_clip_at(
+            (1, 20.0),
+            42,
+            "Director's shot".into(),
+            false,
+            Some(4.0),
+            PipelineInstance::effect_default(),
+        ));
+        let mut inactive_document = inactive_timeline.document();
+        inactive_document
+            .clips
+            .iter_mut()
+            .find(|clip| matches!(clip.source, VisualSource::Audio(42)))
+            .unwrap()
+            .name = "old_scene.png Audio".into();
+        project.composition_mut(inactive_id).unwrap().timeline = inactive_document;
+
+        let before = crate::history::HistorySnapshot::capture(
+            &project,
+            &project.active_composition().timeline,
+        );
+        let mut history =
+            crate::history::HistoryState::new(&project, &project.active_composition().timeline);
+        project.replace_media(42, &replacement_path).unwrap();
+
+        let active_clips = &project.active_composition().timeline.clips;
+        assert_eq!(active_clips[0].name, "new_scene.png");
+        assert_eq!(active_clips[1].name, "new_scene.png - Audio");
+        assert_eq!(active_clips[0].start, 2.5);
+        assert_eq!(active_clips[0].duration, 12.0);
+        assert_eq!(active_clips[1].start, 2.5);
+        assert_eq!(active_clips[1].duration, 12.0);
+        assert!(matches!(active_clips[0].source, VisualSource::Media(42)));
+        assert!(matches!(active_clips[1].source, VisualSource::Audio(42)));
+        assert_eq!(active_clips[0].group, active_clips[1].group);
+
+        let inactive_clips = &project.composition(inactive_id).unwrap().timeline.clips;
+        assert_eq!(inactive_clips[0].name, "new_scene.png");
+        assert_eq!(inactive_clips[1].name, "new_scene.png Audio");
+        assert_eq!(inactive_clips[2].name, "Director's shot");
+        assert_eq!(inactive_clips[0].start, 8.0);
+        assert_eq!(inactive_clips[0].duration, 9.0);
+        assert!(matches!(inactive_clips[2].source, VisualSource::Media(42)));
+
+        assert!(history.record_after(
+            "Replace media",
+            &before,
+            &project,
+            &project.active_composition().timeline,
+            false,
+        ));
+        let undone = history.undo().unwrap().project;
+        assert_eq!(undone.media(42).unwrap().name, "old_scene.png");
+        assert_eq!(
+            undone.active_composition().timeline.clips[0].name,
+            "old_scene.png"
+        );
+        assert_eq!(
+            undone.composition(inactive_id).unwrap().timeline.clips[1].name,
+            "old_scene.png Audio"
+        );
+        let redone = history.redo().unwrap().project;
+        assert_eq!(redone.media(42).unwrap().name, "new_scene.png");
+        assert_eq!(
+            redone.active_composition().timeline.clips[1].name,
+            "new_scene.png - Audio"
+        );
+        let save_path = directory.join("replaced.kama");
+        redone.save(&save_path).unwrap();
+        let restored = Project::load(&save_path).unwrap();
+        assert_eq!(
+            restored.active_composition().timeline.clips[0].name,
+            "new_scene.png"
+        );
+        assert_eq!(
+            restored.composition(inactive_id).unwrap().timeline.clips[1].name,
+            "new_scene.png Audio"
+        );
+        assert_eq!(
+            restored.composition(inactive_id).unwrap().timeline.clips[2].name,
+            "Director's shot"
+        );
+
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

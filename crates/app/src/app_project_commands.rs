@@ -39,9 +39,7 @@ impl EditorApp {
         );
         self.editor.history_gesture = None;
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.export_renderer.clear_caches();
-        self.export_renderer
-            .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
+        self.pending_capture = None;
         self.render_panel.clear_project_cache();
         self.video.invalidate();
         self.monitor.clear_captured_frame();
@@ -147,6 +145,9 @@ impl EditorApp {
             &self.editor.project,
             &self.editor.timeline.document(),
         );
+        self.editor
+            .project
+            .sync_active_timeline(self.editor.timeline.document());
         let mut changed = false;
         for (media, path) in replacements {
             match self.editor.project.replace_media(media, &path) {
@@ -163,10 +164,12 @@ impl EditorApp {
             self.editor.project.resolve_missing_media_paths(base);
         }
         if changed {
+            self.editor
+                .timeline
+                .load_history_document(self.editor.project.active_composition().timeline.clone());
             self.waveform_textures.clear();
             self.waveform_textures.queue_missing(&self.editor.project);
             self.warm_project_scrub_thumbnails();
-            self.export_renderer.clear_media_caches();
             self.audio.clear();
             self.video.invalidate();
             self.editor.history.record_after(

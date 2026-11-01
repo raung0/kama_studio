@@ -39,6 +39,7 @@ rfd = "0.17.2"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
+memmap2 = "0.9.11"
 ciborium = "0.2"
 wasmtime = "50.0.0"
 

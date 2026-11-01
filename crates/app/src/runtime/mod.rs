@@ -1,3 +1,4 @@
+pub mod cpu_surface;
 pub mod effects;
 pub mod media;
 #[allow(dead_code)]

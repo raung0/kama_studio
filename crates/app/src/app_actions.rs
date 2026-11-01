@@ -557,8 +557,14 @@ impl EditorApp {
                     return;
                 };
                 self.set_history_gesture_label("Replace media");
+                self.editor
+                    .project
+                    .sync_active_timeline(self.editor.timeline.document());
                 match self.editor.project.replace_media(media, &path) {
                     Ok(()) => {
+                        self.editor.timeline.load_history_document(
+                            self.editor.project.active_composition().timeline.clone(),
+                        );
                         self.prompted_missing_media.remove(&media);
                         if let Some(project_path) = self.editor.project_path.as_deref() {
                             let base = project_path.parent().unwrap_or_else(|| Path::new("."));
@@ -567,7 +573,6 @@ impl EditorApp {
                         self.waveform_textures.clear();
                         self.waveform_textures.queue_missing(&self.editor.project);
                         self.warm_project_scrub_thumbnails();
-                        self.export_renderer.clear_media_caches();
                         self.audio.clear();
                         self.video.invalidate();
                     }
@@ -591,7 +596,6 @@ impl EditorApp {
                     .timeline
                     .reconcile_pipeline_overrides(&self.editor.project);
                 self.media.clear_selection();
-                self.export_renderer.clear_media_caches();
                 self.audio.clear();
                 self.video.invalidate();
                 self.render_panel.sync_timeline_ranges(
@@ -841,8 +845,6 @@ impl EditorApp {
 
     pub(super) fn sync_effect_runtime(&mut self) {
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.export_renderer
-            .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
         self.video.invalidate();
     }
 

@@ -10,6 +10,10 @@ use winit::window::WindowId;
 use muda::MenuEvent;
 
 pub enum AppEvent {
+    CaptureFinished {
+        id: u64,
+        result: Result<crate::media_worker::CapturedFrame, String>,
+    },
     Interrupt,
     UpdateAvailable(AvailableUpdate),
     UpdateFinished {

@@ -36,6 +36,17 @@ use serde::{Deserialize, Serialize};
 const AUDIO_DRIFT_TOLERANCE: f32 = 0.090;
 const AUDIO_RETRY_DELAY: Duration = Duration::from_secs(2);
 
+fn audio_startup_ready(
+    ready_generation: Option<(u64, u64)>,
+    expected_generation: (u64, u64),
+    audio_required: bool,
+    output_ready: bool,
+    sources_ready: bool,
+) -> bool {
+    ready_generation == Some(expected_generation)
+        && (!audio_required || (output_ready && sources_ready))
+}
+
 macro_rules! delegate_source_metadata {
     () => {
         fn sample_rate(&self) -> SampleRate {
@@ -614,6 +625,11 @@ pub(crate) struct AudioEngine {
     master_muted: bool,
     clock_lead: f32,
     last_playhead: Option<f32>,
+    output_retry_at: Instant,
+    output_retry_delay: Duration,
+    output_ready: bool,
+    audio_required: bool,
+    audio_sources_ready: bool,
 }
 
 impl AudioEngine {
@@ -624,43 +640,62 @@ impl AudioEngine {
                 messages::error("Audio", format!("WASM runtime unavailable: {error:#}"));
             })
             .ok();
-        match rodio::DeviceSinkBuilder::open_default_sink() {
+        let mut engine = Self {
+            _sink: None,
+            mixer: None,
+            master_meter,
+            voices: HashMap::new(),
+            failed_media: HashMap::new(),
+            wasm,
+            playing: false,
+            master_muted: false,
+            clock_lead: 0.0,
+            last_playhead: None,
+            output_retry_at: Instant::now(),
+            output_retry_delay: Duration::from_secs(1),
+            output_ready: false,
+            audio_required: false,
+            audio_sources_ready: false,
+        };
+        engine.retry_output();
+        engine
+    }
+
+    fn retry_output(&mut self) {
+        match open_default_output() {
             Ok(sink) => {
                 let channels = sink.config().channel_count();
                 let sample_rate = sink.config().sample_rate();
                 let (mixer, source) = mixer::mixer(channels, sample_rate);
                 mixer.add(Zero::new(channels, sample_rate));
                 sink.mixer()
-                    .add(MeteredSource::new(source, Arc::clone(&master_meter)));
-                Self {
-                    _sink: Some(sink),
-                    mixer: Some(mixer),
-                    master_meter,
-                    voices: HashMap::new(),
-                    failed_media: HashMap::new(),
-                    wasm,
-                    playing: false,
-                    master_muted: false,
-                    clock_lead: 0.0,
-                    last_playhead: None,
-                }
+                    .add(MeteredSource::new(source, Arc::clone(&self.master_meter)));
+                self._sink = Some(sink);
+                self.mixer = Some(mixer);
+                self.output_ready = true;
+                self.output_retry_delay = Duration::from_secs(1);
             }
             Err(error) => {
-                messages::warning("Audio", format!("output unavailable: {error}"));
-                Self {
-                    _sink: None,
-                    mixer: None,
-                    master_meter,
-                    voices: HashMap::new(),
-                    failed_media: HashMap::new(),
-                    wasm,
-                    playing: false,
-                    master_muted: false,
-                    clock_lead: 0.0,
-                    last_playhead: None,
-                }
+                messages::warning(
+                    "Audio",
+                    format!("output unavailable; retry scheduled: {error:#?}"),
+                );
+                self.output_ready = false;
+                self.mixer = None;
+                self._sink = None;
+                self.output_retry_at = Instant::now() + self.output_retry_delay;
+                self.output_retry_delay =
+                    (self.output_retry_delay * 2).min(Duration::from_secs(30));
             }
         }
+    }
+
+    pub const fn playback_ready(&self) -> (bool, bool, bool) {
+        (
+            self.output_ready,
+            self.audio_required,
+            self.audio_sources_ready,
+        )
     }
 
     pub fn clear(&mut self) {
@@ -675,6 +710,7 @@ impl AudioEngine {
         self.playing = false;
         self.clock_lead = 0.0;
         self.last_playhead = None;
+        self.audio_sources_ready = false;
     }
 
     pub const fn set_master_muted(&mut self, muted: bool) {
@@ -682,12 +718,6 @@ impl AudioEngine {
     }
 
     pub fn sync(&mut self, project: &Project, timeline: &TimelineState, plugins: &PluginRegistry) {
-        let Some(mixer) = self.mixer.as_ref() else {
-            self.playing = false;
-            self.clock_lead = 0.0;
-            return;
-        };
-
         let playhead = timeline.playhead();
         let playing = timeline.is_playing() && !timeline.is_scrubbing();
         let started_playing = playing && !self.playing;
@@ -706,6 +736,17 @@ impl AudioEngine {
             playhead,
             &mut desired,
         );
+        self.audio_required = !desired.is_empty();
+        let desired_voice_count = desired.len();
+        if self.mixer.is_none() && Instant::now() >= self.output_retry_at {
+            self.retry_output();
+        }
+        let Some(mixer) = self.mixer.as_ref() else {
+            self.playing = false;
+            self.clock_lead = 0.0;
+            self.audio_sources_ready = false;
+            return;
+        };
 
         self.voices.retain(|clip, voice| {
             let keep = desired.contains_key(clip);
@@ -834,6 +875,13 @@ impl AudioEngine {
                 self.clock_lead = lead.clamp(0.0, 0.250);
             }
         }
+        self.audio_sources_ready = desired_voice_count == 0
+            || (playing
+                && self.voices.len() == desired_voice_count
+                && self
+                    .voices
+                    .values()
+                    .all(|voice| voice.player.get_pos() >= Duration::from_millis(5)));
     }
 
     pub const fn clock_lead(&self) -> f32 {
@@ -861,6 +909,52 @@ impl AudioEngine {
             [0.0; 2]
         }
     }
+}
+
+fn open_default_output() -> Result<MixerDeviceSink> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+
+    let host = rodio::cpal::default_host();
+    let device = host
+        .default_output_device()
+        .context("the operating system has no default audio output device")?;
+    let device_name = device
+        .description()
+        .map(|description| description.name().to_owned())
+        .unwrap_or_else(|error| format!("unnamed device ({error:?})"));
+    let config = device.default_output_config().with_context(|| {
+        format!("read default output config for selected device {device_name:?}")
+    })?;
+    let config_description = format!(
+        "{} channels, {} Hz, {:?}",
+        config.channels(),
+        config.sample_rate(),
+        config.sample_format()
+    );
+    let supported_configs = match device.supported_output_configs() {
+        Ok(configs) => configs
+            .map(|range| {
+                format!(
+                    "{}ch {}-{}Hz {:?}",
+                    range.channels(),
+                    range.min_sample_rate(),
+                    range.max_sample_rate(),
+                    range.sample_format()
+                )
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => vec![format!("configuration query failed: {error:?}")],
+    };
+    let sink = rodio::DeviceSinkBuilder::from_device(device)
+        .with_context(|| format!("configure selected output {device_name:?} at {config_description}"))?
+        .with_buffer_size(rodio::cpal::BufferSize::Default)
+        .open_stream()
+        .with_context(|| {
+            format!(
+                "open selected output {device_name:?} at {config_description}; supported configs: {supported_configs:?}"
+            )
+        })?;
+    Ok(sink)
 }
 
 const AUDIO_WORKER_PROTOCOL: u16 = 1;
@@ -914,6 +1008,9 @@ enum AudioWorkerResponse {
         #[serde(with = "audio_track_levels")]
         track_levels: HashMap<u32, [f32; 2]>,
         master_levels: [f32; 2],
+        output_ready: bool,
+        audio_required: bool,
+        audio_sources_ready: bool,
         diagnostics: Vec<(bool, String, String)>,
     },
     ProjectAccepted {
@@ -1272,6 +1369,12 @@ pub struct AudioPlayback {
     startup_deadline: Instant,
     last_response_at: Instant,
     transport_waiting_since: Option<Instant>,
+    ready_generation: Option<(u64, u64)>,
+    readiness_target: f32,
+    output_ready: bool,
+    audio_required: bool,
+    audio_sources_ready: bool,
+    video_ready: bool,
     #[cfg(debug_assertions)]
     crash_requested: bool,
 }
@@ -1321,6 +1424,12 @@ impl AudioPlayback {
             startup_deadline: Instant::now() + Duration::from_secs(10),
             last_response_at: Instant::now(),
             transport_waiting_since: None,
+            ready_generation: None,
+            readiness_target: 0.0,
+            output_ready: false,
+            audio_required: false,
+            audio_sources_ready: false,
+            video_ready: false,
             #[cfg(debug_assertions)]
             crash_requested: false,
         }
@@ -1343,6 +1452,32 @@ impl AudioPlayback {
 
     pub const fn set_master_muted(&mut self, muted: bool) {
         self.master_muted = muted;
+    }
+
+    pub fn playback_ready(&self, timeline: &TimelineState) -> bool {
+        if !timeline.is_playing() || timeline.is_scrubbing() {
+            return true;
+        }
+        if self.timeline_transport_key
+            != Some((
+                timeline.seek_revision(),
+                timeline.is_playing(),
+                timeline.is_scrubbing(),
+            ))
+        {
+            return false;
+        }
+        audio_startup_ready(
+            self.ready_generation,
+            (self.project_revision, self.generation),
+            self.audio_required,
+            self.output_ready,
+            self.audio_sources_ready,
+        )
+    }
+
+    pub fn set_video_ready(&mut self, ready: bool) {
+        self.video_ready = ready;
     }
 
     #[cfg(debug_assertions)]
@@ -1369,6 +1504,8 @@ impl AudioPlayback {
             self.clock_lead = 0.0;
             self.track_levels.clear();
             self.master_levels = [0.0; 2];
+            self.ready_generation = None;
+            self.readiness_target = timeline.playhead();
         }
         if live_editing
             && self
@@ -1396,6 +1533,8 @@ impl AudioPlayback {
             });
             self.project_revision = self.project_revision.saturating_add(1);
             self.project_key = Some(key);
+            self.ready_generation = None;
+            self.readiness_target = timeline.playhead();
         }
         let mut invalid_ready = false;
         if let Some(process) = &self.process {
@@ -1429,6 +1568,7 @@ impl AudioPlayback {
             self.playing = project_ready
                 && timeline.is_playing()
                 && !timeline.is_scrubbing()
+                && self.video_ready
                 && !self.pause_after_failure;
             if project_ready {
                 self.transport_pending = process
@@ -1456,6 +1596,9 @@ impl AudioPlayback {
                         clock_lead,
                         track_levels,
                         master_levels,
+                        output_ready,
+                        audio_required,
+                        audio_sources_ready,
                         diagnostics,
                         ..
                     } => {
@@ -1471,6 +1614,12 @@ impl AudioPlayback {
                             self.clock_lead = clock_lead;
                             self.track_levels = track_levels;
                             self.master_levels = master_levels;
+                            self.output_ready = output_ready;
+                            self.audio_required = audio_required;
+                            self.audio_sources_ready = audio_sources_ready;
+                            if (playhead - self.readiness_target).abs() <= 0.0005 {
+                                self.ready_generation = Some((project_revision, generation));
+                            }
                             for (is_error, source, message) in diagnostics {
                                 if is_error {
                                     messages::error(source, message);
@@ -1538,6 +1687,8 @@ impl AudioPlayback {
                 self.clock_lead = 0.0;
                 self.track_levels.clear();
                 self.master_levels = [0.0; 2];
+                self.ready_generation = None;
+                self.output_ready = false;
                 if !self.crash_reported {
                     messages::error(
                         "Audio worker",
@@ -1607,6 +1758,8 @@ impl AudioPlayback {
         self.clock_lead = 0.0;
         self.track_levels.clear();
         self.master_levels = [0.0; 2];
+        self.ready_generation = None;
+        self.output_ready = false;
         self.status = AudioWorkerStatus::Unresponsive;
         if !self.crash_reported {
             messages::error("Audio worker", reason);
@@ -1641,6 +1794,8 @@ impl AudioPlayback {
         self.clock_lead = 0.0;
         self.track_levels.clear();
         self.master_levels = [0.0; 2];
+        self.ready_generation = None;
+        self.output_ready = false;
         self.start_worker();
     }
 
@@ -1849,6 +2004,7 @@ pub(super) fn run_audio_worker() -> Result<()> {
                 timeline.set_worker_transport(playhead, playing && !scrubbing);
                 engine.set_master_muted(master_muted);
                 engine.sync(project, timeline, &plugins);
+                let (output_ready, audio_required, audio_sources_ready) = engine.playback_ready();
                 write_audio_response(
                     &mut stdout,
                     &AudioWorkerResponse::State {
@@ -1859,6 +2015,9 @@ pub(super) fn run_audio_worker() -> Result<()> {
                         clock_lead: engine.clock_lead(),
                         track_levels: engine.track_levels(),
                         master_levels: engine.master_levels(),
+                        output_ready,
+                        audio_required,
+                        audio_sources_ready,
                         diagnostics: messages::drain_for_worker()
                             .into_iter()
                             .map(|(severity, source, message)| {
@@ -2532,6 +2691,57 @@ mod tests {
     use rodio::buffer::SamplesBuffer;
     use std::sync::Arc;
 
+    #[test]
+    fn startup_readiness_rejects_an_ack_from_an_older_transport_generation() {
+        assert!(!super::audio_startup_ready(
+            Some((8, 20)),
+            (8, 21),
+            false,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn active_audio_waits_for_output_and_source_consumption() {
+        assert!(!super::audio_startup_ready(
+            Some((8, 21)),
+            (8, 21),
+            true,
+            false,
+            false,
+        ));
+        assert!(!super::audio_startup_ready(
+            Some((8, 21)),
+            (8, 21),
+            true,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn silent_active_audio_is_ready_after_its_source_is_consumed() {
+        assert!(super::audio_startup_ready(
+            Some((8, 21)),
+            (8, 21),
+            true,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn scenes_without_active_audio_do_not_wait_for_an_output_device() {
+        assert!(super::audio_startup_ready(
+            Some((8, 21)),
+            (8, 21),
+            false,
+            false,
+            false,
+        ));
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn audio_worker_child_entry() {
@@ -2698,13 +2908,18 @@ mod tests {
         timeline.seek_relative(1.25);
         timeline.toggle_playback();
         let mut worker = AudioPlayback::new(&crate::preferences::load_plugin_paths());
+        worker.set_video_ready(true);
         let pid = worker.pid().expect("audio worker process started");
         let startup_deadline = Instant::now() + Duration::from_secs(12);
         let mut active_since: Option<Instant> = None;
         while active_since.is_none_or(|started| started.elapsed() < Duration::from_millis(3_200)) {
             assert!(
                 Instant::now() < startup_deadline,
-                "audio worker did not stream active levels"
+                "audio worker did not stream active levels; status={:?}, playing={}, levels={:?}, diagnostics={:?}",
+                worker.status(),
+                worker.playing,
+                worker.track_levels,
+                crate::messages::drain_for_worker()
             );
             assert!(!worker.sync(&project, &timeline, 0, false));
             assert!(!matches!(
@@ -2758,6 +2973,9 @@ mod tests {
             clock_lead: 0.125,
             track_levels: [(37, [0.625, 0.375])].into(),
             master_levels: [0.625, 0.375],
+            output_ready: true,
+            audio_required: false,
+            audio_sources_ready: false,
             diagnostics: Vec::new(),
         };
         let mut input = b"{malformed protocol line}\n".to_vec();
@@ -2813,6 +3031,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let mut worker = AudioPlayback::new("");
+        worker.set_video_ready(true);
         let project = Project::new();
         let mut timeline = TimelineState::default();
         timeline.set_worker_transport(7.5, true);
@@ -2833,6 +3052,9 @@ mod tests {
             clock_lead: 0.125,
             track_levels: HashMap::new(),
             master_levels: [0.0; 2],
+            output_ready: true,
+            audio_required: false,
+            audio_sources_ready: false,
             diagnostics: Vec::new(),
         })
         .unwrap();
@@ -2884,6 +3106,9 @@ mod tests {
             clock_lead: 0.18,
             track_levels: [(2, [0.75, 0.5])].into(),
             master_levels: [0.75, 0.5],
+            output_ready: true,
+            audio_required: true,
+            audio_sources_ready: true,
             diagnostics: Vec::new(),
         })
         .unwrap();
@@ -3039,6 +3264,7 @@ mod tests {
         timeline.toggle_playback();
         worker.sync(&project, &timeline, 38, false);
         timeline.toggle_playback();
+        worker.set_video_ready(true);
         worker.sync(&project, &timeline, 38, false);
         assert!(
             worker.playing,

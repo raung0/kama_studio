@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::RenderPreset;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct RenderSpec {
     pub(super) preset: RenderPreset,
     pub(super) output: PathBuf,

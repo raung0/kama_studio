@@ -265,6 +265,20 @@ impl WaveformTextures {
 }
 
 pub fn analyze_media(asset: &MediaAsset) -> Option<WaveformData> {
+    if crate::worker::is_processing_child() {
+        analyze_media_local(asset)
+    } else {
+        crate::media_worker::analyze(asset).unwrap_or_else(|error| {
+            crate::messages::error(
+                "Media analysis",
+                format!("{}: {error:#}", asset.path.display()),
+            );
+            None
+        })
+    }
+}
+
+pub(crate) fn analyze_media_local(asset: &MediaAsset) -> Option<WaveformData> {
     let video = matches!(asset.kind, MediaKind::Video)
         .then(|| analyze_video(&asset.path))
         .transpose()

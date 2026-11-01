@@ -12,7 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Error, Result};
-use kama_ui::{ExternalTextureId, Renderer};
+use kama_ui::ExternalTextureId;
 
 use crate::{
     clip_graph_cache,
@@ -698,14 +698,14 @@ impl FrameRenderer {
         state
     }
 
-    pub(crate) fn new(
-        renderer: &Renderer,
+    pub(crate) fn new_preview_worker(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
         effects: &EffectRuntime,
         plugins: &PluginRegistry,
     ) -> Self {
-        let mut state = Self::new_with_device(renderer.device(), effects, plugins);
-        state.generator_worker =
-            GeneratorWorker::new(renderer.device_handle(), renderer.queue_handle());
+        let mut state = Self::new_with_device(&device, effects, plugins);
+        state.generator_worker = GeneratorWorker::new(device, queue);
         state
     }
 
@@ -834,15 +834,6 @@ impl FrameRenderer {
             );
             Arc::new(placeholder_frame("WASM generator error", width, height))
         })
-    }
-
-    pub(crate) fn sync_compiled_effects(
-        &mut self,
-        renderer: &Renderer,
-        effects: &EffectRuntime,
-        plugins: &PluginRegistry,
-    ) {
-        self.sync_compiled_effects_on(renderer.device(), effects, plugins);
     }
 
     pub(crate) fn sync_compiled_effects_on(
@@ -1876,6 +1867,7 @@ impl FrameRenderer {
                         if let Some(previous) = previous {
                             return Ok(previous);
                         }
+                        self.preview_missing_source = true;
                         return Ok(render.transparent(preview_width, preview_height));
                     }
                 }
@@ -1974,6 +1966,7 @@ impl FrameRenderer {
                         if let Some(previous) = previous {
                             return Ok(previous);
                         }
+                        self.preview_missing_source = true;
                         return Ok(render.transparent(preview_width, preview_height));
                     }
                 }
@@ -2014,6 +2007,7 @@ impl FrameRenderer {
             wasm: &'a mut Option<WasmRuntime>,
             graph_generator_cache: &'a mut HashMap<(u64, u64), GraphGeneratorVariants<GpuFrame>>,
             generator_worker: &'a mut Option<GeneratorWorker>,
+            missing_generator: bool,
             wasm_scale: f32,
             context: EffectEvalContext,
             pipeline_visiting: HashSet<u64>,
@@ -2218,6 +2212,7 @@ impl FrameRenderer {
                             tight_bounds: false,
                         },
                     });
+                    eval.missing_generator |= previous.is_none();
                     let output = previous
                         .unwrap_or_else(|| eval.render.transparent(input.width, input.height));
                     visiting.remove(&node_id);
@@ -2358,6 +2353,7 @@ impl FrameRenderer {
             wasm: &mut self.wasm,
             graph_generator_cache: &mut self.graph_generator_gpu_cache,
             generator_worker: &mut self.generator_worker,
+            missing_generator: false,
             wasm_scale,
             context,
             pipeline_visiting: HashSet::from([pipeline.id]),
@@ -2399,8 +2395,10 @@ impl FrameRenderer {
         if !input.shares_surface(&output) {
             eval.render.recycle(input);
         }
+        let missing_generator = eval.missing_generator;
         drop(eval);
         self.waiting_for_video |= generator_pending;
+        self.preview_missing_source |= missing_generator;
         output
     }
 
@@ -3360,6 +3358,147 @@ mod headless_preview_tests {
     use crate::{
         effects::EffectRuntime, plugin::PluginRegistry, project::Project, timeline::TimelineState,
     };
+
+    #[test]
+    fn seeking_never_publishes_a_frame_with_an_unfinished_generator() {
+        use std::time::{Duration, Instant};
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+            ..Default::default()
+        }))
+        .unwrap();
+        let mut project = Project::new();
+        project.active_composition_mut().settings.canvas_size = [16, 16];
+        let plugins = PluginRegistry::load_default("").unwrap();
+        let effects = EffectRuntime::default();
+        let mut timeline = TimelineState::default();
+        let track = timeline
+            .tracks()
+            .iter()
+            .find(|track| track.kind == TrackKind::Video)
+            .unwrap()
+            .id;
+        assert!(timeline.insert_plugin_generator_at(
+            track,
+            0.0,
+            plugins.generator("builtin.checkerboard").unwrap(),
+            PipelineInstance::effect_default(),
+        ));
+        let mut renderer = FrameRenderer::new_export_worker(&device, &effects, &plugins);
+        let output = PresentationTexture::new(&device, 16, 16);
+        for time in [0.0, 0.5, 1.0, 0.25] {
+            timeline.set_worker_transport(time, false);
+            renderer.clear_caches();
+            let (_completed, responses) = mpsc::channel();
+            renderer.generator_worker = Some(GeneratorWorker {
+                shared: Arc::new(GeneratorWorkerShared {
+                    jobs: Mutex::new(HashMap::new()),
+                    wake: Condvar::new(),
+                    closed: AtomicBool::new(false),
+                    epoch: AtomicU64::new(0),
+                }),
+                responses,
+                pending: HashMap::new(),
+            });
+            let published = renderer
+                .refresh_preview_on(
+                    &device,
+                    &queue,
+                    &project,
+                    &timeline,
+                    &effects,
+                    &plugins,
+                    None,
+                    [16, 16],
+                    1.0,
+                    true,
+                    None,
+                    &output,
+                )
+                .unwrap();
+            assert!(
+                !published,
+                "a scrub frame must not drop its pending generator at {time}"
+            );
+            renderer.generator_worker =
+                GeneratorWorker::new(Arc::new(device.clone()), Arc::new(queue.clone()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if renderer
+                    .refresh_preview_on(
+                        &device,
+                        &queue,
+                        &project,
+                        &timeline,
+                        &effects,
+                        &plugins,
+                        None,
+                        [16, 16],
+                        1.0,
+                        true,
+                        None,
+                        &output,
+                    )
+                    .unwrap()
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "generator must eventually appear at {time}"
+                );
+                std::thread::yield_now();
+            }
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("generator seek pixels"),
+                size: 256 * 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                output.texture().as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(16),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 16,
+                    height: 16,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+            let (tx, rx) = mpsc::sync_channel(1);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(5)),
+                })
+                .unwrap();
+            rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+            let pixels = buffer.slice(..).get_mapped_range().unwrap();
+            let center = &pixels[8 * 256 + 8 * 8..8 * 256 + 8 * 8 + 8];
+            let red = u16::from_le_bytes([center[0], center[1]]);
+            assert!(
+                (0x3100..0x3300).contains(&red) || (0x3900..0x3a00).contains(&red),
+                "published frame must contain the checkerboard, not background: {red:#x}"
+            );
+        }
+    }
 
     #[test]
     fn decoded_video_changes_frames_without_releasing_scrub() {

@@ -350,7 +350,7 @@ const fn codec_packets_are_independent(id: codec::Id) -> bool {
     matches!(id, codec::Id::PRORES | codec::Id::UTVIDEO)
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AvMediaProbe {
     pub has_video: bool,
     pub has_audio: bool,
@@ -362,6 +362,14 @@ pub struct AvMediaProbe {
 }
 
 pub fn probe_av_media(path: &Path) -> Result<AvMediaProbe> {
+    if crate::worker::is_processing_child() {
+        probe_av_media_local(path)
+    } else {
+        crate::media_worker::probe(path)
+    }
+}
+
+pub(crate) fn probe_av_media_local(path: &Path) -> Result<AvMediaProbe> {
     init_ffmpeg()?;
     let input = format::input(path).with_context(|| format!("open media {}", path.display()))?;
     let video = input.streams().best(Type::Video);
@@ -2983,7 +2991,8 @@ fn video_preview_worker(
 ) {
     let duration = probe_av_media(&path).ok().and_then(|probe| probe.duration);
 
-    let mut decoder = BlockingVideoDecoder::new_preview(path);
+    let mut decoder = crate::worker::is_processing_child()
+        .then(|| BlockingVideoDecoder::new_preview(path.clone()));
     let Ok(mut request) = requests.recv() else {
         return;
     };
@@ -3019,13 +3028,23 @@ fn video_preview_worker(
                 }
                 break;
             }
-            let frame = match decoder.reference_frame(
-                time,
-                request.source_fps,
-                preview_width,
-                preview_height,
-                None,
-            ) {
+            let decoded = if let Some(decoder) = &mut decoder {
+                decoder.reference_frame(
+                    time,
+                    request.source_fps,
+                    preview_width,
+                    preview_height,
+                    None,
+                )
+            } else {
+                crate::media_worker::thumbnail(
+                    &path,
+                    time,
+                    request.source_fps,
+                    [preview_width, preview_height],
+                )
+            };
+            let frame = match decoded {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
                     match requests.recv() {
@@ -3063,6 +3082,23 @@ fn video_preview_worker(
             drop(cache);
             time += interval;
         }
+    }
+}
+
+pub(crate) struct ThumbnailDecoder(BlockingVideoDecoder);
+
+impl ThumbnailDecoder {
+    pub(crate) fn new(path: &Path) -> Self {
+        Self(BlockingVideoDecoder::new_preview(path.to_owned()))
+    }
+
+    pub(crate) fn decode(
+        &mut self,
+        time: f64,
+        fps: f64,
+        size: [u32; 2],
+    ) -> Result<Option<Arc<VideoFrame>>> {
+        self.0.reference_frame(time, fps, size[0], size[1], None)
     }
 }
 

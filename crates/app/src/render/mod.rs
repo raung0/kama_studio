@@ -24,8 +24,42 @@ use crate::{
 
 mod cache_encoder;
 mod engine;
+
+pub(crate) fn capture_processing_frame(
+    project: &crate::project::Project,
+    document: crate::timeline::TimelineDocument,
+    playhead: f32,
+    plugin_paths: &str,
+) -> anyhow::Result<Vec<u8>> {
+    let (_instance, _adapter, device, queue) = engine::create_render_device(None)?;
+    let mut plugins = crate::plugin::PluginRegistry::load_default(plugin_paths)?;
+    plugins.validate_gpu(&device);
+    let mut effects = crate::effects::EffectRuntime::default();
+    effects.rebuild(&project.pipelines);
+    let timeline = crate::timeline::TimelineState::from_document(document);
+    let mut renderer =
+        crate::playback::FrameRenderer::new_export_worker(&device, &effects, &plugins);
+    renderer.render_export_rgba16_on(crate::playback::ExportRgba16Args {
+        device: &device,
+        queue: &queue,
+        project,
+        timeline: &timeline,
+        runtime: (&effects, &plugins),
+        timeline_time: playhead,
+    })
+}
 mod spec;
 mod transcoder;
+
+pub(crate) fn run_processing_worker() -> anyhow::Result<()> {
+    engine::run_render_process_worker()
+}
+
+pub(crate) fn create_processing_device(
+    expected_gpu: Option<u64>,
+) -> anyhow::Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    engine::create_render_device(expected_gpu)
+}
 
 pub use engine::RenderPhase;
 use engine::RenderSession;

@@ -1664,6 +1664,7 @@ pub struct TimelineState {
     mixer_knobs: HashMap<(u32, MixerParameter), Knob>,
     selection_frame: Instant,
     playing: bool,
+    playback_ready: bool,
     seek_revision: u64,
     playback_just_started: bool,
     tool: TimelineTool,
@@ -2182,6 +2183,7 @@ impl TimelineState {
             mixer_knobs: knobs,
             selection_frame: Instant::now(),
             playing: false,
+            playback_ready: true,
             seek_revision: 0,
             playback_just_started: false,
             tool: TimelineTool::Select,
@@ -2342,6 +2344,14 @@ impl TimelineState {
 
     pub const fn is_playing(&self) -> bool {
         self.playing
+    }
+
+    pub(crate) fn set_playback_ready(&mut self, ready: bool) {
+        if ready && !self.playback_ready {
+            self.playback_just_started = true;
+            self.selection_frame = Instant::now();
+        }
+        self.playback_ready = ready;
     }
 
     pub(crate) fn set_worker_transport(&mut self, playhead: f32, playing: bool) {
@@ -5019,7 +5029,7 @@ impl TimelineState {
             }
         }
 
-        if self.playing && !self.is_scrubbing() {
+        if self.playing && self.playback_ready && !self.is_scrubbing() {
             self.playhead += elapsed;
             if let Some(end) = self.end_time
                 && self.playhead >= end
@@ -8826,6 +8836,24 @@ mod effect_model_tests {
         timeline.tick(&LayoutSnapshot::default(), 30.0);
 
         assert_eq!(timeline.playhead, 5.0);
+    }
+
+    #[test]
+    fn playback_clock_stays_at_start_until_media_readiness_then_resumes() {
+        let mut timeline = TimelineState::default();
+        timeline.toggle_playback();
+        timeline.set_playback_ready(false);
+        timeline.selection_frame = Instant::now() - Duration::from_millis(40);
+        timeline.tick(&LayoutSnapshot::default(), 30.0);
+        assert_eq!(timeline.playhead(), 0.0);
+
+        timeline.set_playback_ready(true);
+        timeline.tick(&LayoutSnapshot::default(), 30.0);
+        assert_eq!(timeline.playhead(), 0.0);
+
+        timeline.selection_frame = Instant::now() - Duration::from_millis(30);
+        timeline.tick(&LayoutSnapshot::default(), 30.0);
+        assert!(timeline.playhead() >= 0.02);
     }
 
     #[test]

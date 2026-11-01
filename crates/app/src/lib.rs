@@ -64,6 +64,7 @@ mod file_io;
 mod gradient;
 mod history;
 mod i18n;
+mod media_worker;
 mod messages;
 mod meters;
 mod model3d;
@@ -146,7 +147,7 @@ use panels::{
     InspectorState, MediaAction, MediaDragItem, MediaPanelState, MediaStream, PipelineGraphAction,
     PipelineGraphState, ProjectOptionsState,
 };
-use playback::{FrameRenderer, PreviewOutput};
+use playback::PreviewOutput;
 use plugin::PluginRegistry;
 use preferences::{KeybindsDialog, SettingsDialog};
 use project::{CompositionId, MediaAsset, MediaId, MediaKind, Project};
@@ -1059,6 +1060,13 @@ impl ImeSyncState {
     }
 }
 
+struct PendingCapture {
+    id: u64,
+    composition: project::CompositionId,
+    action: MonitorAction,
+    result: Option<std::result::Result<media_worker::CapturedFrame, String>>,
+}
+
 struct EditorApp {
     window: Arc<Window>,
     renderer: Renderer,
@@ -1101,7 +1109,8 @@ struct EditorApp {
     history_panel: HistoryPanelState,
     audio: AudioPlayback,
     media: MediaPanelState,
-    export_renderer: FrameRenderer,
+    pending_capture: Option<PendingCapture>,
+    capture_sequence: u64,
     video: video_worker::VideoPlayback,
     monitor: MonitorState,
     inspector: InspectorState,
@@ -1157,8 +1166,11 @@ impl EditorApp {
         let monitor = MonitorState::default();
         let render_panel = RenderPanelState::new(&project, &timeline);
         let editor = EditorSession::new(project, timeline, project_path);
-        let export_renderer = FrameRenderer::new(&renderer, &effects, &plugins);
-        let video = video_worker::VideoPlayback::new(&plugin_paths, renderer.device_handle());
+        let video = video_worker::VideoPlayback::new(
+            &plugin_paths,
+            renderer.device_handle(),
+            renderer.queue_handle(),
+        );
         let mut editor_app = Self {
             window,
             renderer,
@@ -1202,7 +1214,8 @@ impl EditorApp {
             audio: AudioPlayback::new(&plugin_paths),
             video,
             media: MediaPanelState::default(),
-            export_renderer,
+            pending_capture: None,
+            capture_sequence: 0,
             monitor,
             inspector: InspectorState::default(),
             project_options: ProjectOptionsState::default(),
@@ -1569,6 +1582,14 @@ impl EditorApp {
         };
         let focused_panel = self.focused_panel();
         self.sync_panel_focus(focused_panel);
+        let render_edit_revision = self.editor.history.revision();
+        let render_editing = self.editor.history_gesture.is_some();
+        let video_ready =
+            self.video
+                .playback_ready(&self.editor.timeline, render_edit_revision, render_editing);
+        self.audio.set_video_ready(video_ready);
+        let playback_ready = self.audio.playback_ready(&self.editor.timeline) && video_ready;
+        self.editor.timeline.set_playback_ready(playback_ready);
         self.editor.timeline.tick(
             &self.snapshot,
             self.editor.project.active_settings().frame_rate as f32,
@@ -1585,7 +1606,11 @@ impl EditorApp {
                 .timeline
                 .set_worker_transport(self.editor.timeline.playhead(), false);
         }
-        if let Some(target) = self.audio.take_clock_target() {
+        let clock_target = self.audio.take_clock_target();
+        if video_ready
+            && self.audio.playback_ready(&self.editor.timeline)
+            && let Some(target) = clock_target
+        {
             self.editor
                 .timeline
                 .sync_forward_playhead(target, &self.snapshot);
@@ -1593,8 +1618,6 @@ impl EditorApp {
         self.editor
             .timeline
             .set_audio_levels(self.audio.track_levels());
-        let render_edit_revision = self.editor.history.revision();
-        let render_editing = self.editor.history_gesture.is_some();
         let render_interactive = render_editing
             || self.editor.timeline.is_playing()
             || self.editor.timeline.is_scrubbing();
@@ -1629,7 +1652,15 @@ impl EditorApp {
             captured_preview,
             render_editing,
         )?;
+        let video_ready =
+            self.video
+                .playback_ready(&self.editor.timeline, render_edit_revision, render_editing);
+        self.audio.set_video_ready(video_ready);
+        self.editor
+            .timeline
+            .set_playback_ready(self.audio.playback_ready(&self.editor.timeline) && video_ready);
         if video_failed {
+            self.audio.set_video_ready(false);
             self.editor
                 .timeline
                 .set_worker_transport(self.editor.timeline.playhead(), false);
@@ -1653,6 +1684,7 @@ impl EditorApp {
             dialog.sync_textures(&mut self.renderer)?;
         }
         self.waveform_textures.poll(&mut self.editor.project);
+        self.poll_monitor_capture();
         self.waveform_textures
             .sync(&mut self.renderer, &self.editor.project)?;
 
@@ -2040,7 +2072,6 @@ impl EditorApp {
             video_worker::VideoWorkerStatus::StartupFailed => {
                 format!("{video_name}: Startup failed")
             }
-            video_worker::VideoWorkerStatus::Unsupported => "Video: Unsupported".to_owned(),
         };
         let audio_status_width = (self
             .gui
@@ -2145,7 +2176,7 @@ impl EditorApp {
                     font_size: 10.0;
                     text_color: theme::popup_text();
                     text: video_label;
-                    tooltip: "Video preview runs in an isolated process when macOS Metal IOSurface sharing is available. Export rendering remains in the application process.";
+                    tooltip: "Video preview, export, and capture run in isolated processes. Preview prefers shared GPU textures, with shared-memory CPU transfer as a fallback.";
                 }
 
                 Block {
@@ -2170,6 +2201,8 @@ impl EditorApp {
                 )
                 .fill(theme::accent())
                 .text("Restart audio")
+                .text_align(ui::Align::Center)
+                .text_vertical_align(ui::Align::Center)
                 .text_color(theme::popup_text())
                 .font_size(10.0)
                 .on_click(move |_| clicked.store(true, std::sync::atomic::Ordering::Relaxed));
@@ -2183,6 +2216,8 @@ impl EditorApp {
                 )
                 .fill(theme::accent())
                 .text("Restart video")
+                .text_align(ui::Align::Center)
+                .text_vertical_align(ui::Align::Center)
                 .text_color(theme::popup_text())
                 .font_size(10.0)
                 .on_click(move |_| clicked.store(true, std::sync::atomic::Ordering::Relaxed));
@@ -2465,9 +2500,7 @@ impl EditorApp {
         self.waveform_textures.clear();
         self.waveform_textures.queue_missing(&self.editor.project);
         self.effects.rebuild(&self.editor.project.pipelines);
-        self.export_renderer.clear_caches();
-        self.export_renderer
-            .sync_compiled_effects(&self.renderer, &self.effects, &self.plugins);
+        self.pending_capture = None;
         self.video.invalidate();
         self.monitor.clear_captured_frame();
         self.sync_inactive_windows_after_project_reset();
@@ -4650,26 +4683,110 @@ impl EditorApp {
     }
 
     fn handle_monitor_action(&mut self, action: MonitorAction) {
-        let size = self.editor.project.active_settings().canvas_size;
+        if self.pending_capture.is_some() {
+            messages::error("Frame capture", "a frame capture is already in progress");
+            return;
+        }
         let playhead = self.editor.timeline.playhead();
-        let captured =
-            self.export_renderer
-                .render_export_rgba16_on(crate::playback::ExportRgba16Args {
-                    device: self.renderer.device(),
-                    queue: self.renderer.queue(),
-                    project: &self.editor.project,
-                    timeline: &self.editor.timeline,
-                    runtime: (&self.effects, &self.plugins),
-                    timeline_time: playhead,
-                });
-        let pixels = match captured {
-            Ok(pixels) => pixels,
+        let saved_path = match action {
+            MonitorAction::CaptureTemporaryFrame => Ok(None),
+            MonitorAction::CaptureFrame => (|| -> Result<Option<PathBuf>> {
+                let root = self
+                    .editor
+                    .project_path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map_or(std::env::current_dir()?, Path::to_path_buf);
+                let output_dir = root.join("Captures");
+                let fps = self.editor.project.active_settings().frame_rate.max(1.0);
+                let frame = (f64::from(playhead.max(0.0)) * fps).round() as u64;
+                let stem = sanitize_file_name(&self.editor.project.active_composition().name);
+                let base = format!("{stem}-frame-{frame:06}");
+                let mut path = output_dir.join(format!("{base}.png"));
+                let mut suffix = 2u32;
+                while path.exists() {
+                    path = output_dir.join(format!("{base}-{suffix}.png"));
+                    suffix = suffix.saturating_add(1);
+                }
+                Ok(Some(path))
+            })(),
+        };
+        let saved_path = match saved_path {
+            Ok(path) => path,
             Err(error) => {
-                messages::error("Frame capture", format!("capture failed: {error:#}"));
+                messages::error("Frame capture", format!("prepare capture: {error:#}"));
                 return;
             }
         };
-        match action {
+        self.capture_sequence = self.capture_sequence.wrapping_add(1);
+        let id = self.capture_sequence;
+        self.pending_capture = Some(PendingCapture {
+            id,
+            composition: self.editor.project.active_composition,
+            action,
+            result: None,
+        });
+        let project = self.editor.project.clone();
+        let timeline = self.editor.timeline.document();
+        let plugins = self.plugin_paths.clone();
+        let proxy = self.event_proxy.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("kama-frame-capture".into())
+            .spawn(move || {
+                let result =
+                    media_worker::capture(project, timeline, playhead, plugins, saved_path)
+                        .map_err(|error| format!("{error:#}"));
+                let _ = proxy.send_event(AppEvent::CaptureFinished { id, result });
+            })
+        {
+            self.pending_capture = None;
+            messages::error("Frame capture", format!("start capture job: {error}"));
+        }
+    }
+
+    fn finish_monitor_capture(
+        &mut self,
+        id: u64,
+        result: std::result::Result<media_worker::CapturedFrame, String>,
+    ) {
+        if !self
+            .pending_capture
+            .as_ref()
+            .is_some_and(|pending| pending.id == id)
+        {
+            return;
+        }
+        if self.editor.history_gesture.is_some() {
+            if let Some(pending) = self.pending_capture.as_mut() {
+                pending.result = Some(result);
+            }
+            self.request_redraw_all();
+            return;
+        }
+        let Some(pending) = self.pending_capture.take() else {
+            return;
+        };
+        self.request_redraw_all();
+        let captured = match result {
+            Ok(captured) => captured,
+            Err(error) => {
+                messages::error("Frame capture", format!("capture failed: {error}"));
+                return;
+            }
+        };
+        if pending.composition != self.editor.project.active_composition {
+            messages::error(
+                "Frame capture",
+                "capture finished after switching compositions; the monitor was left unchanged",
+            );
+            return;
+        }
+        let media_worker::CapturedFrame {
+            size,
+            pixels,
+            saved_path,
+        } = captured;
+        match pending.action {
             MonitorAction::CaptureTemporaryFrame => {
                 self.monitor.set_captured_frame(size, pixels);
             }
@@ -4679,43 +4796,7 @@ impl EditorApp {
                     &self.editor.timeline.document(),
                 );
                 let result = (|| -> Result<PathBuf> {
-                    let root = self
-                        .editor
-                        .project_path
-                        .as_ref()
-                        .and_then(|path| path.parent())
-                        .map_or(std::env::current_dir()?, Path::to_path_buf);
-                    let output_dir = root.join("Captures");
-                    std::fs::create_dir_all(&output_dir)?;
-                    let fps = self.editor.project.active_settings().frame_rate.max(1.0);
-                    #[expect(
-                        clippy::cast_sign_loss,
-                        reason = "playhead is clamped to zero and fps is positive"
-                    )]
-                    let frame = (f64::from(playhead.max(0.0)) * fps).round() as u64;
-                    let stem = sanitize_file_name(&self.editor.project.active_composition().name);
-                    let base = format!("{stem}-frame-{frame:06}");
-                    let mut path = output_dir.join(format!("{base}.png"));
-                    let mut suffix = 2u32;
-                    while path.exists() {
-                        path = output_dir.join(format!("{base}-{suffix}.png"));
-                        suffix = suffix.saturating_add(1);
-                    }
-                    let samples = pixels
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-                        .collect::<Vec<_>>();
-                    let image = image::ImageBuffer::<image::Rgba<u16>, Vec<u16>>::from_raw(
-                        size[0].max(1),
-                        size[1].max(1),
-                        samples,
-                    )
-                    .context("captured frame size did not match the composition")?;
-                    image::DynamicImage::ImageRgba16(image)
-                        .save(&path)
-                        .with_context(|| format!("save {}", path.display()))?;
+                    let path = saved_path.context("capture worker did not save the image")?;
                     self.import_path(&path)?;
                     Ok(path)
                 })();
@@ -4735,6 +4816,20 @@ impl EditorApp {
                     }
                 }
             }
+        }
+        self.request_redraw_all();
+    }
+
+    fn poll_monitor_capture(&mut self) {
+        if self.editor.history_gesture.is_some() {
+            return;
+        }
+        let completed = self
+            .pending_capture
+            .as_mut()
+            .and_then(|pending| pending.result.take().map(|result| (pending.id, result)));
+        if let Some((id, result)) = completed {
+            self.finish_monitor_capture(id, result);
         }
     }
 
@@ -5263,7 +5358,8 @@ impl EditorApp {
             self.editor
                 .timeline
                 .set_worker_transport(self.editor.timeline.playhead(), false);
-            self.video.restart(self.renderer.device_handle());
+            self.video
+                .restart(self.renderer.device_handle(), self.renderer.queue_handle());
         }
     }
 
@@ -6692,6 +6788,11 @@ impl ApplicationHandler<AppEvent> for App {
             let _ = editor_app.activate_window(window_id);
         }
         match event {
+            AppEvent::CaptureFinished { id, result } => {
+                if let Some(editor_app) = self.editor.as_mut() {
+                    editor_app.finish_monitor_capture(id, result);
+                }
+            }
             AppEvent::Interrupt => {
                 let Some(editor_app) = self.editor.as_mut() else {
                     event_loop.exit();
