@@ -215,8 +215,15 @@ impl RenderJob {
         self.chunks = chunks;
     }
 
-    fn restart(&mut self, settings: RenderSpec, project: &Project, timeline: &TimelineState) {
+    fn restart(
+        &mut self,
+        settings: RenderSpec,
+        project: &Project,
+        timeline: &TimelineState,
+        live_end_frame: &AtomicU64,
+    ) {
         self.stop();
+        live_end_frame.store(settings.end_frame, Ordering::Release);
         self.settings = settings;
         self.rebuild_chunks(project, timeline);
         self.error = None;
@@ -1475,7 +1482,9 @@ fn run_render_worker(
                 RenderWorkerCommand::Pause => job.pause(),
                 RenderWorkerCommand::Resume => job.resume(),
                 RenderWorkerCommand::Stop => job.stop(),
-                RenderWorkerCommand::Restart(settings) => job.restart(settings, project, timeline),
+                RenderWorkerCommand::Restart(settings) => {
+                    job.restart(settings, project, timeline, live_end_frame);
+                }
                 RenderWorkerCommand::SetBackground(background) => {
                     job.settings.background = background;
                 }
@@ -2029,22 +2038,31 @@ fn cleanup_render_artifacts_async(cache_dir: PathBuf, output: PathBuf, pid: u32)
         .spawn(move || cleanup_render_artifacts(&cache_dir, &output, pid));
 }
 
-pub(super) fn run_render_process_worker() -> Result<()> {
-    let input = std::io::stdin();
-    let mut stdin = std::io::BufReader::new(input.lock());
+fn read_render_process_input<R: std::io::BufRead + Send + 'static>(
+    mut input: R,
+) -> Result<(RenderProcessStart, Receiver<RenderWorkerCommand>)> {
     let mut start_line = Vec::new();
-    match read_bounded_line(&mut stdin, &mut start_line, 64 * 1024 * 1024)? {
+    match read_bounded_line(&mut input, &mut start_line, 64 * 1024 * 1024)? {
         Some(false) => {}
         Some(true) => anyhow::bail!("render worker startup line exceeded 64 MiB"),
         None => anyhow::bail!("render worker input closed before startup"),
     }
-    drop(stdin);
     let start = match serde_json::from_slice::<RenderProcessMessage>(&start_line)
         .context("decode render worker startup")?
     {
         RenderProcessMessage::Start(start) => *start,
         RenderProcessMessage::Command(_) => anyhow::bail!("render worker expected startup first"),
     };
+    let (command_tx, command_rx) = mpsc::sync_channel(32);
+    thread::Builder::new()
+        .name(format!("kama-render-command-read-{}", std::process::id()))
+        .spawn(move || render_process_command_reader(input, &command_tx))
+        .context("start render worker command reader")?;
+    Ok((start, command_rx))
+}
+
+pub(super) fn run_render_process_worker() -> Result<()> {
+    let (start, command_rx) = read_render_process_input(std::io::BufReader::new(std::io::stdin()))?;
     let startup = (|| -> Result<_> {
         let (instance, adapter, device, queue) = create_render_device(start.expected_gpu)?;
         let mut project = start.project;
@@ -2100,14 +2118,6 @@ pub(super) fn run_render_process_worker() -> Result<()> {
     write_render_process_response(&RenderProcessResponse::Ready {
         pid: std::process::id(),
     })?;
-    let (command_tx, command_rx) = mpsc::sync_channel(32);
-    thread::Builder::new()
-        .name(format!("kama-render-command-read-{}", std::process::id()))
-        .spawn(move || {
-            let stdin = std::io::stdin();
-            render_process_command_reader(stdin.lock(), &command_tx);
-        })
-        .context("start render worker command reader")?;
     let (status_tx, status_rx) = mpsc::sync_channel::<RenderWorkerStatus>(1);
     thread::Builder::new()
         .name(format!("kama-render-status-write-{}", std::process::id()))
@@ -3102,6 +3112,54 @@ mod tests {
     }
 
     #[test]
+    fn startup_handoff_preserves_buffered_commands_in_order() {
+        let fixture = Fixture::new();
+        let start = RenderProcessStart {
+            settings: fixture.job.settings.clone(),
+            edit_revision: 17,
+            editing: false,
+            interactive: false,
+            project: fixture.project.clone(),
+            worker_state: crate::project::WorkerProjectState::capture(&fixture.project),
+            timeline: fixture.timeline.document(),
+            plugin_paths: String::new(),
+            cache_dir: fixture.job.cache_dir.clone(),
+            cached_chunks: Vec::new(),
+            expected_gpu: None,
+        };
+        let mut input = Vec::new();
+        for message in [
+            RenderProcessMessage::Start(Box::new(start)),
+            RenderProcessMessage::Command(RenderWorkerCommand::Pause),
+            RenderProcessMessage::Command(RenderWorkerCommand::SetEndFrame(47)),
+            RenderProcessMessage::Command(RenderWorkerCommand::Resume),
+        ] {
+            serde_json::to_writer(&mut input, &message).unwrap();
+            input.push(b'\n');
+        }
+        let reader = std::io::BufReader::with_capacity(input.len(), std::io::Cursor::new(input));
+
+        let (_, commands) = read_render_process_input(reader).unwrap();
+
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(1)),
+            Ok(RenderWorkerCommand::Pause)
+        ));
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(1)),
+            Ok(RenderWorkerCommand::SetEndFrame(47))
+        ));
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(1)),
+            Ok(RenderWorkerCommand::Resume)
+        ));
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(1)),
+            Ok(RenderWorkerCommand::Cancel)
+        ));
+    }
+
+    #[test]
     fn bounded_line_reader_discards_oversized_tail_and_recovers_at_next_line() {
         let mut reader = std::io::Cursor::new(b"abcdef\nok\n");
         let mut line = Vec::new();
@@ -3437,7 +3495,9 @@ mod tests {
             let mut settings = self.job.settings.clone();
             settings.begin_frame = begin;
             settings.end_frame = end;
-            self.job.restart(settings, &self.project, &self.timeline);
+            let live_end_frame = AtomicU64::new(self.job.settings.end_frame);
+            self.job
+                .restart(settings, &self.project, &self.timeline, &live_end_frame);
         }
     }
 
@@ -3445,6 +3505,34 @@ mod tests {
         fn drop(&mut self) {
             self.job.stop();
             let _ = fs::remove_dir_all(&self.job.cache_dir);
+        }
+    }
+
+    #[test]
+    fn restarting_render_keeps_requested_range_after_live_end_update() {
+        for end_frame in [7, 39] {
+            let mut fixture = Fixture::new();
+            fixture.job.phase = RenderPhase::Done;
+            let live_end_frame = AtomicU64::new(23);
+            let mut settings = fixture.job.settings.clone();
+            settings.begin_frame = 3;
+            settings.end_frame = end_frame;
+
+            fixture.job.restart(
+                settings,
+                &fixture.project,
+                &fixture.timeline,
+                &live_end_frame,
+            );
+            fixture.job.update_live_end(
+                live_end_frame.load(Ordering::Acquire),
+                &fixture.project,
+                &fixture.timeline,
+            );
+
+            assert_eq!(fixture.job.settings.end_frame, end_frame);
+            assert_eq!(fixture.job.chunks.first().unwrap().start, 3);
+            assert_eq!(fixture.job.chunks.last().unwrap().end, end_frame);
         }
     }
 
@@ -3644,9 +3732,13 @@ mod tests {
         settings.transcode = true;
         settings.output = fixture.job.cache_dir.join("different-output.mkv");
 
-        fixture
-            .job
-            .restart(settings, &fixture.project, &fixture.timeline);
+        let live_end_frame = AtomicU64::new(23);
+        fixture.job.restart(
+            settings,
+            &fixture.project,
+            &fixture.timeline,
+            &live_end_frame,
+        );
 
         assert_eq!(fixture.job.next_chunk(), None);
     }
