@@ -133,6 +133,8 @@
                   pkgs.vulkan-loader
                   pkgs.wayland
                   pkgs.ffmpeg-full
+                  pkgs.zlib
+                  pkgs.stdenv.cc.cc.lib
                 ]
               );
             };

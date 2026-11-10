@@ -620,7 +620,7 @@ pub fn metal_registry_id(device: &wgpu::Device) -> Result<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub struct SharedSurface;
+pub enum SharedSurface {}
 
 #[cfg(not(target_os = "macos"))]
 impl SharedSurface {
@@ -632,6 +632,14 @@ impl SharedSurface {
     ) -> Result<Self> {
         anyhow::bail!("cross-process IOSurface sharing is only supported on macOS Metal")
     }
+
+    pub const fn descriptor(&self) -> &SharedSurfaceDescriptor {
+        match *self {}
+    }
+
+    pub const fn texture(&self) -> &wgpu::Texture {
+        match *self {}
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -640,7 +648,7 @@ pub fn metal_registry_id(_device: &wgpu::Device) -> Result<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub struct ImportedSurface;
+pub enum ImportedSurface {}
 
 #[cfg(not(target_os = "macos"))]
 impl ImportedSurface {
@@ -651,5 +659,9 @@ impl ImportedSurface {
         _timeout: Duration,
     ) -> Result<Self> {
         anyhow::bail!("cross-process IOSurface sharing is only supported on macOS Metal")
+    }
+
+    pub fn into_texture(self) -> wgpu::Texture {
+        match self {}
     }
 }
