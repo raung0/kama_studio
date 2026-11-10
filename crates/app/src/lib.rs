@@ -2231,7 +2231,7 @@ impl EditorApp {
             self.app_menu_keyboard,
             cursor,
             &self.command_registry,
-            icons,
+            &icons,
         );
 
         let drag_overlay = match drag.as_ref() {
@@ -2725,23 +2725,20 @@ impl EditorApp {
         self.open_modal(Modal::LayoutSave(LayoutSaveDialog::new()));
     }
 
+    #[cfg(target_os = "macos")]
     fn refresh_layout_menu(&mut self) {
-        #[cfg(target_os = "macos")]
         if let Err(error) = self.native_menu.refresh_layouts() {
             crate::messages::warning("Refresh native menu", format!("{error:#}"));
         }
     }
 
-    fn save_layout_named(&mut self, name: &str) {
+    fn save_layout_named(&self, name: &str) -> bool {
         let name = sanitize_file_name(name.trim().trim_end_matches(".kama-layout"));
         if name.is_empty() {
-            return;
+            return false;
         }
         let path = layout_data_dir().join(format!("{name}.kama-layout"));
-        if atomic_write_json(&path, &self.dock.layout_spec()).is_err() {
-            return;
-        }
-        self.refresh_layout_menu();
+        atomic_write_json(&path, &self.dock.layout_spec()).is_ok()
     }
 
     fn load_layout(&mut self, path: &Path) {
@@ -2754,28 +2751,34 @@ impl EditorApp {
         }
     }
 
-    fn delete_layout(&mut self, path: &Path) {
-        if std::fs::remove_file(path).is_err() {
-            return;
-        }
-        self.refresh_layout_menu();
-    }
-
     fn handle_layout_command(&mut self, command: LayoutCommand) {
         self.command_queue.push(EditorCommand::Layout(command));
     }
 
     fn execute_layout_command(&mut self, command: LayoutCommand) {
-        match command {
-            LayoutCommand::Save => self.open_layout_save_dialog(),
+        let layout_changed = match command {
+            LayoutCommand::Save => {
+                self.open_layout_save_dialog();
+                false
+            }
             LayoutCommand::SaveNamed(name) => self.save_layout_named(&name),
-            LayoutCommand::Load(path) => self.load_layout(&path),
-            LayoutCommand::Delete(path) => self.delete_layout(&path),
+            LayoutCommand::Load(path) => {
+                self.load_layout(&path);
+                false
+            }
+            LayoutCommand::Delete(path) => std::fs::remove_file(path).is_ok(),
             LayoutCommand::RestoreDefault => {
                 self.drag = None;
                 self.dock = default_dock();
+                false
             }
+        };
+        #[cfg(target_os = "macos")]
+        if layout_changed {
+            self.refresh_layout_menu();
         }
+        #[cfg(not(target_os = "macos"))]
+        let _ = layout_changed;
     }
 
     fn handle_modal_pointer(&mut self) -> bool {

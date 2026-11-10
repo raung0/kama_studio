@@ -3,10 +3,10 @@ use kama_ui::taffy::{
 };
 use kama_ui::{Layer, Rect, ScrollState, measure_layout};
 
-fn px(value: f32) -> Dimension {
+const fn px(value: f32) -> Dimension {
     Dimension::length(value)
 }
-fn pct(value: f32) -> Dimension {
+const fn pct(value: f32) -> Dimension {
     Dimension::percent(value)
 }
 

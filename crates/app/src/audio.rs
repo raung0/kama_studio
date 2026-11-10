@@ -1210,10 +1210,7 @@ impl AudioWorkerProcess {
 
 fn audio_worker_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<(f32, u64)>>>) {
     #[cfg(unix)]
-    loop {
-        let Some(output) = output.upgrade() else {
-            break;
-        };
+    while let Some(output) = output.upgrade() {
         let result = std::process::Command::new("ps")
             .env("LC_ALL", "C")
             .args(["-o", "%cpu=", "-o", "rss=", "-p", &pid.to_string()])

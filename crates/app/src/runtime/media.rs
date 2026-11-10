@@ -134,37 +134,30 @@ struct HardwareScaleState {
     disabled: bool,
 }
 
+#[cfg(target_os = "macos")]
 impl HardwareScaleState {
     fn scale_for_upload(&mut self, decoded: &Video, width: u32, height: u32) -> Option<Video> {
-        #[cfg(target_os = "macos")]
+        if self.disabled
+            || width == 0
+            || height == 0
+            || (width >= decoded.width() && height >= decoded.height())
+            || !is_hardware_frame(decoded)
         {
-            if self.disabled
-                || width == 0
-                || height == 0
-                || (width >= decoded.width() && height >= decoded.height())
-                || !is_hardware_frame(decoded)
-            {
-                return None;
-            }
-            if self.videotoolbox.is_none() {
-                if let Ok(session) = VideoToolboxScaleSession::new() {
-                    self.videotoolbox = Some(session);
-                } else {
-                    self.disabled = true;
-                    return None;
-                }
-            }
-            let session = self.videotoolbox.as_mut()?;
-            if let Ok(frame) = session.scale(decoded, width, height) {
-                Some(frame)
+            return None;
+        }
+        if self.videotoolbox.is_none() {
+            if let Ok(session) = VideoToolboxScaleSession::new() {
+                self.videotoolbox = Some(session);
             } else {
                 self.disabled = true;
-                None
+                return None;
             }
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (decoded, width, height);
+        let session = self.videotoolbox.as_mut()?;
+        if let Ok(frame) = session.scale(decoded, width, height) {
+            Some(frame)
+        } else {
+            self.disabled = true;
             None
         }
     }
@@ -912,9 +905,15 @@ impl DecoderState {
         let mut mapped = Video::empty();
         let mut transferred = Video::empty();
         let hardware = is_hardware_frame(decoded);
+        #[cfg(target_os = "macos")]
         let scaled_hardware = if hardware && prefer_native {
             hardware_scaler.scale_for_upload(decoded, fit_width, fit_height)
         } else {
+            None
+        };
+        #[cfg(not(target_os = "macos"))]
+        let scaled_hardware: Option<Video> = {
+            let _ = hardware_scaler;
             None
         };
         let hardware_source = scaled_hardware.as_ref().unwrap_or(decoded);

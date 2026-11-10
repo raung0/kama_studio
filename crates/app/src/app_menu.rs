@@ -118,7 +118,7 @@ const ABOUT_MENU_KEY: &str = "menu-about";
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum AppMenuState {
+pub enum AppMenuState {
     #[default]
     Closed,
     File {
@@ -134,7 +134,7 @@ pub(super) enum AppMenuState {
 
 #[cfg(not(target_os = "macos"))]
 impl AppMenuState {
-    fn section(self) -> Option<AppMenuSection> {
+    const fn section(self) -> Option<AppMenuSection> {
         match self {
             Self::File { .. } => Some(AppMenuSection::File),
             Self::Edit => Some(AppMenuSection::Edit),
@@ -145,7 +145,7 @@ impl AppMenuState {
         }
     }
 
-    fn from_section(section: AppMenuSection) -> Self {
+    const fn from_section(section: AppMenuSection) -> Self {
         match section {
             AppMenuSection::File => Self::File { recent: false },
             AppMenuSection::Edit => Self::Edit,
@@ -174,14 +174,14 @@ impl AppMenuState {
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct AppMenuKeyboardState {
+pub struct AppMenuKeyboardState {
     pub(super) active: bool,
     pub(super) item: usize,
     pub(super) submenu_item: usize,
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn app_menu_top_index(state: AppMenuState) -> usize {
+pub fn app_menu_top_index(state: AppMenuState) -> usize {
     let Some(section) = state.section() else {
         return 0;
     };
@@ -192,12 +192,33 @@ pub(super) fn app_menu_top_index(state: AppMenuState) -> usize {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn app_menu_state_at(index: usize) -> AppMenuState {
-    AppMenuState::from_section(APP_MENU_SECTIONS[index % APP_MENU_SECTIONS.len()])
+pub fn app_menu_state_at(index: usize) -> AppMenuState {
+    APP_MENU_SECTIONS
+        .get(index.checked_rem(APP_MENU_SECTIONS.len()).unwrap_or(0))
+        .copied()
+        .map_or(AppMenuState::Closed, AppMenuState::from_section)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn app_menu_button_rects() -> [Rect; APP_MENU_SECTIONS.len()] {
+const fn next_menu_index(index: usize, count: usize) -> usize {
+    match index.checked_rem(count) {
+        Some(current) if current == count.saturating_sub(1) => 0,
+        Some(current) => current.saturating_add(1),
+        None => 0,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn previous_menu_index(index: usize, count: usize) -> usize {
+    match index.checked_rem(count) {
+        Some(0) => count.saturating_sub(1),
+        Some(current) => current.saturating_sub(1),
+        None => 0,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn app_menu_button_rects() -> [Rect; APP_MENU_SECTIONS.len()] {
     let widths = APP_MENU_SECTIONS.map(AppMenuSection::button_width);
     let viewport = Rect::new(0.0, 0.0, widths.iter().sum::<f32>() + 6.0, APP_MENU_HEIGHT);
     let (ids, measured) = ui::measure_layout(viewport, |ctx| {
@@ -214,8 +235,8 @@ pub(super) fn app_menu_button_rects() -> [Rect; APP_MENU_SECTIONS.len()] {
                     .width(Size::Pixels(2.0))
                     .height(Size::Fill)
                     .build();
-                for (index, width) in widths.into_iter().enumerate() {
-                    ids[index] = ctx
+                for (id, width) in ids.iter_mut().zip(widths) {
+                    *id = ctx
                         .new()
                         .width(Size::Pixels(width))
                         .height(Size::Fill)
@@ -225,7 +246,7 @@ pub(super) fn app_menu_button_rects() -> [Rect; APP_MENU_SECTIONS.len()] {
             .build();
         ids
     });
-    ids.map(|id| measured.rect(id).expect("application menu button layout"))
+    ids.map(|id| measured.rect(id).unwrap_or_default())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -242,31 +263,34 @@ fn measured_menu_popup(x: f32, y: f32, width: f32, item_count: usize) -> (Rect, 
 
 #[cfg(not(target_os = "macos"))]
 fn menu_button_rect(index: usize) -> Rect {
-    app_menu_button_rects()[index]
+    app_menu_button_rects()
+        .get(index)
+        .copied()
+        .unwrap_or_default()
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn file_menu_button_rect() -> Rect {
+pub fn file_menu_button_rect() -> Rect {
     menu_button_rect(0)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn edit_menu_button_rect() -> Rect {
+pub fn edit_menu_button_rect() -> Rect {
     menu_button_rect(1)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn view_menu_button_rect() -> Rect {
+pub fn view_menu_button_rect() -> Rect {
     menu_button_rect(2)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn saved_layout_menu_button_rect() -> Rect {
+pub fn saved_layout_menu_button_rect() -> Rect {
     menu_button_rect(3)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn help_menu_button_rect() -> Rect {
+pub fn help_menu_button_rect() -> Rect {
     menu_button_rect(4)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn file_menu_popup_rect(has_latest: bool) -> Rect {
+pub fn file_menu_popup_rect(has_latest: bool) -> Rect {
     let anchor = file_menu_button_rect();
     measured_menu_popup(
         anchor.x,
@@ -277,73 +301,83 @@ pub(super) fn file_menu_popup_rect(has_latest: bool) -> Rect {
     .0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn recent_menu_popup_rect(recent_count: usize) -> Rect {
+pub fn recent_menu_popup_rect(recent_count: usize) -> Rect {
     let parent = file_menu_popup_rect(recent_count > 0);
     let anchor = menu_item_rect(parent, 4);
     measured_menu_popup(parent.right() - 2.0, anchor.y, 280.0, recent_count).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn edit_menu_popup_rect() -> Rect {
+pub fn edit_menu_popup_rect() -> Rect {
     let anchor = edit_menu_button_rect();
     measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 224.0, EDIT_MENU_COMMANDS.len()).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn view_menu_popup_rect() -> Rect {
+pub fn view_menu_popup_rect() -> Rect {
     let anchor = view_menu_button_rect();
     measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 224.0, 1).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
+pub fn saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
     let anchor = saved_layout_menu_button_rect();
-    measured_menu_popup(anchor.x, APP_MENU_HEIGHT, 206.0, layout_count + 3).0
+    measured_menu_popup(
+        anchor.x,
+        APP_MENU_HEIGHT,
+        206.0,
+        layout_count.saturating_add(3),
+    )
+    .0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn delete_saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
+pub fn delete_saved_layout_menu_popup_rect(layout_count: usize) -> Rect {
     let parent = saved_layout_menu_popup_rect(layout_count);
-    let anchor = menu_item_rect(parent, layout_count + 2);
+    let anchor = menu_item_rect(parent, layout_count.saturating_add(2));
     measured_menu_popup(parent.right() - 2.0, anchor.y, 190.0, layout_count).0
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn help_menu_popup_rect() -> Rect {
+pub fn help_menu_popup_rect() -> Rect {
     let anchor = help_menu_button_rect();
     measured_menu_popup(
         anchor.x,
         APP_MENU_HEIGHT,
         260.0,
-        HELP_MENU_COMMANDS.len() + 1,
+        HELP_MENU_COMMANDS.len().saturating_add(1),
     )
     .0
 }
 #[cfg(not(target_os = "macos"))]
 fn menu_item_rect(popup: Rect, index: usize) -> Rect {
-    measured_menu_popup(popup.x, popup.y, popup.width, index + 1).1[index]
+    measured_menu_popup(popup.x, popup.y, popup.width, index.saturating_add(1))
+        .1
+        .get(index)
+        .copied()
+        .unwrap_or_default()
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn recent_menu_item_rect(index: usize, recent_count: usize) -> Rect {
+pub fn recent_menu_item_rect(index: usize, recent_count: usize) -> Rect {
     menu_item_rect(recent_menu_popup_rect(recent_count), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn edit_menu_item_rect(index: usize) -> Rect {
+pub fn edit_menu_item_rect(index: usize) -> Rect {
     menu_item_rect(edit_menu_popup_rect(), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn view_menu_item_rect() -> Rect {
+pub fn view_menu_item_rect() -> Rect {
     menu_item_rect(view_menu_popup_rect(), 0)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn help_menu_item_rect(index: usize) -> Rect {
+pub fn help_menu_item_rect(index: usize) -> Rect {
     menu_item_rect(help_menu_popup_rect(), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn file_menu_item_rect(index: usize, has_latest: bool) -> Rect {
+pub fn file_menu_item_rect(index: usize, has_latest: bool) -> Rect {
     menu_item_rect(file_menu_popup_rect(has_latest), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
+pub fn saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
     menu_item_rect(saved_layout_menu_popup_rect(layout_count), index)
 }
 #[cfg(not(target_os = "macos"))]
-pub(super) fn delete_saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
+pub fn delete_saved_layout_menu_item_rect(index: usize, layout_count: usize) -> Rect {
     menu_item_rect(delete_saved_layout_menu_popup_rect(layout_count), index)
 }
 
@@ -364,7 +398,7 @@ pub const EDIT_MENU_COMMANDS: &[&str] = &[
 ];
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn file_menu_commands(projects: &[PathBuf]) -> Vec<Option<FileCommand>> {
+pub fn file_menu_commands(projects: &[PathBuf]) -> Vec<Option<FileCommand>> {
     let mut commands = vec![
         Some(FileCommand::NewProject),
         Some(FileCommand::Save),
@@ -380,7 +414,7 @@ pub(super) fn file_menu_commands(projects: &[PathBuf]) -> Vec<Option<FileCommand
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn build_button<K: Hash>(
+pub fn build_button<K: Hash>(
     ctx: &mut ui::BuildCtx,
     key: K,
     rect: Rect,
@@ -404,7 +438,7 @@ pub(super) fn build_button<K: Hash>(
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn build_popup<K: Hash>(ctx: &mut ui::BuildCtx, key: K, rect: Rect) {
+pub fn build_popup<K: Hash>(ctx: &mut ui::BuildCtx, key: K, rect: Rect) {
     ui::ui!(ctx, {
         Rect(key, rect) {
             overlay; backdrop_blur: 22.0; backdrop_tint: theme::popup_tint();
@@ -415,7 +449,7 @@ pub(super) fn build_popup<K: Hash>(ctx: &mut ui::BuildCtx, key: K, rect: Rect) {
 
 #[cfg(not(target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_item<K: Hash>(
+pub fn build_item<K: Hash>(
     ctx: &mut ui::BuildCtx,
     key: K,
     rect: Rect,
@@ -427,7 +461,7 @@ pub(super) fn build_item<K: Hash>(
     enabled: bool,
     font_size: f32,
     tooltip: Option<String>,
-    icons: Icons,
+    icons: &Icons,
 ) {
     let highlighted = enabled && (rect.contains(cursor) || keyboard_selected);
     let foreground = if highlighted {
@@ -463,26 +497,20 @@ pub(super) fn build_item<K: Hash>(
             }
         });
     if let Some(tooltip) = tooltip {
-        item.tooltip(tooltip).build();
+        let _ = item.tooltip(tooltip).build();
     } else {
-        item.build();
+        let _ = item.build();
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn command_meta(
-    registry: &CommandRegistry,
-    id: &str,
-) -> (Option<AppIcon>, Option<String>) {
-    registry
-        .definition(id)
-        .map(|definition| {
-            (
-                definition.icon,
-                definition.shortcut.map(|shortcut| shortcut.to_string()),
-            )
-        })
-        .unwrap_or((None, None))
+pub fn command_meta(registry: &CommandRegistry, id: &str) -> (Option<AppIcon>, Option<String>) {
+    registry.definition(id).map_or((None, None), |definition| {
+        (
+            definition.icon,
+            definition.shortcut.map(|shortcut| shortcut.to_string()),
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -855,8 +883,8 @@ impl EditorApp {
             AppMenuState::File { .. } => file_menu_commands(&recent_projects()).len(),
             AppMenuState::Edit => EDIT_MENU_COMMANDS.len(),
             AppMenuState::View => 1,
-            AppMenuState::Help => HELP_MENU_COMMANDS.len() + 1,
-            AppMenuState::Layout { .. } => saved_layouts().len() + 3,
+            AppMenuState::Help => HELP_MENU_COMMANDS.len().saturating_add(1),
+            AppMenuState::Layout { .. } => saved_layouts().len().saturating_add(3),
             AppMenuState::Closed => 0,
         }
     }
@@ -923,15 +951,17 @@ impl EditorApp {
                     self.app_menu_keyboard.active = false;
                     self.handle_layout_command(LayoutCommand::Save);
                 } else if selected <= count {
-                    let path = layouts[selected - 1].path.clone();
-                    self.app_menu = AppMenuState::Closed;
-                    self.app_menu_keyboard.active = false;
-                    self.handle_layout_command(LayoutCommand::Load(path));
-                } else if selected == count + 1 {
+                    if let Some(layout) = layouts.get(selected.saturating_sub(1)) {
+                        let path = layout.path.clone();
+                        self.app_menu = AppMenuState::Closed;
+                        self.app_menu_keyboard.active = false;
+                        self.handle_layout_command(LayoutCommand::Load(path));
+                    }
+                } else if selected == count.saturating_add(1) {
                     self.app_menu = AppMenuState::Closed;
                     self.app_menu_keyboard.active = false;
                     self.handle_layout_command(LayoutCommand::RestoreDefault);
-                } else if selected == count + 2 && count > 0 {
+                } else if selected == count.saturating_add(2) && count > 0 {
                     self.app_menu = AppMenuState::Layout { delete: true };
                     self.app_menu_keyboard.submenu_item = 0;
                 }
@@ -975,7 +1005,7 @@ impl EditorApp {
 
         self.app_menu_keyboard.active = true;
         match event.logical_key {
-            Key::Named(NamedKey::Escape | NamedKey::Alt) => {
+            Key::Named(NamedKey::Escape | NamedKey::Alt | NamedKey::F10) => {
                 self.app_menu = AppMenuState::Closed;
                 self.app_menu_keyboard.active = false;
             }
@@ -986,7 +1016,7 @@ impl EditorApp {
                     }
                     AppMenuState::Layout { delete: false } => {
                         let count = saved_layouts().len();
-                        self.app_menu_keyboard.item == count + 2 && count > 0
+                        self.app_menu_keyboard.item == count.saturating_add(2) && count > 0
                     }
                     _ => false,
                 };
@@ -1000,13 +1030,13 @@ impl EditorApp {
                         }
                         _ => {}
                     }
-                    self.app_menu_keyboard.submenu_item = 0;
                 } else {
-                    let next = (app_menu_top_index(self.app_menu) + 1) % APP_MENU_SECTIONS.len();
+                    let next =
+                        next_menu_index(app_menu_top_index(self.app_menu), APP_MENU_SECTIONS.len());
                     self.app_menu = app_menu_state_at(next);
                     self.app_menu_keyboard.item = 0;
-                    self.app_menu_keyboard.submenu_item = 0;
                 }
+                self.app_menu_keyboard.submenu_item = 0;
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if matches!(self.app_menu, AppMenuState::File { recent: true }) {
@@ -1015,9 +1045,8 @@ impl EditorApp {
                     self.app_menu = AppMenuState::Layout { delete: false };
                 } else {
                     let current = app_menu_top_index(self.app_menu);
-                    self.app_menu = app_menu_state_at(
-                        (current + APP_MENU_SECTIONS.len() - 1) % APP_MENU_SECTIONS.len(),
-                    );
+                    self.app_menu =
+                        app_menu_state_at(previous_menu_index(current, APP_MENU_SECTIONS.len()));
                     self.app_menu_keyboard.item = 0;
                 }
                 self.app_menu_keyboard.submenu_item = 0;
@@ -1030,11 +1059,12 @@ impl EditorApp {
                 };
                 if submenu_count > 0 {
                     self.app_menu_keyboard.submenu_item =
-                        (self.app_menu_keyboard.submenu_item + 1) % submenu_count;
+                        next_menu_index(self.app_menu_keyboard.submenu_item, submenu_count);
                 } else {
                     let count = self.app_menu_parent_item_count();
                     if count > 0 {
-                        self.app_menu_keyboard.item = (self.app_menu_keyboard.item + 1) % count;
+                        self.app_menu_keyboard.item =
+                            next_menu_index(self.app_menu_keyboard.item, count);
                     }
                 }
             }
@@ -1046,20 +1076,16 @@ impl EditorApp {
                 };
                 if submenu_count > 0 {
                     self.app_menu_keyboard.submenu_item =
-                        (self.app_menu_keyboard.submenu_item + submenu_count - 1) % submenu_count;
+                        previous_menu_index(self.app_menu_keyboard.submenu_item, submenu_count);
                 } else {
                     let count = self.app_menu_parent_item_count();
                     if count > 0 {
                         self.app_menu_keyboard.item =
-                            (self.app_menu_keyboard.item + count - 1) % count;
+                            previous_menu_index(self.app_menu_keyboard.item, count);
                     }
                 }
             }
             Key::Named(NamedKey::Enter) => self.activate_app_menu_keyboard_item(),
-            Key::Named(NamedKey::F10) => {
-                self.app_menu = AppMenuState::Closed;
-                self.app_menu_keyboard.active = false;
-            }
             _ => {}
         }
         true
@@ -1087,14 +1113,14 @@ impl EditorApp {
         match self.app_menu {
             AppMenuState::File { recent } => {
                 let projects = recent_projects();
-                if recent {
-                    if let Some(index) = (0..projects.len()).find(|index| {
+                if recent
+                    && let Some(index) = (0..projects.len()).find(|index| {
                         recent_menu_item_rect(*index, projects.len()).contains(self.cursor)
-                    }) {
-                        self.app_menu_keyboard.submenu_item = index;
-                        self.app_menu_keyboard.active = false;
-                        return true;
-                    }
+                    })
+                {
+                    self.app_menu_keyboard.submenu_item = index;
+                    self.app_menu_keyboard.active = false;
+                    return true;
                 }
                 if let Some(index) = (0..file_menu_commands(&projects).len()).find(|index| {
                     file_menu_item_rect(*index, !projects.is_empty()).contains(self.cursor)
@@ -1109,22 +1135,22 @@ impl EditorApp {
             }
             AppMenuState::Layout { delete } => {
                 let count = saved_layouts().len();
-                if delete {
-                    if let Some(index) = (0..count).find(|index| {
+                if delete
+                    && let Some(index) = (0..count).find(|index| {
                         delete_saved_layout_menu_item_rect(*index, count).contains(self.cursor)
-                    }) {
-                        self.app_menu_keyboard.submenu_item = index;
-                        self.app_menu_keyboard.active = false;
-                        return true;
-                    }
+                    })
+                {
+                    self.app_menu_keyboard.submenu_item = index;
+                    self.app_menu_keyboard.active = false;
+                    return true;
                 }
-                if let Some(index) = (0..count + 3)
+                if let Some(index) = (0..count.saturating_add(3))
                     .find(|index| saved_layout_menu_item_rect(*index, count).contains(self.cursor))
                 {
                     self.app_menu_keyboard.item = index;
                     self.app_menu_keyboard.active = false;
                     self.app_menu = AppMenuState::Layout {
-                        delete: index == count + 2 && count > 0,
+                        delete: index == count.saturating_add(2) && count > 0,
                     };
                     return true;
                 }
@@ -1146,7 +1172,7 @@ impl EditorApp {
                 }
             }
             AppMenuState::Help => {
-                if let Some(index) = (0..HELP_MENU_COMMANDS.len() + 1)
+                if let Some(index) = (0..=HELP_MENU_COMMANDS.len())
                     .find(|index| help_menu_item_rect(*index).contains(self.cursor))
                 {
                     self.app_menu_keyboard.item = index;
@@ -1180,16 +1206,16 @@ impl EditorApp {
         match self.app_menu {
             AppMenuState::File { recent } => {
                 let projects = recent_projects();
-                if recent {
-                    if let Some(path) = projects.iter().enumerate().find_map(|(index, path)| {
+                if recent
+                    && let Some(path) = projects.iter().enumerate().find_map(|(index, path)| {
                         recent_menu_item_rect(index, projects.len())
                             .contains(self.cursor)
                             .then(|| path.clone())
-                    }) {
-                        self.app_menu = AppMenuState::Closed;
-                        self.handle_file_command(FileCommand::LoadRecent(path));
-                        return true;
-                    }
+                    })
+                {
+                    self.app_menu = AppMenuState::Closed;
+                    self.handle_file_command(FileCommand::LoadRecent(path));
+                    return true;
                 }
                 let commands = file_menu_commands(&projects);
                 if let Some((_index, command)) =
@@ -1244,16 +1270,16 @@ impl EditorApp {
             AppMenuState::Layout { delete } => {
                 let layouts = saved_layouts();
                 let count = layouts.len();
-                if delete {
-                    if let Some(layout) = layouts.iter().enumerate().find_map(|(index, layout)| {
+                if delete
+                    && let Some(layout) = layouts.iter().enumerate().find_map(|(index, layout)| {
                         delete_saved_layout_menu_item_rect(index, count)
                             .contains(self.cursor)
                             .then(|| layout.clone())
-                    }) {
-                        self.app_menu = AppMenuState::Closed;
-                        self.handle_layout_command(LayoutCommand::Delete(layout.path));
-                        return true;
-                    }
+                    })
+                {
+                    self.app_menu = AppMenuState::Closed;
+                    self.handle_layout_command(LayoutCommand::Delete(layout.path));
+                    return true;
                 }
                 if saved_layout_menu_item_rect(0, count).contains(self.cursor) {
                     self.app_menu = AppMenuState::Closed;
@@ -1261,7 +1287,7 @@ impl EditorApp {
                     return true;
                 }
                 if let Some(layout) = layouts.iter().enumerate().find_map(|(index, layout)| {
-                    saved_layout_menu_item_rect(index + 1, count)
+                    saved_layout_menu_item_rect(index.saturating_add(1), count)
                         .contains(self.cursor)
                         .then(|| layout.clone())
                 }) {
@@ -1269,12 +1295,15 @@ impl EditorApp {
                     self.handle_layout_command(LayoutCommand::Load(layout.path));
                     return true;
                 }
-                if saved_layout_menu_item_rect(count + 1, count).contains(self.cursor) {
+                if saved_layout_menu_item_rect(count.saturating_add(1), count).contains(self.cursor)
+                {
                     self.app_menu = AppMenuState::Closed;
                     self.handle_layout_command(LayoutCommand::RestoreDefault);
                     return true;
                 }
-                if count > 0 && saved_layout_menu_item_rect(count + 2, count).contains(self.cursor)
+                if count > 0
+                    && saved_layout_menu_item_rect(count.saturating_add(2), count)
+                        .contains(self.cursor)
                 {
                     self.app_menu = AppMenuState::Layout { delete: !delete };
                     return true;
@@ -1287,7 +1316,7 @@ impl EditorApp {
                 self.app_menu = AppMenuState::Closed;
             }
             AppMenuState::Help => {
-                if let Some(index) = (0..HELP_MENU_COMMANDS.len() + 1)
+                if let Some(index) = (0..=HELP_MENU_COMMANDS.len())
                     .find(|index| help_menu_item_rect(*index).contains(self.cursor))
                 {
                     self.app_menu = AppMenuState::Closed;
@@ -1313,14 +1342,14 @@ impl EditorApp {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(super) fn build_app_menu(
+pub fn build_app_menu(
     ctx: &mut ui::BuildCtx,
     width: f32,
     state: AppMenuState,
     keyboard: AppMenuKeyboardState,
     cursor: [f32; 2],
     registry: &CommandRegistry,
-    icons: Icons,
+    icons: &Icons,
 ) {
     let file_open = state.is_file();
     let edit_open = state.is_edit();
@@ -1403,7 +1432,12 @@ pub(super) fn build_app_menu(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("Project");
-            items.push((format!("Open {name}"), None, true, Some(AppIcon::Open)));
+            items.push((
+                i18n::text_with_name("menu-open-project-name", name),
+                None,
+                true,
+                Some(AppIcon::Open),
+            ));
         }
         items.extend([
             (
@@ -1422,9 +1456,8 @@ pub(super) fn build_app_menu(
 
         for (index, (label, command, enabled, fallback_icon)) in items.into_iter().enumerate() {
             let item = file_menu_item_rect(index, !recent.is_empty());
-            let (icon, shortcut) = command
-                .map(|id| command_meta(registry, id))
-                .unwrap_or((fallback_icon, None));
+            let (icon, shortcut) =
+                command.map_or((fallback_icon, None), |id| command_meta(registry, id));
             build_item(
                 ctx,
                 ("app-file-menu-item", index),
@@ -1475,8 +1508,7 @@ pub(super) fn build_app_menu(
             let (icon, shortcut) = command_meta(registry, command);
             let label = registry
                 .definition(command)
-                .map(|definition| definition.label.as_str())
-                .unwrap_or(command);
+                .map_or(*command, |definition| definition.label.as_str());
             build_item(
                 ctx,
                 ("app-edit-menu-item", index),
@@ -1531,8 +1563,7 @@ pub(super) fn build_app_menu(
                 i18n::text(DELETE_LAYOUT_KEY)
             } else {
                 format!("{}  ▸", i18n::text(DELETE_LAYOUT_KEY))
-            }
-            .into(),
+            },
             Some(AppIcon::Delete),
             count > 0,
         ));

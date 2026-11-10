@@ -3047,7 +3047,9 @@ use crate::{
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write, process::Command};
+    use std::io::Write;
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    use std::process::Command;
 
     use super::*;
     use crate::project::{MediaAsset, MediaKind};
