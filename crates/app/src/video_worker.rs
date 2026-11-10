@@ -17,11 +17,11 @@ use crate::{
     playback::{FrameRenderer, PreviewOutput, RenderCachePreview, SourceGeometry},
     plugin::PluginRegistry,
     project::{Project, WorkerProjectState},
-    runtime::{cpu_surface, shared_surface, video::PresentationTexture},
+    runtime::{cpu_surface, gpu_surface, shared_surface, video::PresentationTexture},
     timeline::{TimelineDocument, TimelineState},
 };
 
-const PROTOCOL: u16 = 1;
+const PROTOCOL: u16 = 2;
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
 
 fn deadline_after(duration: Duration) -> Instant {
@@ -84,6 +84,8 @@ enum Request {
         protocol: u16,
         parent_pid: i32,
         metal_registry_id: Option<u64>,
+        #[serde(default)]
+        gpu_identity: Option<gpu_surface::GpuIdentity>,
         cpu_session: cpu_surface::CpuSurfaceSessionDescriptor,
         plugin_paths: String,
     },
@@ -136,7 +138,58 @@ enum WireResponse {
 #[serde(tag = "kind", content = "descriptor", rename_all = "snake_case")]
 enum FrameSurfaceDescriptor {
     Metal(shared_surface::SharedSurfaceDescriptor),
+    Gpu(gpu_surface::Descriptor),
     Cpu(cpu_surface::CpuSurfaceDescriptor),
+}
+
+enum PreviewSurface {
+    Metal(shared_surface::SharedSurface),
+    Native(Box<gpu_surface::SharedSurface>),
+}
+
+impl PreviewSurface {
+    fn texture(&self) -> &wgpu::Texture {
+        match self {
+            Self::Metal(surface) => surface.texture(),
+            Self::Native(surface) => surface.texture(),
+        }
+    }
+
+    fn dimensions(&self) -> [u32; 2] {
+        match self {
+            Self::Metal(surface) => [surface.descriptor().width, surface.descriptor().height],
+            Self::Native(surface) => [surface.descriptor().width, surface.descriptor().height],
+        }
+    }
+
+    fn channel(&self) -> &str {
+        match self {
+            Self::Metal(surface) => &surface.descriptor().channel,
+            Self::Native(surface) => &surface.descriptor().channel,
+        }
+    }
+
+    fn publish(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<FrameSurfaceDescriptor> {
+        match self {
+            Self::Metal(surface) => {
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: Some(Duration::from_secs(5)),
+                    })
+                    .context("wait for child GPU render")?;
+                Ok(FrameSurfaceDescriptor::Metal(surface.descriptor().clone()))
+            }
+            Self::Native(surface) => {
+                surface.publish(device, queue)?;
+                Ok(FrameSurfaceDescriptor::Gpu(surface.descriptor().clone()))
+            }
+        }
+    }
 }
 
 enum Response {
@@ -316,6 +369,7 @@ impl Process {
                 protocol: PROTOCOL,
                 parent_pid,
                 metal_registry_id,
+                gpu_identity: gpu_surface::identity(device).ok(),
                 cpu_session: cpu_surfaces.descriptor(),
                 plugin_paths: plugin_paths.to_owned(),
             })
@@ -644,6 +698,17 @@ fn import_responses(
                     .filter_map(|(id, geometry)| id.parse().ok().map(|id| (id, geometry)))
                     .collect();
                 let (channel, texture) = match descriptor {
+                    FrameSurfaceDescriptor::Gpu(descriptor) => {
+                        let channel = descriptor.channel.clone();
+                        let texture = gpu_surface::receive(
+                            device,
+                            queue,
+                            &descriptor,
+                            &cpu_surfaces.descriptor(),
+                        );
+                        queue_release(releases, channel);
+                        (None, texture)
+                    }
                     FrameSurfaceDescriptor::Metal(descriptor) => {
                         let channel = descriptor.channel.clone();
                         let texture = imported.get(&channel).map_or_else(
@@ -1501,6 +1566,7 @@ pub fn run_video_worker() -> Result<()> {
         protocol,
         parent_pid,
         metal_registry_id,
+        gpu_identity,
         cpu_session,
         plugin_paths,
     } = serde_json::from_str(&line).context("decode video worker handshake")?
@@ -1515,9 +1581,23 @@ pub fn run_video_worker() -> Result<()> {
     );
     let (instance, adapter, device, queue) = if let Some(registry_id) = metal_registry_id {
         create_matching_metal_device(registry_id)?
+    } else if let Some(identity) = gpu_identity.as_ref() {
+        match create_matching_gpu_device(identity) {
+            Ok(device) => device,
+            Err(error) => {
+                messages::warning(
+                    "Video worker",
+                    format!("GPU sharing unavailable; using CPU transfer: {error:#}"),
+                );
+                crate::render::create_processing_device(None)?
+            }
+        }
     } else {
         crate::render::create_processing_device(None)?
     };
+    let native_gpu_sharing = gpu_identity
+        .as_ref()
+        .is_some_and(|expected| gpu_surface::identity(&device).as_ref().ok() == Some(expected));
     let mut plugins = PluginRegistry::load_default(&plugin_paths)?;
     plugins.validate_gpu(&device);
     let mut effects = EffectRuntime::default();
@@ -1537,7 +1617,7 @@ pub fn run_video_worker() -> Result<()> {
         protocol: PROTOCOL,
         pid: std::process::id(),
     })?;
-    let mut surfaces = HashMap::<String, shared_surface::SharedSurface>::new();
+    let mut surfaces = HashMap::<String, PreviewSurface>::new();
     let mut free_surfaces = VecDeque::<String>::new();
     let mut cached_snapshot: Option<Snapshot> = None;
     while let Some(line) = read_line(&mut reader)? {
@@ -1617,13 +1697,13 @@ pub fn run_video_worker() -> Result<()> {
                 let mut cpu_slot = None;
                 let output_texture = if !snapshot.force_cpu
                     && !force_cpu_test_child
-                    && metal_registry_id.is_some()
+                    && (metal_registry_id.is_some() || native_gpu_sharing)
                 {
                     while let Some(candidate) = free_surfaces.pop_front() {
-                        if surfaces.get(&candidate).is_some_and(|surface| {
-                            surface.descriptor().width != dimensions[0]
-                                || surface.descriptor().height != dimensions[1]
-                        }) {
+                        if surfaces
+                            .get(&candidate)
+                            .is_some_and(|surface| surface.dimensions() != dimensions)
+                        {
                             surfaces.remove(&candidate);
                         } else {
                             free_surfaces.push_front(candidate);
@@ -1637,14 +1717,27 @@ pub fn run_video_worker() -> Result<()> {
                             .get(&candidate)
                             .map(|surface| surface.texture().clone())
                     } else if surfaces.len() < 2 {
-                        match shared_surface::SharedSurface::allocate(
-                            &device,
-                            dimensions[0],
-                            dimensions[1],
-                            parent_pid,
-                        ) {
+                        let allocation = if metal_registry_id.is_some() {
+                            shared_surface::SharedSurface::allocate(
+                                &device,
+                                dimensions[0],
+                                dimensions[1],
+                                parent_pid,
+                            )
+                            .map(PreviewSurface::Metal)
+                        } else {
+                            gpu_surface::SharedSurface::allocate(
+                                &device,
+                                dimensions[0],
+                                dimensions[1],
+                                &cpu_session,
+                            )
+                            .map(Box::new)
+                            .map(PreviewSurface::Native)
+                        };
+                        match allocation {
                             Ok(surface) => {
-                                let candidate = surface.descriptor().channel.clone();
+                                let candidate = surface.channel().to_owned();
                                 let texture = surface.texture().clone();
                                 surfaces.insert(candidate.clone(), surface);
                                 channel = Some(candidate);
@@ -1754,19 +1847,22 @@ pub fn run_video_worker() -> Result<()> {
                     continue;
                 }
                 let descriptor = if let Some(channel) = channel {
-                    device
-                        .poll(wgpu::PollType::Wait {
-                            submission_index: None,
-                            timeout: Some(Duration::from_secs(5)),
-                        })
-                        .context("wait for child GPU render")?;
-                    FrameSurfaceDescriptor::Metal(
-                        surfaces
-                            .get(&channel)
-                            .context("rendered GPU surface disappeared")?
-                            .descriptor()
-                            .clone(),
-                    )
+                    match surfaces
+                        .get_mut(&channel)
+                        .context("rendered GPU surface disappeared")?
+                        .publish(&device, &queue)
+                    {
+                        Ok(descriptor) => descriptor,
+                        Err(error) => {
+                            surfaces.remove(&channel);
+                            write_response(&WireResponse::Error {
+                                message: format!(
+                                    "import video frame: publish GPU surface failed: {error:#}"
+                                ),
+                            })?;
+                            continue;
+                        }
+                    }
                 } else {
                     let slot = cpu_slot.context("CPU preview slot disappeared")?;
                     let pixels = cpu_surface::readback_rgba16(
@@ -1834,6 +1930,42 @@ pub fn run_video_worker() -> Result<()> {
     drop(surfaces);
     drop((adapter, instance));
     Ok(())
+}
+
+fn create_matching_gpu_device(
+    expected: &gpu_surface::GpuIdentity,
+) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let backend = expected.backend();
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backend;
+    let instance = wgpu::Instance::new(descriptor);
+    for adapter in pollster::block_on(instance.enumerate_adapters(backend)) {
+        let features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        if !adapter.features().contains(features)
+            || !adapter
+                .get_texture_format_features(wgpu::TextureFormat::R16Uint)
+                .allowed_usages
+                .contains(wgpu::TextureUsages::STORAGE_BINDING)
+        {
+            continue;
+        }
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("kama isolated shared-GPU video device"),
+            required_features: features,
+            required_limits: wgpu::Limits::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&descriptor)) else {
+            continue;
+        };
+        if gpu_surface::identity(&device).as_ref().ok() == Some(expected) {
+            return Ok((instance, adapter, device, queue));
+        }
+    }
+    anyhow::bail!("no sharing-capable adapter matches the editor GPU")
 }
 
 fn create_matching_metal_device(

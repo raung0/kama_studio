@@ -48,6 +48,13 @@ muda = "0.21.2"
 objc2 = "0.6.4"
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLDevice", "MTLTexture", "MTLTypes"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = "0.38"
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
+
 [build-dependencies]
 resvg = "0.48.1"
 winresource = "0.1"
