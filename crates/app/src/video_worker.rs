@@ -225,6 +225,14 @@ pub enum VideoWorkerStatus {
     StartupFailed,
 }
 
+#[derive(Clone, Copy)]
+pub struct VideoResourceMetrics {
+    pub cpu: f32,
+    pub ram: u64,
+    pub gpu: Option<f32>,
+    pub vram: Option<u64>,
+}
+
 struct Process {
     child: Option<Child>,
     requests: mpsc::SyncSender<Request>,
@@ -232,7 +240,7 @@ struct Process {
     pid: u32,
     reader: Option<thread::JoinHandle<()>>,
     writer: Option<thread::JoinHandle<()>>,
-    metrics: Arc<Mutex<Option<(f32, u64)>>>,
+    metrics: Arc<Mutex<Option<VideoResourceMetrics>>>,
     diagnostics: Arc<Mutex<VecDeque<String>>>,
     diagnostics_reader: Option<thread::JoinHandle<()>>,
     releases: Arc<Mutex<VecDeque<String>>>,
@@ -435,7 +443,11 @@ fn drain_diagnostics(stderr: impl std::io::Read, output: &Arc<Mutex<VecDeque<Str
     }
 }
 
-fn sample_process_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<(f32, u64)>>>) {
+fn sample_process_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<VideoResourceMetrics>>>) {
+    #[cfg(target_os = "linux")]
+    let mut previous_gpu = None;
+    #[cfg(target_os = "macos")]
+    let mut previous_gpu = None;
     #[cfg(unix)]
     while let Some(output) = output.upgrade() {
         let result = Command::new("ps")
@@ -452,13 +464,172 @@ fn sample_process_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<(f32, 
             && let (Ok(cpu), Ok(rss)) = (cpu.parse::<f32>(), rss.parse::<u64>())
             && let Ok(mut metrics) = output.lock()
         {
-            *metrics = Some((cpu, rss.saturating_mul(1024)));
+            #[cfg(target_os = "linux")]
+            let (gpu, vram) = sample_linux_gpu_metrics(pid, &mut previous_gpu);
+            #[cfg(target_os = "macos")]
+            let (gpu, vram) = sample_macos_gpu_metrics(pid, &mut previous_gpu);
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let (gpu, vram) = (None, None);
+            *metrics = Some(VideoResourceMetrics {
+                cpu,
+                ram: rss.saturating_mul(1024),
+                gpu,
+                vram,
+            });
         }
         drop(output);
         thread::sleep(Duration::from_secs(1));
     }
     #[cfg(not(unix))]
     let _ = (pid, output);
+}
+
+#[cfg(target_os = "macos")]
+fn sample_macos_gpu_metrics(
+    pid: u32,
+    previous: &mut Option<(std::time::Instant, std::collections::HashMap<String, u64>)>,
+) -> (Option<f32>, Option<u64>) {
+    let mut clients = std::collections::HashMap::new();
+    let registry = Command::new("ioreg")
+        .args(["-r", "-c", "IOAccelerator", "-l", "-w", "0"])
+        .output();
+    let mut available = false;
+    if let Ok(registry) = registry
+        && registry.status.success()
+    {
+        let text = String::from_utf8_lossy(&registry.stdout);
+        let creator = format!("\"IOUserClientCreator\" = \"pid {pid},");
+        for section in text.split("+-o ") {
+            if !section.contains(&creator) {
+                continue;
+            }
+            if let Some(usage) = section.lines().find(|line| line.contains("\"AppUsage\"")) {
+                available = true;
+                let total = usage
+                    .split("\"accumulatedGPUTime\"=")
+                    .skip(1)
+                    .filter_map(|part| {
+                        part.split(|c: char| !c.is_ascii_digit())
+                            .next()?
+                            .parse::<u64>()
+                            .ok()
+                    })
+                    .fold(0_u64, u64::saturating_add);
+                if let Some(id) = section
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split("id ").nth(1))
+                    .and_then(|line| line.split(',').next())
+                {
+                    clients.insert(id.to_owned(), total);
+                }
+            }
+        }
+    }
+    let now = std::time::Instant::now();
+    let gpu = previous.as_ref().and_then(|(time, old)| {
+        let elapsed = now.duration_since(*time).as_nanos() as f64;
+        let deltas: Vec<_> = clients
+            .iter()
+            .filter_map(|(id, value)| old.get(id).and_then(|old| value.checked_sub(*old)))
+            .collect();
+        (!deltas.is_empty() && elapsed > 0.0).then(|| {
+            (deltas.iter().map(|value| *value as f64).sum::<f64>() * 100.0 / elapsed) as f32
+        })
+    });
+    *previous = available.then_some((now, clients));
+    let vram = Command::new("footprint")
+        .args(["-p", &pid.to_string(), "-f", "bytes"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut total = 0_u64;
+            let mut found = false;
+            for line in text.lines().filter(|line| {
+                line.ends_with("IOAccelerator (graphics)")
+                    || line.ends_with("Owned physical footprint (unmapped) (graphics)")
+            }) {
+                let mut fields = line.split_whitespace();
+                if let (Some(dirty), Some("B"), Some(clean), Some("B")) =
+                    (fields.next(), fields.next(), fields.next(), fields.next())
+                    && let (Ok(dirty), Ok(clean)) = (dirty.parse::<u64>(), clean.parse::<u64>())
+                {
+                    total = total.saturating_add(dirty).saturating_add(clean);
+                    found = true;
+                }
+            }
+            found.then_some(total)
+        });
+    (gpu, vram)
+}
+
+#[cfg(target_os = "linux")]
+fn sample_linux_gpu_metrics(
+    pid: u32,
+    previous: &mut Option<(std::time::Instant, std::collections::HashMap<String, u64>)>,
+) -> (Option<f32>, Option<u64>) {
+    let mut clients = std::collections::HashSet::new();
+    let mut engines = std::collections::HashMap::new();
+    let mut vram = None::<u64>;
+    if let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fdinfo")) {
+        for entry in entries.flatten() {
+            let Ok(info) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let fields: Vec<_> = info
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .collect();
+            let Some(client) = fields
+                .iter()
+                .find(|(key, _)| *key == "drm-client-id")
+                .map(|(_, value)| value.trim())
+            else {
+                continue;
+            };
+            let device = fields
+                .iter()
+                .find(|(key, _)| *key == "drm-pdev")
+                .map_or("", |(_, value)| value.trim());
+            let client = format!("{device}:{client}");
+            if !clients.insert(client.clone()) {
+                continue;
+            }
+            for (key, value) in fields {
+                let mut parts = value.split_whitespace();
+                let Some(number) = parts.next().and_then(|value| value.parse::<u64>().ok()) else {
+                    continue;
+                };
+                let unit = parts.next();
+                if key.starts_with("drm-engine-") && unit == Some("ns") {
+                    engines.insert(format!("{client}:{key}"), number);
+                } else if key == "drm-memory-vram" {
+                    let bytes = match unit {
+                        Some("KiB") => number.saturating_mul(1024),
+                        Some("MiB") => number.saturating_mul(1024 * 1024),
+                        Some("bytes") => number,
+                        _ => continue,
+                    };
+                    vram = Some(vram.unwrap_or(0).saturating_add(bytes));
+                }
+            }
+        }
+    }
+    let now = std::time::Instant::now();
+    let gpu = previous.as_ref().and_then(|(time, old)| {
+        let elapsed = now.duration_since(*time).as_nanos() as f64;
+        let deltas: Vec<_> = engines
+            .iter()
+            .filter_map(|(key, value)| old.get(key).and_then(|old| value.checked_sub(*old)))
+            .collect();
+        (!deltas.is_empty() && elapsed > 0.0).then(|| {
+            (deltas.iter().map(|value| *value as f64).sum::<f64>() * 100.0 / elapsed) as f32
+        })
+    });
+    *previous = Some((now, engines));
+    (gpu, vram)
 }
 
 impl Drop for Process {
@@ -1046,7 +1217,7 @@ impl VideoPlayback {
         self.invalidate_pending = true;
     }
 
-    pub fn resource_metrics(&self) -> Option<(f32, u64)> {
+    pub fn resource_metrics(&self) -> Option<VideoResourceMetrics> {
         self.process
             .as_ref()
             .and_then(|process| process.metrics.lock().ok().and_then(|metrics| *metrics))

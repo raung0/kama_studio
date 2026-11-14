@@ -2076,8 +2076,19 @@ impl EditorApp {
         let video_label = match video_status {
             video_worker::VideoWorkerStatus::Starting => format!("{video_name}: Starting"),
             video_worker::VideoWorkerStatus::Ready { pid } => {
-                let resources = video_metrics.map_or_else(String::new, |(cpu, ram)| {
-                    format!(": CPU {cpu:.1}%, RAM {:.0}MB", ram as f64 / 1_000_000.0)
+                let resources = video_metrics.map_or_else(String::new, |metrics| {
+                    let gpu = metrics
+                        .gpu
+                        .map_or_else(|| "N/A".to_owned(), |gpu| format!("{gpu:.1}%"));
+                    let vram = metrics.vram.map_or_else(
+                        || "N/A".to_owned(),
+                        |vram| format!("{:.0}MB", vram as f64 / 1_000_000.0),
+                    );
+                    format!(
+                        ": CPU {:.1}%, RAM {:.0}MB, GPU {gpu}, VRAM {vram}",
+                        metrics.cpu,
+                        metrics.ram as f64 / 1_000_000.0
+                    )
                 });
                 format!("Video({pid}){resources}")
             }
@@ -2182,7 +2193,6 @@ impl EditorApp {
                     font_size: 10.0;
                     text_color: theme::popup_text();
                     text: audio_label;
-                    tooltip: "CPU is the OS-reported average; 100% represents one logical CPU. RAM is resident memory in decimal MB.";
                 }
 
                 Block {
@@ -2191,7 +2201,6 @@ impl EditorApp {
                     font_size: 10.0;
                     text_color: theme::popup_text();
                     text: video_label;
-                    tooltip: "Video preview, export, and capture run in isolated processes. Preview prefers shared GPU textures, with shared-memory CPU transfer as a fallback.";
                 }
 
                 Block {
