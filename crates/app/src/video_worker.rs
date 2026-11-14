@@ -1137,16 +1137,6 @@ impl VideoPlayback {
             timeline.is_scrubbing(),
         ));
         let previous_status = self.status;
-        if live_editing
-            && self
-                .last_live_snapshot
-                .is_none_or(|last| last.elapsed() >= Duration::from_millis(50))
-        {
-            self.live_edit_revision = self.live_edit_revision.wrapping_add(1);
-            self.last_live_snapshot = Some(Instant::now());
-        } else if !live_editing {
-            self.last_live_snapshot = None;
-        }
         self.readiness_revision = Some(revision);
         self.readiness_editing = live_editing;
         let frame =
@@ -1159,7 +1149,6 @@ impl VideoPlayback {
         }
         let mut content_hasher = std::collections::hash_map::DefaultHasher::new();
         revision.hash(&mut content_hasher);
-        self.live_edit_revision.hash(&mut content_hasher);
         timeline.is_playing().hash(&mut content_hasher);
         timeline.is_scrubbing().hash(&mut content_hasher);
         render_scale.to_bits().hash(&mut content_hasher);
@@ -1172,9 +1161,15 @@ impl VideoPlayback {
             (pixels.as_ptr() as usize).hash(&mut content_hasher);
             pixels.len().hash(&mut content_hasher);
         }
-        let content_revision = content_hasher.finish();
-        let key = (
-            content_revision,
+        let content_identity = content_hasher.finish();
+        let content_revision = |live_edit_revision: u64| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content_identity.hash(&mut hasher);
+            live_edit_revision.hash(&mut hasher);
+            hasher.finish()
+        };
+        let mut key = (
+            content_revision(self.live_edit_revision),
             timeline.seek_revision(),
             frame,
             preview_size,
@@ -1182,6 +1177,25 @@ impl VideoPlayback {
         self.generation =
             advance_processing_generation(self.key, key, self.generation, timeline.is_scrubbing());
         self.scrubbing = timeline.is_scrubbing();
+        self.poll(renderer);
+        if live_editing
+            && !self.request_pending
+            && self
+                .last_live_snapshot
+                .is_none_or(|last| last.elapsed() >= Duration::from_millis(50))
+        {
+            self.live_edit_revision = self.live_edit_revision.wrapping_add(1);
+            self.last_live_snapshot = Some(Instant::now());
+            key.0 = content_revision(self.live_edit_revision);
+            self.generation = advance_processing_generation(
+                self.key,
+                key,
+                self.generation,
+                timeline.is_scrubbing(),
+            );
+        } else if !live_editing {
+            self.last_live_snapshot = None;
+        }
         if self.should_queue_snapshot(key) {
             let captured_frame = match (captured_frame, self.process.as_ref()) {
                 (Some((size, pixels)), Some(process)) => Some(process.cpu_surfaces.cache_capture(
@@ -1200,7 +1214,7 @@ impl VideoPlayback {
                 worker_state: WorkerProjectState::capture(&snapshot_project),
                 project: snapshot_project,
                 timeline: timeline.document(),
-                revision: content_revision,
+                revision: key.0,
                 seek_revision: timeline.seek_revision(),
                 playhead: timeline.playhead(),
                 playing: timeline.is_playing(),
@@ -1215,7 +1229,6 @@ impl VideoPlayback {
             self.queue_snapshot(key, snapshot);
             self.retain_capture_files();
         }
-        self.poll(renderer);
         self.present_current(renderer)?;
         let Some(process) = self.process.as_mut() else {
             return Ok(matches!(

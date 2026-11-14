@@ -1633,11 +1633,15 @@ impl EditorApp {
             self.editor.project.active_composition,
             self.editor.project.active_settings().frame_rate,
         );
-        let render_cache_preview = self.render_panel.cached_preview(
-            self.editor.timeline.playhead(),
-            self.editor.project.active_settings().frame_rate,
-            self.editor.project.active_composition,
-        );
+        let render_cache_preview = (!render_editing)
+            .then(|| {
+                self.render_panel.cached_preview(
+                    self.editor.timeline.playhead(),
+                    self.editor.project.active_settings().frame_rate,
+                    self.editor.project.active_composition,
+                )
+            })
+            .flatten();
         let preview_size = self.monitor.preview_render_size(&self.editor.project);
         let render_scale = self.monitor.preview_render_scale(&self.editor.project);
         let captured_preview = self.monitor.captured_preview();
