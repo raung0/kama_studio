@@ -1924,6 +1924,31 @@ impl PipelineGraphState {
         self.controls.is_cursor_lock_dragging()
     }
 
+    pub fn is_number_editing(&self) -> bool {
+        self.controls.is_number_editing() || self.controls.color_picker.is_editing()
+    }
+
+    pub fn editing_number_contains(&self, panel: Rect, point: [f32; 2]) -> bool {
+        self.controls.editing_number_contains(panel, point)
+    }
+
+    pub fn is_color_dragging(&self) -> bool {
+        self.controls.color_picker.is_dragging()
+    }
+
+    pub fn is_color_open(&self) -> bool {
+        self.controls.color_picker.is_open()
+    }
+
+    pub fn close_color_picker(&mut self) {
+        self.controls.color_picker.close();
+    }
+
+    pub fn cancel_number_drag(&mut self) {
+        self.controls.numbers.blur();
+        self.controls.angles.blur();
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
             || self.group_drag.is_some()

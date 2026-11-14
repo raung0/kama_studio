@@ -38,6 +38,8 @@ impl EditorApp {
             history_label,
         );
         self.editor.history_gesture = None;
+        self.editor.numeric_edit = None;
+        self.editor.color_edit = None;
         self.effects.rebuild(&self.editor.project.pipelines);
         self.pending_capture = None;
         self.render_panel.clear_project_cache();

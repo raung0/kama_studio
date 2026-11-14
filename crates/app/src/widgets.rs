@@ -662,6 +662,18 @@ impl WidgetGallery {
             | self.number.pointer_released()
     }
 
+    pub fn cancel_number_drag(&mut self) {
+        self.number.cancel_drag();
+    }
+
+    pub fn is_color_open(&self) -> bool {
+        self.color.is_open()
+    }
+
+    pub fn close_color_picker(&mut self) {
+        self.color.close();
+    }
+
     pub fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
         if self.color.handle_key(event, modifiers) {
             return true;

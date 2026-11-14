@@ -1369,6 +1369,22 @@ impl SettingsDialog {
         if event.state != ElementState::Pressed {
             return false;
         }
+        if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+            let entry = if self.dark_accent.is_open() {
+                self.dark_accent.handle_key(event, modifiers);
+                Some(SettingEntry::DarkAccent)
+            } else if self.light_accent.is_open() {
+                self.light_accent.handle_key(event, modifiers);
+                Some(SettingEntry::LightAccent)
+            } else {
+                None
+            };
+            if let Some(entry) = entry {
+                self.apply_accent(entry);
+                self.search.query.set_focused(true);
+                return true;
+            }
+        }
         if self.plugin_paths.is_focused() {
             if matches!(
                 &event.logical_key,
@@ -1381,11 +1397,6 @@ impl SettingsDialog {
             return self.plugin_paths.handle_key(event, modifiers).handled;
         }
         if self.dark_accent.is_editing() || self.light_accent.is_editing() {
-            if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
-                self.close_accent_pickers();
-                self.search.query.set_focused(true);
-                return true;
-            }
             let (entry, changed) = if self.dark_accent.is_editing() {
                 (
                     SettingEntry::DarkAccent,

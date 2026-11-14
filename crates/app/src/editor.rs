@@ -16,6 +16,8 @@ pub struct EditorSession {
     pub(crate) timeline: TimelineState,
     pub(crate) history: HistoryState,
     pub(crate) history_gesture: Option<(HistorySnapshot, String)>,
+    pub(crate) numeric_edit: Option<(HistorySnapshot, String)>,
+    pub(crate) color_edit: Option<(HistorySnapshot, String)>,
     status: DocumentStatus,
 }
 
@@ -35,6 +37,8 @@ impl EditorSession {
             status: DocumentStatus::new(history.revision(), content_signature, view_signature),
             history,
             history_gesture: None,
+            numeric_edit: None,
+            color_edit: None,
         }
     }
 

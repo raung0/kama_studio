@@ -21,9 +21,11 @@ pub struct NumberInput {
     units_per_pixel: f64,
     precision: usize,
     drag: Option<(f32, f64)>,
+    drag_start: Option<f64>,
     last_click: Option<Instant>,
     edit: TextEdit,
     editing: bool,
+    edit_start: Option<f64>,
 }
 
 impl NumberInput {
@@ -36,9 +38,11 @@ impl NumberInput {
             units_per_pixel: 1.0,
             precision: 2,
             drag: None,
+            drag_start: None,
             last_click: None,
             edit: TextEdit::single_line(format!("{value:.2}")),
             editing: false,
+            edit_start: None,
         }
     }
 
@@ -143,7 +147,9 @@ impl NumberInput {
         self.last_click = Some(now);
         if double {
             self.drag = None;
+            self.drag_start = None;
             self.editing = true;
+            self.edit_start = Some(self.value);
             self.edit.reset(format!(
                 "{:.*}",
                 self.precision.saturating_add(2),
@@ -153,6 +159,7 @@ impl NumberInput {
             self.edit.pointer_pressed(rect, point, modifiers);
         } else {
             self.drag = Some((point[1], self.value));
+            self.drag_start = Some(self.value);
         }
         None
     }
@@ -194,7 +201,15 @@ impl NumberInput {
 
     pub const fn pointer_released(&mut self) -> bool {
         let dragged = self.drag.take().is_some();
+        self.drag_start = None;
         dragged || (self.editing && self.edit.pointer_released())
+    }
+
+    pub fn cancel_drag(&mut self) -> Option<f64> {
+        self.drag.take()?;
+        let value = self.drag_start.take()?;
+        self.value = value;
+        Some(value)
     }
 
     pub fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> Option<f64> {
@@ -206,11 +221,14 @@ impl NumberInput {
                 Key::Named(NamedKey::Escape) => {
                     self.editing = false;
                     self.edit.set_focused(false);
-                    return None;
+                    let value = self.edit_start.take()?;
+                    self.value = value;
+                    return Some(value);
                 }
                 Key::Named(NamedKey::Enter) => {
                     let changed = self.commit_text();
                     self.editing = false;
+                    self.edit_start = None;
                     self.edit.set_focused(false);
                     return changed;
                 }
@@ -249,7 +267,9 @@ impl NumberInput {
     pub fn set_focused(&mut self, focused: bool) {
         if !focused {
             self.drag = None;
+            self.drag_start = None;
             self.editing = false;
+            self.edit_start = None;
             self.edit.set_focused(false);
         }
     }

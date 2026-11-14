@@ -1582,8 +1582,16 @@ impl EditorApp {
         };
         let focused_panel = self.focused_panel();
         self.sync_panel_focus(focused_panel);
+        if self.editor.color_edit.is_some() && !self.color_picker_open() {
+            self.finish_color_edit_history(false);
+        }
+        if self.editor.numeric_edit.is_some() && !self.number_editing() {
+            self.finish_number_edit_history(false);
+        }
         let render_edit_revision = self.editor.history.revision();
-        let render_editing = self.editor.history_gesture.is_some();
+        let render_editing = self.editor.history_gesture.is_some()
+            || self.editor.numeric_edit.is_some()
+            || self.editor.color_edit.is_some();
         let video_ready =
             self.video
                 .playback_ready(&self.editor.timeline, render_edit_revision, render_editing);
@@ -1600,7 +1608,7 @@ impl EditorApp {
             &self.editor.project,
             &self.editor.timeline,
             self.editor.history.revision(),
-            self.editor.history_gesture.is_some(),
+            render_editing,
         ) {
             self.editor
                 .timeline
@@ -1672,7 +1680,7 @@ impl EditorApp {
                 &self.editor.project,
                 &self.editor.timeline,
                 self.editor.history.revision(),
-                self.editor.history_gesture.is_some(),
+                render_editing,
             );
             self.window.request_redraw();
         }
@@ -2494,7 +2502,109 @@ impl EditorApp {
     }
 
     fn finish_history_gesture(&mut self) {
-        self.editor.finish_gesture();
+        if self.editor.color_edit.is_some() {
+            self.editor.history_gesture = None;
+        } else {
+            self.editor.finish_gesture();
+        }
+    }
+
+    fn color_picker_open(&self) -> bool {
+        self.inspector.is_color_open()
+            || self.project_options.is_color_open()
+            || self.pipeline_graph.is_color_open()
+            || self.widgets.is_color_open()
+    }
+
+    fn finish_color_edit_history(&mut self, cancel: bool) {
+        let Some((before, label)) = self.editor.color_edit.take() else {
+            return;
+        };
+        if cancel {
+            self.editor.history_gesture = None;
+            self.editor.restore_snapshot(before, &self.plugins);
+            self.effects.rebuild(&self.editor.project.pipelines);
+            self.video.invalidate();
+        } else {
+            self.editor.record_after(label, &before, false);
+        }
+    }
+
+    fn commit_open_color_edit(&mut self) {
+        if self.editor.color_edit.is_none() {
+            return;
+        }
+        self.inspector.close_color_picker();
+        self.project_options.close_color_picker();
+        self.pipeline_graph.close_color_picker();
+        self.widgets.close_color_picker();
+        self.finish_color_edit_history(false);
+    }
+
+    fn number_editing(&self) -> bool {
+        if self.modal.is_some() || self.palette.kind.is_some() {
+            return false;
+        }
+        match self.focused_kind() {
+            Some(PanelKind::Inspector) if self.media.selected_composition().is_some() => {
+                self.project_options.is_number_editing()
+            }
+            Some(PanelKind::Inspector) if self.media.selected().is_none() => {
+                self.inspector.is_number_editing()
+            }
+            Some(PanelKind::ProjectOptions) => self.project_options.is_number_editing(),
+            Some(PanelKind::Pipeline) => self.pipeline_graph.is_number_editing(),
+            _ => false,
+        }
+    }
+
+    fn begin_number_edit_history(&mut self) {
+        if self.editor.numeric_edit.is_none() && self.editor.color_edit.is_none() {
+            self.editor.numeric_edit =
+                Some((self.editor.capture(), self.key_history_label().into()));
+        }
+    }
+
+    fn finish_number_edit_history(&mut self, cancel: bool) {
+        let Some((before, label)) = self.editor.numeric_edit.take() else {
+            return;
+        };
+        if cancel {
+            self.editor.restore_snapshot(before, &self.plugins);
+            self.effects.rebuild(&self.editor.project.pipelines);
+            self.video.invalidate();
+        } else {
+            self.editor.record_after(label, &before, false);
+        }
+    }
+
+    fn cancel_number_drag(&mut self) -> bool {
+        if self.modal.is_some() || self.palette.kind.is_some() {
+            return false;
+        }
+        let project_drag = self.inspector.is_cursor_lock_dragging()
+            || self.project_options.is_cursor_lock_dragging()
+            || self.pipeline_graph.is_cursor_lock_dragging();
+        if !project_drag
+            && !self.render_panel.is_value_dragging()
+            && !self.widgets.is_cursor_lock_dragging()
+        {
+            return false;
+        }
+        self.inspector.cancel_number_drag();
+        self.project_options.cancel_number_drag();
+        self.pipeline_graph.cancel_number_drag();
+        self.render_panel.cancel_number_drag();
+        self.widgets.cancel_number_drag();
+        if let Some((before, _)) = self.editor.history_gesture.take() {
+            if project_drag {
+                self.editor.restore_snapshot(before, &self.plugins);
+                self.effects.rebuild(&self.editor.project.pipelines);
+                self.video.invalidate();
+            }
+        }
+        self.drag = None;
+        true
     }
 
     fn restore_history_snapshot(&mut self, snapshot: HistorySnapshot) {
@@ -3044,6 +3154,29 @@ impl EditorApp {
     }
 
     fn pointer_pressed(&mut self) {
+        if self.editor.color_edit.is_some() && !self.color_picker_open() {
+            self.finish_color_edit_history(false);
+        }
+        let editing_number_hit = self.focused_kind().is_some_and(|panel| {
+            self.focused_content(panel).is_some_and(|rect| match panel {
+                PanelKind::Inspector if self.media.selected_composition().is_some() => self
+                    .project_options
+                    .editing_number_contains(rect, self.cursor),
+                PanelKind::Inspector if self.media.selected().is_none() => {
+                    self.inspector.editing_number_contains(rect, self.cursor)
+                }
+                PanelKind::ProjectOptions => self
+                    .project_options
+                    .editing_number_contains(rect, self.cursor),
+                PanelKind::Pipeline => self
+                    .pipeline_graph
+                    .editing_number_contains(rect, self.cursor),
+                _ => false,
+            })
+        });
+        if self.editor.color_edit.is_none() && !editing_number_hit {
+            self.finish_number_edit_history(false);
+        }
         if self.gui.consume_popup_press(self.cursor) {
             self.input.mouse_pressed = false;
             return;
@@ -3056,6 +3189,11 @@ impl EditorApp {
         }
         self.begin_history_gesture();
         self.pointer_pressed_inner();
+        if self.editor.color_edit.is_none() && self.color_picker_open() {
+            self.editor.color_edit = self.editor.history_gesture.clone();
+        } else if self.editor.color_edit.is_some() && !self.color_picker_open() {
+            self.finish_color_edit_history(false);
+        }
         if self.focused_kind() == Some(PanelKind::Timeline)
             && let Some(label) = self.editor.timeline.history_gesture_label()
         {
@@ -3983,6 +4121,78 @@ impl EditorApp {
             return;
         }
 
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && self.palette.kind.is_none()
+            && self.color_picker_open()
+        {
+            let project_color_drag = self.inspector.is_color_dragging()
+                || self.project_options.is_color_dragging()
+                || self.pipeline_graph.is_color_dragging();
+            if self.inspector.is_color_open() {
+                self.inspector.handle_key(
+                    event,
+                    self.modifiers,
+                    &mut self.editor.project,
+                    &mut self.editor.timeline,
+                );
+            } else if self.project_options.is_color_open() {
+                let composition = self
+                    .media
+                    .selected_composition()
+                    .unwrap_or(self.editor.project.active_composition);
+                self.project_options.handle_key(
+                    event,
+                    self.modifiers,
+                    &mut self.editor.project,
+                    composition,
+                );
+            } else if self.pipeline_graph.is_color_open() {
+                self.pipeline_graph.handle_key(
+                    event,
+                    self.modifiers,
+                    &mut self.editor.project,
+                    &mut self.editor.timeline,
+                );
+            } else {
+                self.widgets.handle_key(event, self.modifiers);
+            }
+            if self.editor.color_edit.is_some() {
+                self.finish_color_edit_history(true);
+            } else if project_color_drag
+                && let Some((before, _)) = self.editor.history_gesture.take()
+            {
+                self.editor.restore_snapshot(before, &self.plugins);
+                self.effects.rebuild(&self.editor.project.pipelines);
+                self.video.invalidate();
+            }
+            if self.editor.numeric_edit.is_some() {
+                self.finish_number_edit_history(true);
+            }
+            self.video.invalidate();
+            return;
+        }
+
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && self.cancel_number_drag() {
+            return;
+        }
+
+        if self.number_editing() {
+            self.begin_number_edit_history();
+            let cancel = matches!(event.logical_key, Key::Named(NamedKey::Escape));
+            self.handle_key_inner(event);
+            if !self.number_editing() {
+                self.finish_number_edit_history(cancel);
+            }
+            return;
+        }
+
+        if !matches!(
+            event.logical_key,
+            Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super)
+        ) {
+            self.commit_open_color_edit();
+        }
+
         #[cfg(not(target_os = "macos"))]
         if !matches!(self.app_menu, AppMenuState::Closed) && self.handle_app_menu_key(event) {
             return;
@@ -4325,6 +4535,11 @@ impl EditorApp {
     }
 
     fn handle_ime(&mut self, event: &Ime) {
+        if self.number_editing() {
+            self.begin_number_edit_history();
+            self.handle_ime_inner(event);
+            return;
+        }
         let before = crate::history::HistorySnapshot::capture(
             &self.editor.project,
             &self.editor.timeline.document(),
@@ -5231,6 +5446,9 @@ impl EditorApp {
     }
 
     fn execute_command(&mut self, command: EditorCommand) {
+        if !matches!(command, EditorCommand::Edit(_)) {
+            self.commit_open_color_edit();
+        }
         match command {
             EditorCommand::Edit(command) => self.execute_edit_command(command),
             EditorCommand::Action(action) => self.execute_palette_action(action),
@@ -5271,6 +5489,12 @@ impl EditorApp {
     }
 
     fn execute_edit_command(&mut self, command: EditCommand) {
+        if matches!(
+            command,
+            EditCommand::Undo | EditCommand::Redo | EditCommand::RestoreHistory(_)
+        ) {
+            self.commit_open_color_edit();
+        }
         match command {
             EditCommand::Timeline(action) => {
                 let before = self.editor.history_gesture.is_none().then(|| {
@@ -6343,6 +6567,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 editor_app.handle_key(&event);
+                editor_app.sync_value_drag_cursor(event_loop);
                 editor_app.window.request_redraw();
             }
             WindowEvent::Ime(event) => {
@@ -6650,6 +6875,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::Focused(false) => {
                 if self.dock_drag_owner != Some(window_id) {
+                    editor_app.finish_number_edit_history(false);
                     editor_app.release_value_drag_cursor(event_loop);
                     editor_app.drag = None;
                     editor_app.touch_gesture_cursor = None;

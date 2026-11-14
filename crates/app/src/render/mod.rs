@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use winit::{
     event::{Ime, KeyEvent},
-    keyboard::ModifiersState,
+    keyboard::{Key, ModifiersState, NamedKey},
 };
 
 use crate::{
@@ -298,6 +298,7 @@ pub struct RenderPanelState {
     numbers: [NumberInput; 3],
     custom_begin: bool,
     custom_end: bool,
+    range_edit_start: Option<(bool, bool)>,
     combos: [ComboBox; 7],
     sections: [Accordion; 5],
     scroll: ScrollState,
@@ -345,6 +346,7 @@ impl RenderPanelState {
             ],
             custom_begin: false,
             custom_end: false,
+            range_edit_start: None,
             combos: std::array::from_fn(|index| ComboBox::new([0, 0, 0, 0, 0, 1, 2][index])),
             sections: std::array::from_fn(|_| Accordion::new(true)),
             scroll: ScrollState::default(),
@@ -372,6 +374,7 @@ impl RenderPanelState {
         self.start_requested = false;
         self.custom_begin = false;
         self.custom_end = false;
+        self.range_edit_start = None;
     }
 
     pub(crate) fn is_animating(&self) -> bool {
@@ -1253,7 +1256,9 @@ impl RenderPanelState {
         }
         if self.section_open(4) {
             if layout.number(RenderNumber::Begin).contains(p) {
-                self.custom_begin = true;
+                if !self.number(RenderNumber::Begin).is_editing() {
+                    self.range_edit_start = Some((self.custom_begin, self.custom_end));
+                }
                 if let Some(value) = self.number_mut(RenderNumber::Begin).pointer_pressed(
                     layout.number(RenderNumber::Begin),
                     p,
@@ -1278,7 +1283,9 @@ impl RenderPanelState {
                 return true;
             }
             if layout.number(RenderNumber::End).contains(p) {
-                self.custom_end = true;
+                if !self.number(RenderNumber::End).is_editing() {
+                    self.range_edit_start = Some((self.custom_begin, self.custom_end));
+                }
                 if let Some(value) = self.number_mut(RenderNumber::End).pointer_pressed(
                     layout.number(RenderNumber::End),
                     p,
@@ -1343,9 +1350,28 @@ impl RenderPanelState {
     }
 
     pub(crate) fn pointer_released(&mut self) -> bool {
-        self.numbers
+        let handled = self
+            .numbers
             .iter_mut()
-            .fold(false, |changed, input| input.pointer_released() | changed)
+            .fold(false, |changed, input| input.pointer_released() | changed);
+        if !self.number(RenderNumber::Begin).is_editing()
+            && !self.number(RenderNumber::End).is_editing()
+        {
+            self.range_edit_start = None;
+        }
+        handled
+    }
+
+    pub(crate) fn cancel_number_drag(&mut self) {
+        for kind in RenderNumber::ALL {
+            if let Some(value) = self.number_mut(kind).cancel_drag() {
+                self.apply_number(kind, value);
+            }
+        }
+        if let Some((begin, end)) = self.range_edit_start.take() {
+            self.custom_begin = begin;
+            self.custom_end = end;
+        }
     }
 
     pub(crate) fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
@@ -1353,8 +1379,18 @@ impl RenderPanelState {
             return true;
         }
         for kind in RenderNumber::ALL {
-            if let Some(value) = self.number_mut(kind).handle_key(event, modifiers) {
-                self.apply_number(kind, value);
+            if self.number(kind).is_editing() {
+                let cancel = matches!(event.logical_key, Key::Named(NamedKey::Escape));
+                if let Some(value) = self.number_mut(kind).handle_key(event, modifiers) {
+                    self.apply_number(kind, value);
+                }
+                if !self.number(kind).is_editing()
+                    && let Some((begin, end)) = self.range_edit_start.take()
+                    && cancel
+                {
+                    self.custom_begin = begin;
+                    self.custom_end = end;
+                }
                 return true;
             }
         }

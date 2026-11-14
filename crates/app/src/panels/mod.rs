@@ -515,6 +515,26 @@ impl<N: Clone + Eq + Hash, E: Clone + Eq + Hash, A: Clone + Eq + Hash, S: Eq + H
         self.numbers.is_dragging() || self.angles.is_number_dragging()
     }
 
+    fn is_number_editing(&self) -> bool {
+        self.numbers.editing_target().is_some()
+            || self
+                .angles
+                .numbers
+                .iter()
+                .any(|numbers| numbers.editing_target().is_some())
+    }
+
+    fn editing_number_contains(&self, panel: Rect, point: [f32; 2]) -> bool {
+        self.numbers
+            .editing_target()
+            .is_some_and(|target| self.numbers.target_at(panel, point).as_ref() == Some(&target))
+            || self.angles.numbers.iter().any(|numbers| {
+                numbers
+                    .editing_target()
+                    .is_some_and(|target| numbers.target_at(panel, point).as_ref() == Some(&target))
+            })
+    }
+
     fn pointer_released(&mut self) -> bool {
         self.numbers.pointer_released()
             | self.angles.pointer_released()
@@ -935,11 +955,15 @@ impl InspectorState {
     }
 
     fn clear_editor_focus(&mut self) {
+        self.clear_text_focus();
+        self.controls.blur();
+    }
+
+    fn clear_text_focus(&mut self) {
         self.text.set_focused(false);
         self.clip_start.set_focused(false);
         self.clip_end.set_focused(false);
         self.pipeline_name.set_focused(false);
-        self.controls.blur();
     }
 
     pub fn set_focused(&mut self, focused: bool) {
@@ -3567,7 +3591,8 @@ impl InspectorState {
             return true;
         }
         if self.controls.numbers.target_at(rect, point).is_some() {
-            self.clear_editor_focus();
+            self.clear_text_focus();
+            self.controls.angles.blur();
             if let Some((target, value)) = self
                 .controls
                 .numbers
@@ -3580,7 +3605,8 @@ impl InspectorState {
             }
         }
         if self.controls.angles.target_at(rect, point).is_some() {
-            self.clear_editor_focus();
+            self.clear_text_focus();
+            self.controls.numbers.blur();
             if let Some((target, value)) =
                 self.controls.angles.pointer_pressed(rect, point, modifiers)
             {
@@ -4125,6 +4151,31 @@ impl InspectorState {
 
     pub fn is_cursor_lock_dragging(&self) -> bool {
         self.controls.is_cursor_lock_dragging()
+    }
+
+    pub fn is_number_editing(&self) -> bool {
+        self.controls.is_number_editing() || self.controls.color_picker.is_editing()
+    }
+
+    pub fn editing_number_contains(&self, panel: Rect, point: [f32; 2]) -> bool {
+        self.controls.editing_number_contains(panel, point)
+    }
+
+    pub fn is_color_dragging(&self) -> bool {
+        self.controls.color_picker.is_dragging()
+    }
+
+    pub fn is_color_open(&self) -> bool {
+        self.controls.color_picker.is_open()
+    }
+
+    pub fn close_color_picker(&mut self) {
+        self.controls.color_picker.close();
+    }
+
+    pub fn cancel_number_drag(&mut self) {
+        self.controls.numbers.blur();
+        self.controls.angles.blur();
     }
 
     pub fn pointer_released(&mut self) -> bool {

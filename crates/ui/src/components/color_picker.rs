@@ -6,8 +6,8 @@ use std::{
 
 use anyhow::Result;
 use winit::{
-    event::{Ime, KeyEvent},
-    keyboard::ModifiersState,
+    event::{ElementState, Ime, KeyEvent},
+    keyboard::{Key, ModifiersState, NamedKey},
 };
 
 use crate::{
@@ -71,6 +71,7 @@ pub struct ColorPicker {
     open: PopupState,
     t: f32,
     drag: Option<Drag>,
+    open_start: Option<[f32; 4]>,
     textures: Textures,
     built_rect: Option<Rect>,
     window_bounds: Option<Rect>,
@@ -90,6 +91,7 @@ impl ColorPicker {
             open: PopupState::default(),
             t: 0.0,
             drag: None,
+            open_start: None,
             textures: Textures::default(),
             built_rect: None,
             window_bounds: None,
@@ -127,10 +129,14 @@ impl ColorPicker {
     pub fn close(&mut self) {
         self.open.close();
         self.drag = None;
+        self.open_start = None;
         self.hex.set_focused(false);
     }
 
     pub fn open_and_focus_hex(&mut self) {
+        if !self.open.is_open() {
+            self.open_start = Some(self.linear);
+        }
         self.open.set_open(true);
         self.t = self.t.max(0.05);
         self.drag = None;
@@ -289,9 +295,11 @@ impl ColorPicker {
         if rect.contains(point) {
             self.open.toggle();
             if self.open.is_open() {
+                self.open_start = Some(self.linear);
                 self.t = self.t.max(0.05);
             } else {
                 self.drag = None;
+                self.open_start = None;
                 self.hex.set_focused(false);
             }
             return true;
@@ -323,6 +331,17 @@ impl ColorPicker {
     }
 
     pub fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
+        if event.state == ElementState::Pressed
+            && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && self.is_open()
+        {
+            let value = self.open_start;
+            self.close();
+            if let Some(value) = value {
+                self.set_linear(value);
+            }
+            return true;
+        }
         if !self.is_editing() {
             return false;
         }

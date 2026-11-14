@@ -293,6 +293,32 @@ impl ProjectOptionsState {
         self.numbers.is_dragging()
     }
 
+    pub fn is_number_editing(&self) -> bool {
+        self.numbers.editing_target().is_some() || self.background_color.is_editing()
+    }
+
+    pub fn editing_number_contains(&self, panel: Rect, point: [f32; 2]) -> bool {
+        self.numbers
+            .editing_target()
+            .is_some_and(|target| self.numbers.target_at(panel, point).as_ref() == Some(&target))
+    }
+
+    pub fn is_color_dragging(&self) -> bool {
+        self.background_color.is_dragging()
+    }
+
+    pub fn is_color_open(&self) -> bool {
+        self.background_color.is_open()
+    }
+
+    pub fn close_color_picker(&mut self) {
+        self.background_color.close();
+    }
+
+    pub fn cancel_number_drag(&mut self) {
+        self.numbers.blur();
+    }
+
     pub fn sync_color_picker_textures(&mut self, renderer: &mut Renderer) -> Result<()> {
         self.background_color.sync_textures(renderer)
     }
