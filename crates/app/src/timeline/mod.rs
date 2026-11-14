@@ -2325,6 +2325,10 @@ impl TimelineState {
         let selected_track = self.selected_track;
         let playhead = self.playhead;
         let playing = self.playing;
+        let playback_ready = self.playback_ready;
+        let seek_revision = self.seek_revision;
+        let playback_just_started = self.playback_just_started;
+        let selection_frame = self.selection_frame;
         let frame_rate = self.frame_rate;
         let pixels_per_second = self.pixels_per_second;
         let scroll_time = self.scroll_time;
@@ -2339,6 +2343,10 @@ impl TimelineState {
         self.focused_stack = focused_stack;
         self.playhead = playhead;
         self.playing = playing;
+        self.playback_ready = playback_ready;
+        self.seek_revision = seek_revision;
+        self.playback_just_started = playback_just_started;
+        self.selection_frame = selection_frame;
         self.frame_rate = frame_rate;
         self.pixels_per_second = pixels_per_second;
         self.scroll_time = scroll_time;

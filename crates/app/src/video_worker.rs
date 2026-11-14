@@ -855,6 +855,8 @@ pub struct VideoPlayback {
     capture_identity: Option<(usize, usize, [u32; 2])>,
     capture_epoch: u64,
     transport_key: Option<(u64, bool, bool)>,
+    transport_started: bool,
+    content_dirty: bool,
     readiness_revision: Option<u64>,
     readiness_editing: bool,
     ready_transport: Option<(u64, bool, bool, u64)>,
@@ -906,6 +908,8 @@ impl VideoPlayback {
             capture_identity: None,
             capture_epoch: 0,
             transport_key: None,
+            transport_started: false,
+            content_dirty: false,
             readiness_revision: None,
             readiness_editing: false,
             ready_transport: None,
@@ -915,7 +919,7 @@ impl VideoPlayback {
     }
 
     pub(crate) fn playback_ready(
-        &self,
+        &mut self,
         timeline: &TimelineState,
         revision: u64,
         editing: bool,
@@ -932,19 +936,22 @@ impl VideoPlayback {
         {
             return false;
         }
-        self.readiness_revision == Some(revision)
-            && self.readiness_editing == editing
-            && transport_readiness_matches(
-                self.ready_transport,
-                (
-                    timeline.seek_revision(),
-                    timeline.is_playing(),
-                    timeline.is_scrubbing(),
-                    revision,
-                ),
-            )
+        let ready = self.transport_started
+            || (self.readiness_revision == Some(revision)
+                && self.readiness_editing == editing
+                && transport_readiness_matches(
+                    self.ready_transport,
+                    (
+                        timeline.seek_revision(),
+                        timeline.is_playing(),
+                        timeline.is_scrubbing(),
+                        revision,
+                    ),
+                ));
+        self.transport_started = ready
             && self.texture.is_some()
-            && matches!(self.status, VideoWorkerStatus::Ready { .. })
+            && matches!(self.status, VideoWorkerStatus::Ready { .. });
+        self.transport_started
     }
 
     #[cfg(test)]
@@ -978,6 +985,8 @@ impl VideoPlayback {
             capture_identity: None,
             capture_epoch: 0,
             transport_key: None,
+            transport_started: false,
+            content_dirty: false,
             readiness_revision: None,
             readiness_editing: false,
             ready_transport: None,
@@ -1024,6 +1033,10 @@ impl VideoPlayback {
 
     pub const fn invalidate(&mut self) {
         if self.scrubbing {
+            return;
+        }
+        if matches!(self.transport_key, Some((_, true, _))) {
+            self.content_dirty = true;
             return;
         }
         self.key = None;
@@ -1103,6 +1116,7 @@ impl VideoPlayback {
         self.active_renderer_key = None;
         self.source_geometry.clear();
         self.ready_transport = None;
+        self.transport_started = false;
     }
 
     fn queue_snapshot(&mut self, key: (u64, u64, i64, [u32; 2]), snapshot: Snapshot) {
@@ -1131,11 +1145,15 @@ impl VideoPlayback {
         captured_frame: Option<([u32; 2], &[u8])>,
         live_editing: bool,
     ) -> Result<bool> {
-        self.transport_key = Some((
+        let transport_key = Some((
             timeline.seek_revision(),
             timeline.is_playing(),
             timeline.is_scrubbing(),
         ));
+        if self.transport_key != transport_key {
+            self.transport_started = false;
+            self.transport_key = transport_key;
+        }
         let previous_status = self.status;
         self.readiness_revision = Some(revision);
         self.readiness_editing = live_editing;
@@ -1178,12 +1196,14 @@ impl VideoPlayback {
             advance_processing_generation(self.key, key, self.generation, timeline.is_scrubbing());
         self.scrubbing = timeline.is_scrubbing();
         self.poll(renderer);
-        if live_editing
+        if (live_editing || self.content_dirty)
             && !self.request_pending
-            && self
-                .last_live_snapshot
-                .is_none_or(|last| last.elapsed() >= Duration::from_millis(50))
+            && (!live_editing
+                || self
+                    .last_live_snapshot
+                    .is_none_or(|last| last.elapsed() >= Duration::from_millis(50)))
         {
+            self.content_dirty = false;
             self.live_edit_revision = self.live_edit_revision.wrapping_add(1);
             self.last_live_snapshot = Some(Instant::now());
             key.0 = content_revision(self.live_edit_revision);

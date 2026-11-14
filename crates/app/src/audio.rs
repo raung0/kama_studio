@@ -1365,6 +1365,7 @@ pub struct AudioPlayback {
     transport_revision: u64,
     generation: u64,
     timeline_transport_key: Option<(u64, bool, bool)>,
+    transport_started: bool,
     applied_transport_revision: u64,
     master_muted: bool,
     playing: bool,
@@ -1420,6 +1421,7 @@ impl AudioPlayback {
             transport_revision: 0,
             generation: 0,
             timeline_transport_key: None,
+            transport_started: false,
             applied_transport_revision: 0,
             master_muted: false,
             playing: false,
@@ -1461,13 +1463,14 @@ impl AudioPlayback {
         self.generation = self.generation.saturating_add(1);
         self.clear_pending = true;
         self.timeline_transport_key = None;
+        self.transport_started = false;
     }
 
     pub const fn set_master_muted(&mut self, muted: bool) {
         self.master_muted = muted;
     }
 
-    pub fn playback_ready(&self, timeline: &TimelineState) -> bool {
+    pub fn playback_ready(&mut self, timeline: &TimelineState) -> bool {
         if !timeline.is_playing() || timeline.is_scrubbing() {
             return true;
         }
@@ -1480,13 +1483,14 @@ impl AudioPlayback {
         {
             return false;
         }
-        audio_startup_ready(
+        self.transport_started |= audio_startup_ready(
             self.ready_generation,
             (self.project_revision, self.generation),
             self.audio_required,
             self.output_ready,
             self.audio_sources_ready,
-        )
+        );
+        self.transport_started
     }
 
     pub const fn set_video_ready(&mut self, ready: bool) {
@@ -1513,6 +1517,7 @@ impl AudioPlayback {
         );
         if self.timeline_transport_key != Some(transport_key) {
             self.timeline_transport_key = Some(transport_key);
+            self.transport_started = false;
             self.generation = self.generation.wrapping_add(1);
             self.clock_lead = 0.0;
             self.track_levels.clear();
@@ -1572,22 +1577,22 @@ impl AudioPlayback {
                 self.sent_project_revision = Some(worker_revision);
                 self.last_response_at = Instant::now();
             }
-            let project_ready =
-                !self.clear_pending && self.accepted_project_revision == Some(worker_revision);
+            let transport_project_revision =
+                self.sent_project_revision.filter(|_| !self.clear_pending);
             self.transport_revision = self.transport_revision.saturating_add(1);
             if !timeline.is_playing() {
                 self.pause_after_failure = false;
             }
-            self.playing = project_ready
+            self.playing = transport_project_revision.is_some()
                 && timeline.is_playing()
                 && !timeline.is_scrubbing()
                 && self.video_ready
                 && !self.pause_after_failure;
-            if project_ready {
+            if let Some(project_revision) = transport_project_revision {
                 self.transport_pending = process
                     .send(AudioWorkerRequest::Transport {
                         revision: self.transport_revision,
-                        project_revision: worker_revision,
+                        project_revision,
                         generation: self.generation,
                         playhead: timeline.playhead(),
                         playing: self.playing,
@@ -1701,6 +1706,7 @@ impl AudioPlayback {
                 self.track_levels.clear();
                 self.master_levels = [0.0; 2];
                 self.ready_generation = None;
+                self.transport_started = false;
                 self.output_ready = false;
                 if !self.crash_reported {
                     messages::error(
@@ -1772,6 +1778,7 @@ impl AudioPlayback {
         self.track_levels.clear();
         self.master_levels = [0.0; 2];
         self.ready_generation = None;
+        self.transport_started = false;
         self.output_ready = false;
         self.status = AudioWorkerStatus::Unresponsive;
         if !self.crash_reported {
@@ -1808,6 +1815,7 @@ impl AudioPlayback {
         self.track_levels.clear();
         self.master_levels = [0.0; 2];
         self.ready_generation = None;
+        self.transport_started = false;
         self.output_ready = false;
         self.start_worker();
     }
