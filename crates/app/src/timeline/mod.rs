@@ -7427,7 +7427,15 @@ fn context_items(kind: ContextKind, replacement_enabled: bool) -> Vec<ContextIte
         kind,
         ContextKind::Empty { .. } | ContextKind::Selection | ContextKind::Marks { .. }
     ) {
-        specs.insert(0, ("Add mark", None, None, ContextCommand::AddMark));
+        specs.insert(
+            0,
+            (
+                "Add mark",
+                None,
+                Some(AppIcon::MenuMark),
+                ContextCommand::AddMark,
+            ),
+        );
     }
     specs
         .into_iter()
