@@ -303,7 +303,7 @@ impl ProjectOptionsState {
             .is_some_and(|target| self.numbers.target_at(panel, point).as_ref() == Some(&target))
     }
 
-    pub fn is_color_dragging(&self) -> bool {
+    pub const fn is_color_dragging(&self) -> bool {
         self.background_color.is_dragging()
     }
 

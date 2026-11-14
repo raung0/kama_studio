@@ -2608,12 +2608,12 @@ impl EditorApp {
         self.pipeline_graph.cancel_number_drag();
         self.render_panel.cancel_number_drag();
         self.widgets.cancel_number_drag();
-        if let Some((before, _)) = self.editor.history_gesture.take() {
-            if project_drag {
-                self.editor.restore_snapshot(before, &self.plugins);
-                self.effects.rebuild(&self.editor.project.pipelines);
-                self.video.invalidate();
-            }
+        if let Some((before, _)) = self.editor.history_gesture.take()
+            && project_drag
+        {
+            self.editor.restore_snapshot(before, &self.plugins);
+            self.effects.rebuild(&self.editor.project.pipelines);
+            self.video.invalidate();
         }
         self.drag = None;
         true

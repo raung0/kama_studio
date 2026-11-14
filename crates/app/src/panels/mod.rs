@@ -4161,7 +4161,7 @@ impl InspectorState {
         self.controls.editing_number_contains(panel, point)
     }
 
-    pub fn is_color_dragging(&self) -> bool {
+    pub const fn is_color_dragging(&self) -> bool {
         self.controls.color_picker.is_dragging()
     }
 

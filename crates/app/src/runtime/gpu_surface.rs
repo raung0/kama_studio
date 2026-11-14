@@ -1,6 +1,9 @@
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use anyhow::Context;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::cpu_surface::CpuSurfaceSessionDescriptor;
@@ -42,6 +45,7 @@ pub struct Descriptor {
     pub importer_pid: i32,
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 impl Descriptor {
     fn validate(&self, session: &CpuSurfaceSessionDescriptor) -> Result<()> {
         let expected_processes = (session.exporter_pid, session.parent_pid);
@@ -80,6 +84,7 @@ pub fn identity(device: &wgpu::Device) -> Result<GpuIdentity> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn layout(width: u32, height: u32) -> Result<(u32, u64)> {
     anyhow::ensure!(
         (1..=16_384).contains(&width) && (1..=16_384).contains(&height),
@@ -98,6 +103,7 @@ fn layout(width: u32, height: u32) -> Result<(u32, u64)> {
     Ok((stride, size))
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn device_layout(device: &wgpu::Device, width: u32, height: u32) -> Result<(u32, u64)> {
     let limits = device.limits();
     anyhow::ensure!(
@@ -112,6 +118,7 @@ fn device_layout(device: &wgpu::Device, width: u32, height: u32) -> Result<(u32,
     Ok((stride, size))
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Kama GPU-only cross-process preview"),
@@ -133,6 +140,7 @@ fn texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn copy_encoder(
     device: &wgpu::Device,
     texture: &wgpu::Texture,
@@ -175,6 +183,7 @@ fn copy_encoder(
     encoder
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn wait(device: &wgpu::Device, submission: wgpu::SubmissionIndex) -> Result<()> {
     device
         .poll(wgpu::PollType::Wait {
@@ -205,7 +214,10 @@ pub fn receive(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-pub enum SharedSurface {}
+pub struct SharedSurface {
+    descriptor: Descriptor,
+    texture: wgpu::Texture,
+}
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 impl SharedSurface {
@@ -218,14 +230,17 @@ impl SharedSurface {
         anyhow::bail!("native GPU sharing is unavailable on this platform")
     }
 
-    pub fn descriptor(&self) -> &Descriptor {
-        match *self {}
+    pub const fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
     }
-    pub fn texture(&self) -> &wgpu::Texture {
-        match *self {}
+    pub const fn texture(&self) -> &wgpu::Texture {
+        &self.texture
     }
-    pub fn publish(&mut self, _: &wgpu::Device, _: &wgpu::Queue) -> Result<()> {
-        match *self {}
+    pub fn publish(&self, _: &wgpu::Device, _: &wgpu::Queue) -> Result<()> {
+        anyhow::bail!(
+            "native GPU sharing is unavailable on this platform (channel {})",
+            self.descriptor.channel
+        )
     }
 }
 
