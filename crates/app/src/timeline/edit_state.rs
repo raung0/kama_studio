@@ -10,8 +10,10 @@ use crate::project::{MediaId, VisualSource};
 pub struct TimelineEditState {
     pub(super) document: TimelineDocument,
     pub(super) selected: HashSet<u32>,
+    pub(super) selected_marks: HashSet<u32>,
     pub(super) primary_selected: Option<u32>,
     pub(super) clipboard: Vec<ClipboardClip>,
+    pub(super) mark_clipboard: Vec<super::marks::TimelineMark>,
 }
 
 impl TimelineEditState {
@@ -19,8 +21,10 @@ impl TimelineEditState {
         Self {
             document,
             selected: HashSet::new(),
+            selected_marks: HashSet::new(),
             primary_selected: None,
             clipboard: Vec::new(),
+            mark_clipboard: Vec::new(),
         }
     }
 
@@ -55,7 +59,7 @@ impl TimelineEditState {
     }
 
     pub(crate) fn has_selection(&self) -> bool {
-        !self.selected.is_empty()
+        !self.selected.is_empty() || !self.selected_marks.is_empty()
     }
 
     pub(crate) fn is_clip_selected(&self, id: u32) -> bool {

@@ -1686,6 +1686,9 @@ impl EditorApp {
         }
         self.inspector
             .sync_color_picker_textures(&mut self.renderer)?;
+        self.editor
+            .timeline
+            .sync_mark_textures(&mut self.renderer)?;
         self.pipeline_graph
             .sync_color_picker_textures(&mut self.renderer)?;
         self.project_options
@@ -3154,6 +3157,9 @@ impl EditorApp {
     }
 
     fn pointer_pressed(&mut self) {
+        self.editor
+            .timeline
+            .dismiss_mark_popup_outside(&self.snapshot, self.cursor);
         if self.editor.color_edit.is_some() && !self.color_picker_open() {
             self.finish_color_edit_history(false);
         }
@@ -3177,7 +3183,13 @@ impl EditorApp {
         if self.editor.color_edit.is_none() && !editing_number_hit {
             self.finish_number_edit_history(false);
         }
-        if self.gui.consume_popup_press(self.cursor) {
+        let mark_popup_press = self.modal.is_none()
+            && self.palette.kind.is_none()
+            && self
+                .editor
+                .timeline
+                .mark_popup_contains(&self.snapshot, self.cursor);
+        if !mark_popup_press && self.gui.consume_popup_press(self.cursor) {
             self.input.mouse_pressed = false;
             return;
         }

@@ -26,6 +26,13 @@ impl TimelineState {
         self.focused_stack = Some(stack);
         self.snap_times.clear();
 
+        if button == MouseButton::Left && self.mark_popup_pressed(layout, point, modifiers) {
+            return true;
+        }
+        if button != MouseButton::Left {
+            self.close_mark_popup();
+        }
+
         if button == MouseButton::Left {
             if let Some(editor) = &self.keyframe_value_editor {
                 if Self::keyframe_value_set_rect(layout, editor).contains(point) {
@@ -51,6 +58,15 @@ impl TimelineState {
         }
         if button == MouseButton::Middle {
             self.context_menu = None;
+            if layout.ruler.contains(point) {
+                self.drag = Some(Drag::RulerPan {
+                    start: point,
+                    scroll_time: self.scroll_time,
+                    time: self.time_at(layout, point[0]),
+                    panned: false,
+                });
+                return true;
+            }
             self.drag = Some(Drag::Pan {
                 start: point,
                 scroll_time: self.scroll_time,
@@ -60,6 +76,24 @@ impl TimelineState {
         }
         if button == MouseButton::Right {
             self.context_menu = None;
+            if layout.ruler.contains(point) {
+                let mark_hit = self.mark_at(layout, point);
+                if let Some(id) = mark_hit.filter(|id| !self.edit.selected_marks.contains(id)) {
+                    if !modifiers.shift_key() {
+                        self.clear_selection();
+                    }
+                    self.edit.selected_marks.insert(id);
+                }
+                self.drag = Some(Drag::BoxSelect {
+                    stack,
+                    start: point,
+                    current: point,
+                    additive: modifiers.shift_key(),
+                    hit: None,
+                    mark_hit,
+                });
+                return true;
+            }
             if let Some(track) = self.header_track_at(layout, point)
                 && let Some(track_data) = self.tracks.get(track)
             {
@@ -113,6 +147,7 @@ impl TimelineState {
                     self.select_clip(id, modifiers.shift_key());
                 }
                 self.drag = Some(Drag::BoxSelect {
+                    mark_hit: None,
                     start: point,
                     current: point,
                     additive: modifiers.shift_key(),
@@ -231,6 +266,7 @@ impl TimelineState {
             }
             self.selected_track = Some(track_id);
             if !modifiers.shift_key() {
+                self.edit.selected_marks.clear();
                 self.selected.clear();
                 self.primary_selected = None;
             }
@@ -293,6 +329,9 @@ impl TimelineState {
             return true;
         }
         if layout.ruler.contains(point) {
+            if self.begin_mark_drag(layout, point, modifiers.shift_key(), modifiers.alt_key()) {
+                return true;
+            }
             self.set_dragged_playhead(layout, self.time_at(layout, point[0]));
             self.drag = Some(Drag::Playhead);
             return true;
@@ -413,6 +452,12 @@ impl TimelineState {
                 snap_points.sort_unstable_by(f32::total_cmp);
                 snap_points.dedup_by(|a, b| a.total_cmp(b).is_eq());
                 self.drag = Some(Drag::Clips {
+                    marks: self
+                        .marks
+                        .iter()
+                        .filter(|mark| self.edit.selected_marks.contains(&mark.id))
+                        .map(|mark| (mark.id, mark.time))
+                        .collect(),
                     anchor_track,
                     anchor_start,
                     start: point,
@@ -430,6 +475,7 @@ impl TimelineState {
             }
         } else {
             if !modifiers.shift_key() {
+                self.edit.selected_marks.clear();
                 self.selected.clear();
                 self.primary_selected = None;
                 self.selected_track = None;
@@ -460,6 +506,11 @@ impl TimelineState {
             return true;
         }
         self.cursor = point;
+        if let Some(layout) = self.focused_layout(snapshot)
+            && self.mark_popup_moved(layout, point)
+        {
+            return true;
+        }
         let Some(mut drag) = self.drag.take() else {
             return false;
         };
@@ -468,6 +519,75 @@ impl TimelineState {
             return false;
         };
         match &mut drag {
+            Drag::RulerPan {
+                start,
+                scroll_time,
+                panned,
+                ..
+            } => {
+                if (point[0] - start[0]).abs().max((point[1] - start[1]).abs())
+                    >= CLIP_DRAG_THRESHOLD_PX
+                {
+                    *panned = true;
+                }
+                if *panned {
+                    self.scroll_time = (*scroll_time
+                        - f64::from(point[0] - start[0]) / f64::from(self.pixels_per_second))
+                    .max(0.0);
+                }
+            }
+            Drag::Marks {
+                start,
+                anchor,
+                marks,
+                clips,
+                preview_tracks,
+                keyframes,
+                ..
+            } => {
+                self.reset_clip_drag_tracks(clips, preview_tracks);
+                let dx = point[0] - start[0];
+                let delta = if dx.abs() >= CLIP_DRAG_THRESHOLD_PX {
+                    let excluded = clips.iter().map(|origin| origin.id).collect::<Vec<_>>();
+                    let raw = *anchor + dx / self.pixels_per_second;
+                    let target =
+                        self.snap_time_with_options(layout, raw, &excluded, self.playhead_snap);
+                    let target = if self.frame_snap {
+                        (target * self.frame_rate).round() / self.frame_rate
+                    } else {
+                        target
+                    };
+                    let earliest = marks
+                        .iter()
+                        .map(|(_, time)| *time)
+                        .chain(clips.iter().map(|origin| origin.start))
+                        .fold(*anchor, f32::min);
+                    (target - *anchor).max(-earliest)
+                } else {
+                    0.0
+                };
+                for (id, time) in marks.iter() {
+                    if let Some(mark) = self
+                        .edit
+                        .document
+                        .marks
+                        .iter_mut()
+                        .find(|mark| mark.id == *id)
+                    {
+                        mark.time = *time + delta;
+                    }
+                }
+                if dx.abs() >= CLIP_DRAG_THRESHOLD_PX {
+                    self.place_dragged_clips(clips, preview_tracks, None, delta);
+                } else {
+                    for origin in clips.iter() {
+                        if let Some(clip) = self.edit.document.clips.get_mut(origin.index) {
+                            clip.start = origin.start;
+                        }
+                    }
+                }
+                self.move_keyframes_horizontal(keyframes, f64::from(delta));
+            }
             Drag::Pan {
                 start,
                 scroll_time,
@@ -493,6 +613,7 @@ impl TimelineState {
                 self.resize_clip(layout, *id, *left, point[0], *rate_stretch, *origin);
             }
             Drag::Clips {
+                marks,
                 anchor_track,
                 anchor_start,
                 start,
@@ -619,6 +740,17 @@ impl TimelineState {
                         point,
                     );
                     self.move_keyframes_horizontal(keyframes, delta_time);
+                    for (id, time) in marks.iter() {
+                        if let Some(mark) = self
+                            .edit
+                            .document
+                            .marks
+                            .iter_mut()
+                            .find(|mark| mark.id == *id)
+                        {
+                            mark.time = (*time + delta_time as f32).max(0.0);
+                        }
+                    }
                 }
             }
             Drag::Overview {
@@ -678,6 +810,9 @@ impl TimelineState {
         modifiers: ModifiersState,
         project: &Project,
     ) -> bool {
+        if button == MouseButton::Left && self.mark_picker.get_mut().pointer_released() {
+            return true;
+        }
         if button == MouseButton::Left
             && let Some(knob) = self
                 .mixer_knobs
@@ -689,11 +824,14 @@ impl TimelineState {
         }
         let relevant = matches!(
             (&self.drag, button),
-            (Some(Drag::Pan { .. }), MouseButton::Middle)
-                | (Some(Drag::BoxSelect { .. }), MouseButton::Right)
+            (
+                Some(Drag::Pan { .. } | Drag::RulerPan { .. }),
+                MouseButton::Middle
+            ) | (Some(Drag::BoxSelect { .. }), MouseButton::Right)
                 | (
                     Some(
                         Drag::Clips { .. }
+                            | Drag::Marks { .. }
                             | Drag::ClipEdge { .. }
                             | Drag::Playhead
                             | Drag::Overview { .. }
@@ -708,12 +846,28 @@ impl TimelineState {
             return false;
         }
         match self.drag.take() {
+            Some(Drag::RulerPan {
+                start,
+                time,
+                panned: false,
+                ..
+            }) if (point[0] - start[0]).abs().max((point[1] - start[1]).abs())
+                < CLIP_DRAG_THRESHOLD_PX =>
+            {
+                if let Some(layout) = self.focused_layout(snapshot) {
+                    self.open_mark_popup(
+                        [start[0] - layout.rect.x, start[1] - layout.rect.y],
+                        time,
+                    );
+                }
+            }
             Some(Drag::BoxSelect {
                 start,
                 current,
                 additive,
                 stack,
                 hit,
+                mark_hit,
             }) => {
                 if let Some(layout) = self.focused_layout(snapshot) {
                     let dx = current[0] - start[0];
@@ -764,11 +918,19 @@ impl TimelineState {
                             }
                         }
                         if !additive {
+                            self.edit.selected_marks.clear();
                             self.selected.clear();
                             self.primary_selected = None;
                             self.selected_keyframes.clear();
                         }
                         let primary_hit = hits.first().copied();
+                        let mark_hits = self
+                            .marks
+                            .iter()
+                            .filter(|mark| intersects(self.mark_rect(layout, mark), area))
+                            .map(|mark| mark.id)
+                            .collect::<Vec<_>>();
+                        self.edit.selected_marks.extend(mark_hits);
                         for id in hits {
                             let grouped = self.grouped_ids(id);
                             self.selected.extend(grouped);
@@ -782,7 +944,11 @@ impl TimelineState {
                             }
                         }
                     } else {
-                        let kind = if hit.is_some() {
+                        let kind = if mark_hit.is_some() {
+                            ContextKind::Marks {
+                                time: self.time_at(layout, start[0]),
+                            }
+                        } else if hit.is_some() {
                             ContextKind::Selection
                         } else {
                             {
@@ -819,6 +985,20 @@ impl TimelineState {
                     }
                 }
             }
+            Some(Drag::Marks {
+                start,
+                collapse,
+                toggle,
+                ..
+            }) if (point[0] - start[0]).abs() < CLIP_DRAG_THRESHOLD_PX => {
+                if let Some(id) = toggle {
+                    self.edit.selected_marks.remove(&id);
+                }
+                if let Some(id) = collapse {
+                    self.clear_selection();
+                    self.edit.selected_marks.insert(id);
+                }
+            }
             Some(Drag::Clips {
                 start,
                 shift_toggle_on_click: Some(id),
@@ -847,10 +1027,12 @@ impl TimelineState {
             }
             drag => {
                 let moved = match &drag {
-                    Some(Drag::Clips { origins, .. }) => origins
-                        .iter()
-                        .map(|origin| (origin.id, origin.track))
-                        .collect::<Vec<_>>(),
+                    Some(Drag::Clips { origins, .. } | Drag::Marks { clips: origins, .. }) => {
+                        origins
+                            .iter()
+                            .map(|origin| (origin.id, origin.track))
+                            .collect::<Vec<_>>()
+                    }
                     _ => Vec::new(),
                 };
                 self.drag = drag;
@@ -999,8 +1181,11 @@ impl TimelineState {
         &mut self,
         snapshot: &LayoutSnapshot,
         event: &KeyEvent,
-        _modifiers: ModifiersState,
+        modifiers: ModifiersState,
     ) -> bool {
+        if self.mark_popup_key(event, modifiers) {
+            return true;
+        }
         if self.focused_stack.is_none() || event.state != ElementState::Pressed {
             return false;
         }
@@ -1140,6 +1325,15 @@ impl TimelineState {
         command: ContextCommand,
     ) {
         match command {
+            ContextCommand::AddMark => {
+                let time = match kind {
+                    ContextKind::Empty { time, .. } | ContextKind::Marks { time } => time,
+                    _ => (self.scroll_time
+                        + f64::from(point[0] - super::HEADER_W) / f64::from(self.pixels_per_second))
+                    .max(0.0) as f32,
+                };
+                self.open_mark_popup(point, time);
+            }
             ContextCommand::CopySelection => {
                 self.pending_action = Some(TimelineAction::CopySelection);
             }
@@ -1185,9 +1379,10 @@ impl TimelineState {
                     ContextKind::Empty { time, track, .. } => track
                         .and_then(|index| self.tracks.get(index))
                         .map(|track| (track.id, time)),
-                    ContextKind::Selection | ContextKind::Mixer { .. } | ContextKind::Keyframe => {
-                        None
-                    }
+                    ContextKind::Selection
+                    | ContextKind::Marks { .. }
+                    | ContextKind::Mixer { .. }
+                    | ContextKind::Keyframe => None,
                 };
                 if let Some((track, time)) = target {
                     self.pending_action = Some(TimelineAction::InsertVideoClip { track, time });
@@ -1217,9 +1412,10 @@ impl TimelineState {
                     ContextKind::Empty { time, track, .. } => track
                         .and_then(|index| self.tracks.get(index))
                         .map(|track| (track.id, time)),
-                    ContextKind::Selection | ContextKind::Mixer { .. } | ContextKind::Keyframe => {
-                        None
-                    }
+                    ContextKind::Selection
+                    | ContextKind::Marks { .. }
+                    | ContextKind::Mixer { .. }
+                    | ContextKind::Keyframe => None,
                 };
                 if let Some((track, time)) = target {
                     self.pending_action = Some(TimelineAction::InsertEffectClip { track, time });
@@ -1239,9 +1435,10 @@ impl TimelineState {
                 let near = match kind {
                     ContextKind::Empty { track, .. } => track,
                     ContextKind::Track { id, .. } => self.track_index(id),
-                    ContextKind::Selection | ContextKind::Mixer { .. } | ContextKind::Keyframe => {
-                        None
-                    }
+                    ContextKind::Selection
+                    | ContextKind::Marks { .. }
+                    | ContextKind::Mixer { .. }
+                    | ContextKind::Keyframe => None,
                 };
                 self.pending_action = Some(TimelineAction::AddTrack {
                     kind: track_kind,

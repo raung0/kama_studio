@@ -8,7 +8,11 @@ const ICON_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/icons.rgba"))
 include!(concat!(env!("OUT_DIR"), "/app_icons.rs"));
 
 #[derive(Clone, Copy)]
-pub struct Icons([IconId; AppIcon::COUNT]);
+pub struct Icons {
+    glyphs: [IconId; AppIcon::COUNT],
+    pub mark: TextureId,
+    pub custom_mark: TextureId,
+}
 
 impl Icons {
     pub fn load(renderer: &mut Renderer) -> Result<Self> {
@@ -21,7 +25,18 @@ impl Icons {
         for (id, pixels) in ids.iter_mut().zip(ICON_DATA.as_chunks::<ICON_BYTES>().0) {
             *id = renderer.register_icon_rgba8(ICON_SIZE, ICON_SIZE, pixels)?;
         }
-        Ok(Self(ids))
+        let mark =
+            renderer.register_texture_rgba8(ICON_SIZE, ICON_SIZE, icon_rgba(AppIcon::Mark))?;
+        let custom = renderer.register_texture_rgba8(
+            ICON_SIZE,
+            ICON_SIZE,
+            icon_rgba(AppIcon::CustomMark),
+        )?;
+        Ok(Self {
+            glyphs: ids,
+            mark,
+            custom_mark: custom,
+        })
     }
 
     #[expect(
@@ -29,7 +44,7 @@ impl Icons {
         reason = "AppIcon discriminants and COUNT are generated together from the same icon list"
     )]
     pub const fn get(&self, icon: AppIcon) -> IconId {
-        self.0[icon as usize]
+        self.glyphs[icon as usize]
     }
 }
 

@@ -24,6 +24,8 @@ use crate::{
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PreferencesFile {
+    #[serde(default = "default_copy_marks_on_extraction")]
+    copy_marks_on_extraction: bool,
     #[serde(default)]
     theme: ThemePreset,
     #[serde(default = "default_dark_accent", alias = "accent")]
@@ -64,6 +66,10 @@ const fn default_light_accent() -> [u8; 4] {
 }
 
 const fn default_rounded_corners() -> bool {
+    true
+}
+
+const fn default_copy_marks_on_extraction() -> bool {
     true
 }
 
@@ -160,6 +166,7 @@ const fn cyclic_index(selected: usize, count: usize, delta: isize) -> usize {
 impl Default for PreferencesFile {
     fn default() -> Self {
         Self {
+            copy_marks_on_extraction: default_copy_marks_on_extraction(),
             theme: ThemePreset::Dark,
             dark_accent: default_dark_accent(),
             light_accent: default_light_accent(),
@@ -189,6 +196,10 @@ pub fn load_plugin_paths() -> String {
 
 pub fn load(registry: &mut CommandRegistry) {
     let preferences = read_json::<PreferencesFile>(&path()).unwrap_or_default();
+    COPY_MARKS_ON_EXTRACTION.store(
+        preferences.copy_marks_on_extraction,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let _ = crate::i18n::initialize(preferences.language.as_deref());
     theme::set_theme_immediate(preferences.theme);
     let dark_accent = if preferences.dark_accent == [0xf0, 0xa2, 0x15, 0xff] {
@@ -222,6 +233,7 @@ pub fn load(registry: &mut CommandRegistry) {
 
 pub fn save(registry: &CommandRegistry, plugin_paths: &str) {
     let preferences = PreferencesFile {
+        copy_marks_on_extraction: copy_marks_on_extraction(),
         theme: theme::theme(),
         dark_accent: theme::dark_accent_rgba8(),
         light_accent: theme::light_accent_rgba8(),
@@ -244,6 +256,12 @@ pub fn save(registry: &CommandRegistry, plugin_paths: &str) {
 }
 
 const SETTINGS_W: f32 = 560.0;
+static COPY_MARKS_ON_EXTRACTION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub fn copy_marks_on_extraction() -> bool {
+    COPY_MARKS_ON_EXTRACTION.load(std::sync::atomic::Ordering::Relaxed)
+}
 const SETTINGS_H: f32 = 464.0;
 const KEYBINDS_W: f32 = 680.0;
 const KEYBINDS_H: f32 = 580.0;
@@ -347,6 +365,7 @@ fn preference_dialog_rects(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingEntry {
+    CopyMarksOnExtraction,
     Language,
     Theme,
     ReleaseChannel,
@@ -406,6 +425,10 @@ fn filtered_settings(query: &str) -> Vec<SettingEntry> {
         (
             SettingEntry::HardwareDecoding,
             "Hardware decoding video playback GPU decoder VideoToolbox VAAPI DXVA CUDA software",
+        ),
+        (
+            SettingEntry::CopyMarksOnExtraction,
+            "Copy marks when extracting composition timeline markers",
         ),
         (
             SettingEntry::PluginPaths,
@@ -703,6 +726,10 @@ impl SettingsDialog {
                             }
                         });
                         let (name, value) = match entry {
+                            SettingEntry::CopyMarksOnExtraction => (
+                                crate::i18n::text("settings-copy-marks-on-extraction"),
+                                crate::i18n::text(if copy_marks_on_extraction() { "settings-on" } else { "settings-off" }),
+                            ),
                             SettingEntry::Language => (
                                 crate::i18n::text("settings-language"),
                                 language_options
@@ -845,7 +872,7 @@ impl SettingsDialog {
                                     component_style(),
                                 );
                             }
-                            SettingEntry::RoundedCorners | SettingEntry::HardwareDecoding => {
+                            SettingEntry::RoundedCorners | SettingEntry::HardwareDecoding | SettingEntry::CopyMarksOnExtraction => {
                                 kama_ui::ui!(ctx, {
                                     Rect(("settings-toggle-value", index), row.value) {
                                         fill: theme::control();
@@ -940,6 +967,19 @@ impl SettingsDialog {
 
     fn activate(&mut self, entry: SettingEntry) {
         match entry {
+            SettingEntry::CopyMarksOnExtraction => {
+                self.language_combo.close();
+                self.theme_combo.close();
+                self.release_channel_combo.close();
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.dark_accent.close();
+                self.light_accent.close();
+                COPY_MARKS_ON_EXTRACTION.store(
+                    !copy_marks_on_extraction(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             SettingEntry::Language => {
                 self.plugin_paths.set_focused(false);
                 self.close_accent_pickers();

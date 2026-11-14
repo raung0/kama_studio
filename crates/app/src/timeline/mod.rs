@@ -45,9 +45,11 @@ use winit::{
 mod edit_state;
 mod interaction;
 mod keyframes;
+mod marks;
 mod view;
 
 pub use edit_state::TimelineEditState;
+pub use marks::TimelineMark;
 
 const HEADER_W: f32 = 230.0;
 const TRANSPORT_BUTTON_W: f32 = 22.0;
@@ -969,6 +971,9 @@ enum JumpTarget {
 
 #[derive(Clone, Copy, Debug)]
 enum ContextKind {
+    Marks {
+        time: f32,
+    },
     Selection,
     Empty {
         time: f32,
@@ -988,6 +993,7 @@ enum ContextKind {
 
 #[derive(Clone, Copy, Debug)]
 enum ContextCommand {
+    AddMark,
     CopySelection,
     CutSelection,
     Paste,
@@ -1106,11 +1112,11 @@ impl TimelineAction {
         match self {
             Self::InsertVideoClip { .. } => "Insert video clip",
             Self::InsertEffectClip { .. } => "Insert effect clip",
-            Self::CopySelection => "Copy clips",
-            Self::CutSelection => "Cut clips",
-            Self::Paste => "Paste clips",
-            Self::PowerDuplicate => "Power duplicate clips",
-            Self::DeleteSelection => "Delete clips",
+            Self::CopySelection => "Copy selection",
+            Self::CutSelection => "Cut selection",
+            Self::Paste => "Paste items",
+            Self::PowerDuplicate => "Power duplicate items",
+            Self::DeleteSelection => "Delete selection",
             Self::SelectBeforePlayhead | Self::SelectAfterPlayhead => "Select clips",
             Self::GroupSelection => "Group clips",
             Self::UngroupSelection => "Ungroup clips",
@@ -1458,7 +1464,24 @@ enum ShiftClipAdjustAxis {
 
 #[derive(Debug)]
 enum Drag {
+    Marks {
+        start: [f32; 2],
+        anchor: f32,
+        marks: Vec<(u32, f32)>,
+        clips: Vec<ClipOrigin>,
+        preview_tracks: Vec<u32>,
+        keyframes: Vec<KeyframeDragPoint>,
+        collapse: Option<u32>,
+        toggle: Option<u32>,
+    },
+    RulerPan {
+        start: [f32; 2],
+        scroll_time: f64,
+        time: f32,
+        panned: bool,
+    },
     Clips {
+        marks: Vec<(u32, f32)>,
         anchor_track: u32,
         anchor_start: f32,
         start: [f32; 2],
@@ -1488,6 +1511,7 @@ enum Drag {
         additive: bool,
         stack: StackId,
         hit: Option<u32>,
+        mark_hit: Option<u32>,
     },
     Pan {
         start: [f32; 2],
@@ -1659,6 +1683,9 @@ pub struct MediaDropPreviewSpec {
 #[derive(Debug)]
 pub struct TimelineState {
     edit: TimelineEditState,
+    mark_popup: Option<marks::MarkPopup>,
+    mark_animation: crate::app_modal::PopupAnimation,
+    mark_picker: std::cell::RefCell<ui::components::ColorPicker>,
     selection_levels: HashMap<u32, f32>,
     audio_levels: HashMap<u32, [f32; 2]>,
     mixer_knobs: HashMap<(u32, MixerParameter), Knob>,
@@ -1701,6 +1728,10 @@ pub struct TimelineState {
 default_state! {
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct TimelineDocument {
+        #[serde(default)]
+        pub(crate) marks: Vec<TimelineMark>,
+        #[serde(default)]
+        pub(crate) next_mark: u32 = 1,
         pub(crate) tracks: Vec<Track> = vec![
             Track {
                 id: 1,
@@ -1802,6 +1833,7 @@ impl TimelineDocument {
     }
 
     pub(crate) fn repair_id_counters(&mut self) {
+        self.next_mark = next_id(self.next_mark, self.marks.iter().map(|mark| mark.id));
         self.next_track = next_id(self.next_track, self.tracks.iter().map(|track| track.id));
         self.next_clip = next_id(self.next_clip, self.clips.iter().map(|clip| clip.id));
         self.next_group = next_id(
@@ -2178,6 +2210,9 @@ impl TimelineState {
         }
         Self {
             edit: TimelineEditState::new(document),
+            mark_popup: None,
+            mark_animation: crate::app_modal::PopupAnimation::new(),
+            mark_picker: std::cell::RefCell::new(ui::components::ColorPicker::new(Color::WHITE)),
             selection_levels: HashMap::new(),
             audio_levels: HashMap::new(),
             mixer_knobs: knobs,
@@ -2221,14 +2256,21 @@ impl TimelineState {
 
     pub fn load_document(&mut self, document: TimelineDocument) {
         let focused_stack = self.focused_stack;
+        let mut picker = self
+            .mark_picker
+            .replace(ui::components::ColorPicker::new(Color::WHITE));
+        picker.close();
         *self = Self::from_document(document);
+        self.mark_picker = std::cell::RefCell::new(picker);
         self.focused_stack = focused_stack;
     }
 
     pub fn load_document_preserving_clipboard(&mut self, document: TimelineDocument) {
+        let mark_clipboard = std::mem::take(&mut self.edit.mark_clipboard);
         let clipboard = std::mem::take(&mut self.clipboard);
         self.load_document(document);
         self.clipboard = clipboard;
+        self.edit.mark_clipboard = mark_clipboard;
     }
 
     pub(crate) fn ensure_composition_visual_pipelines(&mut self, plugins: &PluginRegistry) -> bool {
@@ -2274,6 +2316,8 @@ impl TimelineState {
     }
 
     pub fn load_history_document(&mut self, document: TimelineDocument) {
+        let selected_marks = self.edit.selected_marks.clone();
+        let mark_clipboard = std::mem::take(&mut self.edit.mark_clipboard);
         let focused_stack = self.focused_stack;
         let selected = self.selected.clone();
         let primary_selected = self.primary_selected;
@@ -2291,7 +2335,7 @@ impl TimelineState {
         let playhead_snap = self.playhead_snap;
         let follow_playhead = self.follow_playhead;
         let cursor = self.cursor;
-        *self = Self::from_document(document);
+        self.load_document(document);
         self.focused_stack = focused_stack;
         self.playhead = playhead;
         self.playing = playing;
@@ -2311,6 +2355,11 @@ impl TimelineState {
             .collect();
         self.primary_selected = primary_selected.filter(|id| self.selected.contains(id));
         self.clipboard = clipboard;
+        self.edit.selected_marks = selected_marks
+            .into_iter()
+            .filter(|id| self.marks.iter().any(|mark| mark.id == *id))
+            .collect();
+        self.edit.mark_clipboard = mark_clipboard;
         self.selected_track =
             selected_track.filter(|id| self.tracks.iter().any(|track| track.id == *id));
     }
@@ -2504,6 +2553,18 @@ impl TimelineState {
                     })),
             );
         timeline.end_time = Some((end - start).max(0.001));
+        if crate::preferences::copy_marks_on_extraction() {
+            timeline.marks = self
+                .marks
+                .iter()
+                .filter(|mark| mark.time >= start && mark.time < end)
+                .map(|mark| TimelineMark {
+                    time: mark.time - start,
+                    ..*mark
+                })
+                .collect();
+            timeline.next_mark = self.next_mark;
+        }
 
         let selected = &self.edit.selected;
         self.edit
@@ -2673,6 +2734,7 @@ impl TimelineState {
     }
 
     pub fn clear_selection(&mut self) {
+        self.edit.selected_marks.clear();
         self.selected.clear();
         self.primary_selected = None;
         self.selected_track = None;
@@ -2688,6 +2750,7 @@ impl TimelineState {
     }
 
     pub fn select_clip_ids(&mut self, ids: &[u32]) {
+        self.edit.selected_marks.clear();
         self.selected = ids
             .iter()
             .copied()
@@ -2882,6 +2945,9 @@ impl TimelineState {
     }
 
     pub(crate) fn keyboard_history_label(&self) -> Option<&'static str> {
+        if self.mark_popup.is_some() {
+            return Some("Add mark");
+        }
         if let Some(editor) = &self.mixer_exact {
             return Some(match editor.parameter {
                 MixerParameter::Volume => "Edit track volume",
@@ -2902,6 +2968,8 @@ impl TimelineState {
             });
         }
         match self.drag.as_ref()? {
+            Drag::Marks { .. } => Some("Move marks"),
+            Drag::RulerPan { .. } => None,
             Drag::ClipEdge {
                 rate_stretch: true, ..
             } => Some("Rate stretch clip"),
@@ -4950,6 +5018,10 @@ impl TimelineState {
         };
 
         let dt = elapsed.min(0.05);
+        self.mark_picker.get_mut().tick(dt);
+        if self.mark_animation.finished(now) {
+            self.mark_popup = None;
+        }
         self.selection_frame = now;
 
         for (track, amount) in &mut self.keyframe_track_expansion {
@@ -5083,7 +5155,9 @@ impl TimelineState {
     }
 
     pub fn is_animating(&self) -> bool {
-        !self.track_offsets.is_empty()
+        (self.mark_popup.is_some() && self.mark_animation.is_animating())
+            || self.mark_picker.borrow().is_animating()
+            || !self.track_offsets.is_empty()
             || self.mixer_knobs.values().any(Knob::is_animating)
             || self.keyframe_track_expansion.iter().any(|(track, amount)| {
                 let target = f32::from(u8::from(self.expanded_keyframe_tracks.contains(track)));
@@ -5545,6 +5619,9 @@ impl TimelineState {
     }
 
     fn select_clip(&mut self, id: u32, additive: bool) {
+        if !additive && !self.selected.contains(&id) {
+            self.edit.selected_marks.clear();
+        }
         let ids = self.grouped_ids(id);
         if additive {
             let remove = ids.iter().all(|id| self.selected.contains(id));
@@ -5567,6 +5644,7 @@ impl TimelineState {
     }
 
     fn replace_selection_with_clip(&mut self, id: u32) {
+        self.edit.selected_marks.clear();
         let ids = self.grouped_ids(id);
         self.selected.clear();
         self.selected.extend(ids);
@@ -5765,6 +5843,12 @@ impl TimelineState {
     }
 
     pub(crate) fn copy_selection(&mut self) {
+        let marks = self
+            .marks
+            .iter()
+            .filter(|mark| self.edit.selected_marks.contains(&mark.id))
+            .copied()
+            .collect::<Vec<_>>();
         let mut clips = self
             .clips
             .iter()
@@ -5798,13 +5882,14 @@ impl TimelineState {
                 .total_cmp(&right.clip.start)
                 .then_with(|| left.clip.id.cmp(&right.clip.id))
         });
-        if !clips.is_empty() {
+        if !clips.is_empty() || !marks.is_empty() {
             self.clipboard = clips;
+            self.edit.mark_clipboard = marks;
         }
     }
 
     pub(crate) fn cut_selection(&mut self) {
-        if self.selected.is_empty() {
+        if !self.has_selection() {
             return;
         }
         self.copy_selection();
@@ -5816,6 +5901,7 @@ impl TimelineState {
             .clipboard
             .iter()
             .map(|entry| entry.clip.start)
+            .chain(self.edit.mark_clipboard.iter().map(|mark| mark.time))
             .min_by(f32::total_cmp)
         else {
             return;
@@ -5877,6 +5963,17 @@ impl TimelineState {
         }
         self.selected = pasted.iter().copied().collect();
         self.primary_selected = pasted.first().copied();
+        self.edit.selected_marks.clear();
+        for mark in self.edit.mark_clipboard.clone() {
+            if let Some(id) = self.allocate_mark_id() {
+                self.edit.document.marks.push(TimelineMark {
+                    id,
+                    time: (self.playhead + mark.time - origin).max(0.0),
+                    ..mark
+                });
+                self.edit.selected_marks.insert(id);
+            }
+        }
     }
 
     pub(crate) fn delete_selection(&mut self) {
@@ -6099,6 +6196,7 @@ impl TimelineState {
     }
 
     fn duplicate_selection(&mut self) -> Vec<u32> {
+        self.duplicate_selected_marks();
         if self.selected.is_empty() {
             return Vec::new();
         }
@@ -6172,6 +6270,7 @@ impl TimelineState {
     pub(crate) fn power_duplicate(&mut self) {
         let selected = self.selected_placements();
         if selected.is_empty() {
+            self.duplicate_selected_marks();
             self.power_duplicate = None;
             return;
         }
@@ -6347,6 +6446,12 @@ impl TimelineState {
     }
 
     fn delete_selected(&mut self) {
+        let marks = &self.edit.selected_marks;
+        self.edit
+            .document
+            .marks
+            .retain(|mark| !marks.contains(&mark.id));
+        self.edit.selected_marks.clear();
         let selected = &self.edit.selected;
         self.edit
             .document
@@ -6711,6 +6816,17 @@ impl TimelineState {
         }
     }
 
+    fn reset_clip_drag_tracks(&mut self, origins: &[ClipOrigin], preview_tracks: &mut Vec<u32>) {
+        for origin in origins {
+            if let Some(clip) = self.clips.get_mut(origin.index) {
+                clip.track = origin.track;
+            }
+        }
+        for track in preview_tracks.drain(..) {
+            self.remove_empty_preview_track(track);
+        }
+    }
+
     fn move_clips(
         &mut self,
         layout: TimelineLayout,
@@ -6720,14 +6836,7 @@ impl TimelineState {
         preview_tracks: &mut Vec<u32>,
         point: [f32; 2],
     ) -> f64 {
-        for origin in origins {
-            if let Some(clip) = self.clips.get_mut(origin.index) {
-                clip.track = origin.track;
-            }
-        }
-        for track in preview_tracks.drain(..) {
-            self.remove_empty_preview_track(track);
-        }
+        self.reset_clip_drag_tracks(origins, preview_tracks);
 
         let ClipMoveAnchor {
             track: anchor_track,
@@ -6754,9 +6863,23 @@ impl TimelineState {
         }
 
         let raw_dt = pointer_dx / self.pixels_per_second;
+        let current_delta = origins
+            .first()
+            .and_then(|origin| {
+                self.clips
+                    .get(origin.index)
+                    .map(|clip| clip.start - origin.start)
+            })
+            .unwrap_or(0.0);
         let min_start = origins
             .iter()
             .map(|origin| origin.start)
+            .chain(
+                self.marks
+                    .iter()
+                    .filter(|mark| self.edit.selected_marks.contains(&mark.id))
+                    .map(|mark| mark.time - current_delta),
+            )
             .fold(f32::INFINITY, f32::min);
         let mut dt = raw_dt.max(-min_start);
         let threshold = SNAP_PX / self.pixels_per_second;
@@ -6797,6 +6920,17 @@ impl TimelineState {
         let wanted = self
             .track_at(layout, point[1])
             .unwrap_or_else(|| self.track_index(anchor_track).unwrap_or(0));
+        self.place_dragged_clips(origins, preview_tracks, Some(wanted), dt);
+        f64::from(dt)
+    }
+
+    fn place_dragged_clips(
+        &mut self,
+        origins: &[ClipOrigin],
+        preview_tracks: &mut Vec<u32>,
+        wanted: Option<usize>,
+        dt: f32,
+    ) {
         let moving: HashSet<_> = origins.iter().map(|origin| origin.id).collect();
         let real_tracks = self
             .tracks
@@ -6812,7 +6946,8 @@ impl TimelineState {
                 .map_or(TrackKind::Video, |track| track.kind);
             let start = origin.start + dt;
             let end = start + origin.duration;
-            let target = self.find_available_track(kind, wanted, start, end, &intervals);
+            let preferred = wanted.unwrap_or_else(|| self.track_index(origin.track).unwrap_or(0));
+            let target = self.find_available_track(kind, preferred, start, end, &intervals);
             intervals.insert(target, start, end);
             targets.insert(origin.id, target);
         }
@@ -6830,7 +6965,6 @@ impl TimelineState {
                 clip.track = track;
             }
         }
-        f64::from(dt)
     }
 
     #[expect(
@@ -7061,6 +7195,27 @@ fn context_specs(kind: ContextKind) -> Vec<ContextSpec> {
     }
 
     match kind {
+        ContextKind::Marks { .. } => vec![
+            (
+                "Copy",
+                Some(KeyBinding::primary('c')),
+                Some(AppIcon::Copy),
+                CopySelection,
+            ),
+            (
+                "Cut",
+                Some(KeyBinding::primary('x')),
+                Some(AppIcon::Cut),
+                CutSelection,
+            ),
+            (
+                "Paste",
+                Some(KeyBinding::primary('v')),
+                Some(AppIcon::Paste),
+                Paste,
+            ),
+            ("Delete", DELETE, Some(AppIcon::Delete), DeleteSelection),
+        ],
         ContextKind::Mixer { .. } => vec![
             (
                 "Set exact value…",
@@ -7267,7 +7422,14 @@ fn context_specs(kind: ContextKind) -> Vec<ContextSpec> {
 }
 
 fn context_items(kind: ContextKind, replacement_enabled: bool) -> Vec<ContextItem> {
-    context_specs(kind)
+    let mut specs = context_specs(kind);
+    if matches!(
+        kind,
+        ContextKind::Empty { .. } | ContextKind::Selection | ContextKind::Marks { .. }
+    ) {
+        specs.insert(0, ("Add mark", None, None, ContextCommand::AddMark));
+    }
+    specs
         .into_iter()
         .map(|(label, shortcut, icon, action)| {
             let enabled =
@@ -7937,6 +8099,8 @@ mod effect_model_tests {
                     ..TimelineDocument::default()
                 },
                 selected: HashSet::new(),
+                selected_marks: HashSet::new(),
+                mark_clipboard: Vec::new(),
                 primary_selected: None,
                 clipboard: Vec::new(),
             },
@@ -8825,6 +8989,8 @@ mod effect_model_tests {
                     ..TimelineDocument::default()
                 },
                 selected: HashSet::new(),
+                selected_marks: HashSet::new(),
+                mark_clipboard: Vec::new(),
                 primary_selected: None,
                 clipboard: Vec::new(),
             },
@@ -9492,6 +9658,8 @@ mod effect_model_tests {
                     ..TimelineDocument::default()
                 },
                 selected: HashSet::new(),
+                selected_marks: HashSet::new(),
+                mark_clipboard: Vec::new(),
                 primary_selected: None,
                 clipboard: Vec::new(),
             },

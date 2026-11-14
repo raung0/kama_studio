@@ -75,6 +75,17 @@ pub struct ColorPicker {
     textures: Textures,
     built_rect: Option<Rect>,
     window_bounds: Option<Rect>,
+    popup_on_right: bool,
+}
+
+impl std::fmt::Debug for ColorPicker {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ColorPicker")
+            .field("linear", &self.linear)
+            .field("open", &self.is_open())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ColorPicker {
@@ -95,6 +106,7 @@ impl ColorPicker {
             textures: Textures::default(),
             built_rect: None,
             window_bounds: None,
+            popup_on_right: false,
         }
     }
 
@@ -131,6 +143,10 @@ impl ColorPicker {
         self.drag = None;
         self.open_start = None;
         self.hex.set_focused(false);
+    }
+
+    pub const fn set_popup_on_right(&mut self, enabled: bool) {
+        self.popup_on_right = enabled;
     }
 
     pub fn open_and_focus_hex(&mut self) {
@@ -556,6 +572,21 @@ impl ColorPicker {
             }
         }
 
+        if self.popup_on_right
+            && bounds
+                .is_none_or(|bounds| rect.right() + 4.0 + placement.rect.width <= bounds.right())
+        {
+            placement.rect.x = rect.right() + 4.0;
+            placement.rect.y = rect.y;
+            placement.direction = PopupDirection::Down;
+            if let Some(bounds) = bounds {
+                placement.rect.y = placement
+                    .rect
+                    .y
+                    .min(bounds.bottom() - placement.rect.height)
+                    .max(bounds.y);
+            }
+        }
         let animated_height = placement.rect.height * self.t.max(0.001);
         let popup = match placement.direction {
             PopupDirection::Down => Rect::new(

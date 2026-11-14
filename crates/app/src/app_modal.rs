@@ -4,6 +4,7 @@ use kama_ui::components::TextEdit;
 
 use crate::{POPUP_FADE_DURATION, PendingDiscardAction};
 
+#[derive(Debug)]
 pub struct PopupAnimation {
     opened_at: Instant,
     closing: Option<(Instant, f32)>,

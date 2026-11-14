@@ -4981,9 +4981,18 @@ fn draw_pipeline_selector(
             crate::widgets::component_style(),
         );
     } else {
+        let padding = 7.0 * crate::widgets::component_style().ui_scale.clamp(0.25, 4.0);
+        let text = Rect::new(
+            name.x + padding,
+            name.y,
+            padding.mul_add(-2.0, name.width).max(0.0),
+            name.height,
+        );
         kama_ui::ui!(ctx, {
             Rect(("inspector-pipeline-none", y.to_bits()), name) {
                 fill: theme::focused(); border_radius: RADIUS_SM;
+            }
+            Rect(("inspector-pipeline-none-label", y.to_bits()), text) {
                 font_size: 9.0; text_color: theme::muted(); text: i18n::text("inspector-none");
             }
         });

@@ -74,6 +74,7 @@ impl TimelineState {
                         );
                     }
                     self.build_ruler(ctx, local, stack);
+                    self.build_marks(ctx, local, stack, icons);
                     self.build_headers(ctx, local, stack, icons);
                     self.build_dragged_track(
                         ctx,
@@ -90,6 +91,7 @@ impl TimelineState {
                     self.build_context_menu(ctx, local, stack, [content.x, content.y], icons, project);
                     self.build_mixer_exact(ctx, local, stack);
                     self.build_keyframe_value_editor(ctx, local, stack);
+                    self.build_mark_popup(ctx, local, stack, icons);
                 }
             }
         });
