@@ -78,6 +78,58 @@ kind = "pointwise"
 shader = "invert.wgsl"
 entry = "effect"
 
+[[effects]]
+id = "rgba"
+name = "RGBA"
+category = "Color"
+kind = "pointwise"
+shader = "rgba.wgsl"
+entry = "effect"
+
+[[effects.inputs]]
+id = "red"
+name = "Red"
+type = "f32"
+default = 100.0
+min = 0.0
+max = 100.0
+step = 1.0
+suffix = "%"
+precision = 0
+
+[[effects.inputs]]
+id = "green"
+name = "Green"
+type = "f32"
+default = 100.0
+min = 0.0
+max = 100.0
+step = 1.0
+suffix = "%"
+precision = 0
+
+[[effects.inputs]]
+id = "blue"
+name = "Blue"
+type = "f32"
+default = 100.0
+min = 0.0
+max = 100.0
+step = 1.0
+suffix = "%"
+precision = 0
+
+[[effects.inputs]]
+id = "alpha"
+name = "Alpha"
+type = "f32"
+default = 100.0
+min = 0.0
+max = 100.0
+step = 1.0
+suffix = "%"
+precision = 0
+
 [[generators]]
 id = "text"
 name = "Text"
