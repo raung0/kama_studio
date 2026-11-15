@@ -301,10 +301,14 @@ pub fn file_menu_popup_rect(has_latest: bool) -> Rect {
     .0
 }
 #[cfg(not(target_os = "macos"))]
-pub fn recent_menu_popup_rect(recent_count: usize) -> Rect {
-    let parent = file_menu_popup_rect(recent_count > 0);
+pub fn recent_menu_popup_rect(projects: &[PathBuf]) -> Rect {
+    let parent = file_menu_popup_rect(!projects.is_empty());
     let anchor = menu_item_rect(parent, 4);
-    measured_menu_popup(parent.right() - 2.0, anchor.y, 280.0, recent_count).0
+    let width = projects
+        .iter()
+        .map(|path| path.to_string_lossy().chars().count() as f32 * 10.5 + 48.0)
+        .fold(280.0_f32, f32::max);
+    measured_menu_popup(parent.right() - 2.0, anchor.y, width, projects.len()).0
 }
 #[cfg(not(target_os = "macos"))]
 pub fn edit_menu_popup_rect() -> Rect {
@@ -353,8 +357,8 @@ fn menu_item_rect(popup: Rect, index: usize) -> Rect {
         .unwrap_or_default()
 }
 #[cfg(not(target_os = "macos"))]
-pub fn recent_menu_item_rect(index: usize, recent_count: usize) -> Rect {
-    menu_item_rect(recent_menu_popup_rect(recent_count), index)
+pub fn recent_menu_item_rect(index: usize, projects: &[PathBuf]) -> Rect {
+    menu_item_rect(recent_menu_popup_rect(projects), index)
 }
 #[cfg(not(target_os = "macos"))]
 pub fn edit_menu_item_rect(index: usize) -> Rect {
@@ -794,10 +798,7 @@ impl NativeMenu {
         }
         let recent = recent_projects();
         for path in &recent {
-            let label = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Project");
+            let label = path.display().to_string();
             let item = MenuItem::new(label, true, None);
             self.recent_menu
                 .append(&item)
@@ -1115,7 +1116,7 @@ impl EditorApp {
                 let projects = recent_projects();
                 if recent
                     && let Some(index) = (0..projects.len()).find(|index| {
-                        recent_menu_item_rect(*index, projects.len()).contains(self.cursor)
+                        recent_menu_item_rect(*index, &projects).contains(self.cursor)
                     })
                 {
                     self.app_menu_keyboard.submenu_item = index;
@@ -1208,7 +1209,7 @@ impl EditorApp {
                 let projects = recent_projects();
                 if recent
                     && let Some(path) = projects.iter().enumerate().find_map(|(index, path)| {
-                        recent_menu_item_rect(index, projects.len())
+                        recent_menu_item_rect(index, &projects)
                             .contains(self.cursor)
                             .then(|| path.clone())
                     })
@@ -1232,7 +1233,7 @@ impl EditorApp {
                     return true;
                 }
                 if file_menu_popup_rect(!projects.is_empty()).contains(self.cursor)
-                    || (recent && recent_menu_popup_rect(projects.len()).contains(self.cursor))
+                    || (recent && recent_menu_popup_rect(&projects).contains(self.cursor))
                 {
                     return true;
                 }
@@ -1474,21 +1475,18 @@ pub fn build_app_menu(
             );
         }
         if recent_open && !recent.is_empty() {
-            let recent_popup = recent_menu_popup_rect(recent.len());
+            let recent_popup = recent_menu_popup_rect(&recent);
             build_popup(ctx, "app-recent-menu-popup", recent_popup);
             for (index, path) in recent.iter().enumerate() {
-                let item = recent_menu_item_rect(index, recent.len());
-                let label = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("Project");
+                let item = recent_menu_item_rect(index, &recent);
+                let label = path.display().to_string();
                 build_item(
                     ctx,
                     ("app-recent-menu-item", index),
                     item,
                     cursor,
                     keyboard.active && keyboard.submenu_item == index,
-                    label,
+                    &label,
                     None,
                     Some(AppIcon::Open),
                     true,
