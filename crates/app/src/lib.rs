@@ -76,6 +76,7 @@ mod preferences;
 mod project;
 #[path = "app_project_commands.rs"]
 mod project_commands;
+mod project_format;
 mod project_io;
 mod render;
 mod runtime;

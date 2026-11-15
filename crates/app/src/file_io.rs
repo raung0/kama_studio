@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -41,15 +41,35 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> Result<(
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_with_commit(path, bytes, || {})
+}
+
+pub fn atomic_write_with_commit(path: &Path, bytes: &[u8], on_commit: impl FnOnce()) -> Result<()> {
     let temporary = temporary_path(path);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .with_context(|| format!("create temporary file {}", temporary.display()))?;
     let result = (|| {
-        let mut file = File::create(&temporary)
-            .with_context(|| format!("create temporary file {}", temporary.display()))?;
         file.write_all(bytes)
             .with_context(|| format!("write temporary file {}", temporary.display()))?;
         file.sync_all()
             .with_context(|| format!("sync temporary file {}", temporary.display()))?;
-        replace_file(&temporary, path)
+        drop(file);
+        replace_file(&temporary, path)?;
+        on_commit();
+        #[cfg(unix)]
+        {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .with_context(|| format!("sync directory {}", parent.display()))?;
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -58,7 +78,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
-    replace_file_impl(temporary, destination)
+    fs::rename(temporary, destination).with_context(|| format!("replace {}", destination.display()))
 }
 
 pub fn commit_if_absent(temporary: &Path, destination: &Path) -> Result<()> {
@@ -74,29 +94,6 @@ pub fn commit_if_absent(temporary: &Path, destination: &Path) -> Result<()> {
         }
         Err(error) => Err(error.into()),
     }
-}
-
-#[cfg(unix)]
-fn replace_file_impl(temporary: &Path, destination: &Path) -> Result<()> {
-    fs::rename(temporary, destination).with_context(|| format!("replace {}", destination.display()))
-}
-
-#[cfg(not(unix))]
-fn replace_file_impl(temporary: &Path, destination: &Path) -> Result<()> {
-    if !destination.exists() {
-        return fs::rename(temporary, destination)
-            .with_context(|| format!("commit {}", destination.display()));
-    }
-    let backup = temporary_path(destination);
-    let _ = fs::remove_file(&backup);
-    fs::rename(destination, &backup)
-        .with_context(|| format!("stage previous {}", destination.display()))?;
-    if let Err(error) = fs::rename(temporary, destination) {
-        let _ = fs::rename(&backup, destination);
-        return Err(error).with_context(|| format!("replace {}", destination.display()));
-    }
-    let _ = fs::remove_file(backup);
-    Ok(())
 }
 
 pub fn temporary_path(path: &Path) -> PathBuf {

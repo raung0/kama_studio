@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result};
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use flate2::bufread::GzDecoder;
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -17,8 +19,9 @@ use crate::{
         PipelineId, PipelineInstance, PipelineKind, SocketRef, ValueEvalContext, ValueGraphIndex,
         ValueNode, ValueNodeKind, evaluate_value_node,
     },
-    file_io::atomic_write,
+    file_io::atomic_write_with_commit,
     plugin::{AudioEffectDefinition, EffectDefinition, GeneratorDefinition, PluginRegistry},
+    project_format::{self, SnapshotMetadata},
     runtime::media::probe_av_media,
     timeline::TimelineDocument,
 };
@@ -29,24 +32,28 @@ const MIN_MIGRATABLE_FORMAT_VERSION: u32 = 5;
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 fn decode_project_file(data: &[u8], path: &Path) -> Result<Project> {
-    if data.starts_with(&GZIP_MAGIC) {
-        ciborium::de::from_reader(GzDecoder::new(data)).map_err(|error| {
-            anyhow::anyhow!(
-                "parse gzip-compressed CBOR project {}: {error}",
-                path.display()
-            )
-        })
+    if data.starts_with(project_format::MAGIC) {
+        project_format::decode(data)
+            .with_context(|| format!("parse .kama project {}", path.display()))
+    } else if data.starts_with(&GZIP_MAGIC) {
+        let mut decoder = GzDecoder::new(data);
+        let mut payload = Vec::new();
+        decoder
+            .by_ref()
+            .take(project_format::MAX_DECODED_SIZE + 1)
+            .read_to_end(&mut payload)
+            .with_context(|| format!("decompress legacy project {}", path.display()))?;
+        anyhow::ensure!(
+            u64::try_from(payload.len())? <= project_format::MAX_DECODED_SIZE,
+            "legacy project exceeds 1 GiB decoded limit"
+        );
+        anyhow::ensure!(decoder.into_inner().is_empty(), "trailing legacy gzip data");
+        project_format::decode_cbor(&payload)
+            .with_context(|| format!("parse legacy CBOR project {}", path.display()))
     } else {
         serde_json::from_slice(data)
             .with_context(|| format!("parse legacy JSON project {}", path.display()))
     }
-}
-
-fn encode_project_file(project: &Project) -> Result<Vec<u8>> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    ciborium::ser::into_writer(project, &mut encoder)
-        .map_err(|error| anyhow::anyhow!("serialize gzip-compressed CBOR project: {error}"))?;
-    encoder.finish().context("finish project gzip stream")
 }
 
 pub use kama_editor_core::document::{
@@ -91,6 +98,10 @@ pub struct Project {
 
     #[serde(skip)]
     pub active_composition: CompositionId,
+
+    #[serde(skip)]
+    // Undo snapshots share save metadata so undo cannot roll back the save generation.
+    pub(crate) storage: Arc<Mutex<SnapshotMetadata>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,11 +212,21 @@ impl Project {
             next_node_id: 1,
             next_composition_id: 2,
             active_composition: 1,
+            storage: Arc::default(),
         }
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let mut data = Vec::new();
+        fs::File::open(path)
+            .with_context(|| format!("open {}", path.display()))?
+            .take(project_format::MAX_FILE_SIZE + 1)
+            .read_to_end(&mut data)
+            .with_context(|| format!("read {}", path.display()))?;
+        anyhow::ensure!(
+            u64::try_from(data.len())? <= project_format::MAX_FILE_SIZE,
+            "project exceeds 1 GiB file limit"
+        );
         let mut project: Self = decode_project_file(&data, path)?;
         let loaded_format_version = project.format_version;
         if !(MIN_MIGRATABLE_FORMAT_VERSION..=KAMA_FORMAT_VERSION).contains(&project.format_version)
@@ -845,8 +866,15 @@ impl Project {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create directory {}", parent.display()))?;
         }
-        let data = encode_project_file(&persisted)?;
-        atomic_write(path, &data).with_context(|| format!("write {}", path.display()))
+        let mut storage = self
+            .storage
+            .lock()
+            .map_err(|_| anyhow::anyhow!("project save metadata lock is poisoned"))?;
+        let snapshot = storage.next()?;
+        let data = project_format::encode(&persisted, snapshot)?;
+        let result = atomic_write_with_commit(path, &data, || *storage = snapshot);
+        drop(storage);
+        result.with_context(|| format!("write {}", path.display()))
     }
 
     pub fn composition(&self, id: CompositionId) -> Option<&Composition> {
@@ -2978,7 +3006,7 @@ mod tests {
         project.save(&project_path).unwrap();
 
         let persisted = fs::read(&project_path).unwrap();
-        assert!(persisted.starts_with(&GZIP_MAGIC));
+        assert!(persisted.starts_with(b"KAMA\r\n\x1a\n"));
         let persisted_project = decode_project_file(&persisted, &project_path).unwrap();
         assert_eq!(persisted_project.format_version, KAMA_FORMAT_VERSION);
         assert_eq!(persisted_project.media[0].absolute_path, media_path);
