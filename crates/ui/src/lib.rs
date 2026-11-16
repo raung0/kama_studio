@@ -935,6 +935,16 @@ impl TooltipState {
     }
 }
 
+struct CachedTextLayout {
+    text: String,
+    dimensions: [u32; 3],
+    font: FontKind,
+    align: Align,
+    wrap: bool,
+    buffer: Buffer,
+    frame: u64,
+}
+
 pub struct Gui {
     hot: Option<BlockId>,
     active: Option<BlockId>,
@@ -942,6 +952,7 @@ pub struct Gui {
     font_system: FontSystem,
     swash_cache: SwashCache,
     glyphs: HashMap<CacheKey, AtlasEntry>,
+    text_layouts: HashMap<BlockId, CachedTextLayout>,
     animations: HashMap<BlockId, AnimationState>,
     last_frame: Instant,
     frame_index: u64,
@@ -965,6 +976,7 @@ impl Gui {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             glyphs: HashMap::new(),
+            text_layouts: HashMap::new(),
             animations: HashMap::new(),
             last_frame: Instant::now(),
             frame_index: 0,
@@ -1193,6 +1205,10 @@ impl Ui<'_> {
 
     fn update_animations(&mut self, roots: &mut [Block]) {
         self.gui.frame_index = self.gui.frame_index.wrapping_add(1);
+        let frame = self.gui.frame_index;
+        self.gui
+            .text_layouts
+            .retain(|_, cached| frame.wrapping_sub(cached.frame) <= 2);
         let now = Instant::now();
         let dt = now
             .duration_since(self.gui.last_frame)
@@ -1921,19 +1937,41 @@ fn emit_text(
     let clips = args.clips;
     let opacity = args.opacity;
     let text_color = args.text_color;
-    let mut buffer = Buffer::new(
-        &mut gui.font_system,
-        Metrics::new(
-            args.block.font_size,
-            args.block.font_size * text_measure::LINE_HEIGHT,
-        ),
-    );
-    let physical_glyphs = {
-        let mut borrowed = buffer.borrow_with(&mut gui.font_system);
+    let dimensions = [text_rect.width, text_rect.height, block.font_size]
+        .map(|value| ((value * 64.0).round() / 64.0).to_bits());
+    let cached = gui
+        .text_layouts
+        .entry(block.id)
+        .or_insert_with(|| CachedTextLayout {
+            text: String::new(),
+            dimensions: [0; 3],
+            font: block.font_kind,
+            align: block.text_align,
+            wrap: block.text_wrap,
+            buffer: Buffer::new(
+                &mut gui.font_system,
+                Metrics::new(block.font_size, block.font_size * text_measure::LINE_HEIGHT),
+            ),
+            frame: gui.frame_index,
+        });
+    cached.frame = gui.frame_index;
+    if cached.text != args.text
+        || cached.dimensions != dimensions
+        || cached.font != block.font_kind
+        || cached.align != block.text_align
+        || cached.wrap != block.text_wrap
+    {
+        let mut borrowed = cached.buffer.borrow_with(&mut gui.font_system);
+        borrowed.set_metrics(Metrics::new(
+            block.font_size,
+            block.font_size * text_measure::LINE_HEIGHT,
+        ));
         borrowed.set_size(Some(text_rect.width), Some(text_rect.height));
-        if !args.block.text_wrap {
-            borrowed.set_wrap(Wrap::None);
-        }
+        borrowed.set_wrap(if block.text_wrap {
+            Wrap::WordOrGlyph
+        } else {
+            Wrap::None
+        });
         let attrs = match args.block.font_kind {
             FontKind::Sans => Attrs::new(),
             FontKind::Monospace => Attrs::new().family(Family::Monospace),
@@ -1944,9 +1982,18 @@ fn emit_text(
             Align::End => CosmicAlign::Right,
         };
         borrowed.set_text(args.text, &attrs, Shaping::Advanced, Some(horizontal_align));
-
-        let runs: Vec<_> = borrowed.layout_runs().collect();
-        let content_height = runs
+        borrowed.shape_until_scroll(true);
+        cached.text.clear();
+        cached.text.push_str(args.text);
+        cached.dimensions = dimensions;
+        cached.font = block.font_kind;
+        cached.align = block.text_align;
+        cached.wrap = block.text_wrap;
+    }
+    let physical_glyphs = {
+        let content_height = cached
+            .buffer
+            .layout_runs()
             .last()
             .map_or(0.0, |run| run.line_top + run.line_height);
         let y_shift = (text_rect.height - content_height).max(0.0)
@@ -1957,7 +2004,7 @@ fn emit_text(
             };
 
         let mut physical = Vec::new();
-        for run in runs {
+        for run in cached.buffer.layout_runs() {
             let origin = (
                 text_rect.x * scale,
                 ((text_rect.y + run.line_y + y_shift) * scale).round(),
