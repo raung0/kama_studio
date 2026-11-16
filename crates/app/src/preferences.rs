@@ -1676,7 +1676,13 @@ fn filtered_keybind_indices(registry: &CommandRegistry, query: &str) -> Vec<usiz
                     definition.label, definition.description, definition.id, shortcut
                 ),
             )
-            .map(|score| (score, index, &definition.label))
+            .map(|score| {
+                (
+                    score.saturating_add(fuzzy_score(query, &definition.label).unwrap_or(0)),
+                    index,
+                    &definition.label,
+                )
+            })
         })
         .collect::<Vec<_>>();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(b.2)));

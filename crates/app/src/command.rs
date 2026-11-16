@@ -1018,38 +1018,41 @@ impl CommandRegistry {
 }
 
 pub fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
-    let query = query.to_lowercase();
-    let candidate = candidate.to_lowercase();
-    let chars = candidate.chars().collect::<Vec<_>>();
-    let mut cursor = 0;
-    let mut score = 0_i32;
-    let mut previous_match = None;
-    for needle in query.chars().filter(|character| !character.is_whitespace()) {
-        let index = chars
-            .iter()
-            .enumerate()
-            .skip(cursor)
-            .find_map(|(index, &character)| (character == needle).then_some(index))?;
-        score = score.saturating_add(10);
-        if index
-            .checked_sub(1)
-            .and_then(|previous| chars.get(previous))
-            .is_none_or(|character| !character.is_alphanumeric())
-        {
-            score = score.saturating_add(12);
-        }
-        if previous_match.is_some_and(|previous| Some(previous) == index.checked_sub(1)) {
-            score = score.saturating_add(18);
-        }
-        score = score.saturating_sub(
-            i32::try_from(index.saturating_sub(cursor))
-                .unwrap_or(i32::MAX)
-                .min(8),
-        );
-        previous_match = Some(index);
-        cursor = index.checked_add(1)?;
+    use nucleo_matcher::{
+        Config, Matcher, Utf32Str,
+        pattern::{CaseMatching, Normalization, Pattern},
+    };
+
+    struct SearchMatcher {
+        matcher: Matcher,
+        query: String,
+        pattern: Pattern,
+        scratch: Vec<char>,
     }
-    Some(score.saturating_sub(i32::try_from(candidate.len() / 8).unwrap_or(i32::MAX)))
+    thread_local! {
+        static SEARCH: std::cell::RefCell<SearchMatcher> = std::cell::RefCell::new(SearchMatcher {
+            matcher: Matcher::new(Config::DEFAULT),
+            query: String::new(),
+            pattern: Pattern::parse("", CaseMatching::Ignore, Normalization::Smart),
+            scratch: Vec::new(),
+        });
+    }
+    SEARCH.with_borrow_mut(|search| {
+        if search.query != query {
+            search.query.clear();
+            search.query.push_str(query);
+            search.pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+        }
+        let SearchMatcher {
+            matcher,
+            pattern,
+            scratch,
+            ..
+        } = search;
+        pattern
+            .score(Utf32Str::new(candidate, scratch), matcher)
+            .map(|score| i32::try_from(score).unwrap_or(i32::MAX))
+    })
 }
 
 #[cfg(test)]
@@ -1081,8 +1084,9 @@ mod tests {
 
     #[test]
     fn fuzzy_search_prefers_contiguous_matches_and_rejects_missing_letters() {
-        assert_eq!(fuzzy_score("op", "Open"), Some(50));
-        assert_eq!(fuzzy_score("op", "Other Panel"), Some(38));
+        let contiguous = fuzzy_score("op", "Open").expect("contiguous match");
+        let separated = fuzzy_score("op", "Other Panel").expect("word-initial match");
+        assert!(contiguous > separated);
         assert_eq!(fuzzy_score("xz", "Open"), None);
     }
 

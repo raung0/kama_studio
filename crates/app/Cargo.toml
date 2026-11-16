@@ -35,6 +35,7 @@ flate2 = "1"
 crc32fast = "1"
 getrandom = "0.4"
 naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out"] }
+nucleo-matcher = "0.3.1"
 open = "5"
 cosmic-text = "0.19"
 rfd = "0.17.2"
