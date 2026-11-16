@@ -1761,6 +1761,8 @@ impl EditorApp {
             }
             palette_entries
         };
+        #[cfg(not(target_os = "macos"))]
+        let can_convert_to_path = self.can_convert_selection_to_path();
         let snapshot = &self.snapshot;
         let drag = &self.drag;
         let external_drag_items = &self.external_drag_items;
@@ -2120,8 +2122,6 @@ impl EditorApp {
             .min((width - 132.0).max(0.0));
         let restart_audio_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let restart_video_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(not(target_os = "macos"))]
-        let can_convert_to_path = self.can_convert_selection_to_path();
         let mut ctx = self.gui.begin(&mut self.renderer, self.input);
         ui::ui!(ctx, {
             Block {
