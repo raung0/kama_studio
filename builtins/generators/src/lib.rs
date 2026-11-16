@@ -1,6 +1,8 @@
 use kama_plugin::{generator, get_parameter, parameter_id};
 use std::mem;
 
+mod visual_effects;
+
 #[no_mangle]
 pub extern "C" fn kama_alloc(len: i32) -> i32 {
     if len <= 0 {

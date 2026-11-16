@@ -167,25 +167,6 @@ pub(super) fn graph_output_label_rect(card: Rect) -> Rect {
     )[1]
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "stack and row return one rectangle per supplied layout item"
-)]
-pub(super) fn graph_value_detail_rect(card: Rect) -> Rect {
-    let rows = crate::ui_layout::stack(card, card.y, &[29.0, 16.0]);
-    crate::ui_layout::row(
-        rows[1],
-        &[
-            crate::ui_layout::Item::width(9.0),
-            crate::ui_layout::Item::fill(),
-            crate::ui_layout::Item::width(9.0),
-        ],
-        0.0,
-        0.0,
-        kama_ui::Align::Start,
-    )[1]
-}
-
 pub(super) fn graph_image_input_port(card: Rect) -> Rect {
     graph_named_image_input_port(card, 0)
 }

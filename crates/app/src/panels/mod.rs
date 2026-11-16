@@ -59,10 +59,9 @@ use panels_graph_cards::{
     graph_image_socket_label, graph_named_image_input_point, graph_named_image_input_port,
     graph_output_label_rect, graph_property_label_parts, graph_property_row_rect,
     graph_scalar_input_point, graph_scalar_input_port, graph_value_component_rect,
-    graph_value_detail_rect, graph_value_input_area, graph_value_input_component_rect,
-    graph_value_input_label_rect, graph_value_input_link_rect, graph_value_input_point,
-    graph_value_input_port, graph_value_link_rect, graph_value_output_point,
-    graph_value_output_port, graph_value_swatch_rect,
+    graph_value_input_component_rect, graph_value_input_label_rect, graph_value_input_link_rect,
+    graph_value_input_point, graph_value_input_port, graph_value_link_rect,
+    graph_value_output_point, graph_value_output_port, graph_value_swatch_rect,
 };
 #[cfg(test)]
 use panels_graph_state::graph_stable_fallback;
@@ -654,11 +653,11 @@ impl PluginPropertyTarget {
         }
     }
 
-    fn toggle_keyframe(&self, project: &mut Project, timeline: &mut TimelineState) {
+    fn toggle_keyframe(&self, project: &mut Project, timeline: &mut TimelineState, ty: InputType) {
         match self {
             Self::Generator(input) => timeline.toggle_generator_keyframe(input),
             Self::Pipeline { node, input } => {
-                timeline.toggle_pipeline_keyframe(project, *node, input);
+                timeline.toggle_pipeline_keyframe(project, *node, input, ty);
             }
         }
     }
@@ -3317,7 +3316,7 @@ impl InspectorState {
             return false;
         }
         if keyframe_rect(rect, y).contains(point) {
-            target.toggle_keyframe(project, timeline);
+            target.toggle_keyframe(project, timeline, ty);
         } else if ty == InputType::Color {
             let swatch = color_swatch_rect(rect, y);
             if swatch.contains(point) {
@@ -3878,7 +3877,12 @@ impl InspectorState {
                         );
                     }
                     EffectHit::ToggleKeyframe(node) => {
-                        timeline.toggle_pipeline_keyframe(project, node, "enabled");
+                        timeline.toggle_pipeline_keyframe(
+                            project,
+                            node,
+                            "enabled",
+                            InputType::Bool,
+                        );
                     }
                     EffectHit::Remove(node) => {
                         self.pending_action = Some(InspectorAction::RemoveEffect(node));
@@ -3931,7 +3935,7 @@ impl InspectorState {
             let rows = kama_ui::layout::stack(body, body.y, &[ROW_H, ROW_H, ROW_H, ANGLE_ROW_H]);
             for ((_, input, _), row) in TRANSFORM_VECTOR_ROWS.into_iter().zip(rows.iter().copied())
             {
-                if transform_vec2_row_hit(body, row.y, point, timeline, input) {
+                if transform_vec2_row_hit(body, row.y, point, timeline, project, input) {
                     return true;
                 }
             }
@@ -3941,7 +3945,7 @@ impl InspectorState {
             )]
             let rotation_y = rows[3].y;
             if keyframe_rect(body, rotation_y).contains(point) {
-                timeline.toggle_transform_keyframe("rotation");
+                timeline.toggle_transform_keyframe(project, "rotation");
                 return true;
             }
             if rotation_row_hit(body, rotation_y).contains(point) {

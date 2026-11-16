@@ -17,8 +17,8 @@ use wgpu::util::DeviceExt;
 use crate::{
     clip_graph_cache,
     effects::{
-        CompiledStage, EffectNode, EffectRuntime, GpuValue, NodeExecution, PipelineInstance,
-        ValueEvalContext, ValueEvaluator, resolved_node_input_cached,
+        Binding, CompiledStage, EffectNode, EffectRuntime, GpuValue, NodeExecution,
+        PipelineInstance, ValueEvalContext, ValueEvaluator, resolved_node_input_cached,
     },
     messages,
     plugin::{GeneratorBackend, GeneratorDefinition, PluginRegistry},
@@ -438,6 +438,27 @@ pub struct GpuFrame {
     format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
+    pub(crate) visual: Option<Arc<VisualScene>>,
+}
+
+#[derive(Clone)]
+pub enum VisualScene {
+    Vector(super::vector::VectorImage),
+    Filtered {
+        input: GpuFrame,
+        filter: super::vector::VectorFilter,
+    },
+    Transformed {
+        input: GpuFrame,
+        transform: resvg::tiny_skia::Transform,
+    },
+    Composite {
+        destination: GpuFrame,
+        source: GpuFrame,
+        opacity: f32,
+        mode: crate::project::BlendMode,
+        alpha_mode: crate::project::AlphaBlendMode,
+    },
 }
 
 impl Clone for GpuFrame {
@@ -449,11 +470,20 @@ impl Clone for GpuFrame {
             format: self.format,
             width: self.width,
             height: self.height,
+            visual: self.visual.clone(),
         }
     }
 }
 
 impl GpuFrame {
+    pub(crate) fn deferred(device: &wgpu::Device, size: [u32; 2], scene: VisualScene) -> Self {
+        let mut frame = Self::new(device, 1, 1, "kama deferred visual");
+        frame.width = size[0].max(1);
+        frame.height = size[1].max(1);
+        frame.visual = Some(Arc::new(scene));
+        frame
+    }
+
     pub(crate) fn shares_surface(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.texture, &other.texture)
     }
@@ -506,6 +536,7 @@ impl GpuFrame {
             format,
             width: width.max(1),
             height: height.max(1),
+            visual: None,
         }
     }
 
@@ -717,11 +748,14 @@ pub struct VideoGpuRuntime {
     clear: wgpu::ComputePipeline,
     solid: wgpu::ComputePipeline,
     gaussian_blur: wgpu::ComputePipeline,
+    vector_color: wgpu::ComputePipeline,
+    vector_transform: wgpu::ComputePipeline,
     bloom_combine: wgpu::ComputePipeline,
     upload_video: wgpu::ComputePipeline,
     upload_yuv_video: wgpu::ComputePipeline,
     composite: wgpu::ComputePipeline,
     present: wgpu::ComputePipeline,
+    upload_vector: wgpu::ComputePipeline,
     export_rgba16: wgpu::ComputePipeline,
     export_ayuv64: wgpu::ComputePipeline,
     export_yuva10: Option<wgpu::ComputePipeline>,
@@ -740,6 +774,7 @@ pub struct VideoGpuRuntime {
     uniform_uploads: UniformUploadArena,
     parameter_scratch: Vec<[f32; 4]>,
     bind_group_cache: HashMap<BindGroupCacheKey, Arc<wgpu::BindGroup>>,
+    visual_wasm: Option<super::wasm::WasmRuntime>,
 }
 
 pub struct GeneratorRenderArgs<'a> {
@@ -787,6 +822,7 @@ pub struct CompositeArgs<'a> {
 impl VideoGpuRuntime {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
+            visual_wasm: None,
             clear: compute_pipeline(device, "kama clear", CLEAR_WGSL, ComputeLayout::ClearRgba32),
             solid: compute_pipeline(
                 device,
@@ -798,6 +834,18 @@ impl VideoGpuRuntime {
                 device,
                 "kama gaussian blur",
                 GAUSSIAN_BLUR_WGSL,
+                ComputeLayout::UnaryRgba32WithUniform,
+            ),
+            vector_color: compute_pipeline(
+                device,
+                "kama vector color adjustment",
+                VECTOR_COLOR_WGSL,
+                ComputeLayout::UnaryRgba32WithUniform,
+            ),
+            vector_transform: compute_pipeline(
+                device,
+                "kama deferred scene transform",
+                VECTOR_TRANSFORM_WGSL,
                 ComputeLayout::UnaryRgba32WithUniform,
             ),
             bloom_combine: compute_pipeline(
@@ -825,6 +873,12 @@ impl VideoGpuRuntime {
                 "kama layer compositor",
                 COMPOSITE_WGSL,
                 ComputeLayout::CompositeRgba32,
+            ),
+            upload_vector: compute_pipeline(
+                device,
+                "kama vector color conversion",
+                VECTOR_UPLOAD_WGSL,
+                ComputeLayout::PresentRgba16,
             ),
             present: compute_pipeline(
                 device,
@@ -930,7 +984,7 @@ impl VideoGpuRuntime {
     }
 
     pub(crate) fn recycle_frame(&mut self, frame: GpuFrame) {
-        if frame.format != wgpu::TextureFormat::Rgba16Float {
+        if frame.visual.is_some() || frame.format != wgpu::TextureFormat::Rgba16Float {
             return;
         }
 
@@ -977,6 +1031,13 @@ impl VideoGpuRuntime {
     ) {
         for pipeline in effects.compiled_pipelines() {
             for stage in &pipeline.stages {
+                if stage.fragment.node_types.iter().any(|key| {
+                    plugins
+                        .effect(key)
+                        .is_some_and(|definition| definition.visual.is_some())
+                }) {
+                    continue;
+                }
                 if matches!(
                     stage.fragment.execution,
                     NodeExecution::CpuWasm
@@ -1546,6 +1607,25 @@ impl VideoGpuRuntime {
             encoder,
             effect,
         } = args;
+        if !node_value(node, effect, "enabled")
+            .and_then(GpuValue::bool)
+            .unwrap_or(true)
+        {
+            return self.transparent(device, encoder, width, height);
+        }
+        if let Some(output) = self.apply_visual_plugin(
+            EffectRenderArgs {
+                device,
+                queue,
+                encoder,
+                effect,
+            },
+            &[],
+            node,
+            [width, height],
+        ) {
+            return output;
+        }
         let stage = stage_for_single_node(node);
         if let Err(error) = self.ensure_program(device, &stage, effect.plugins) {
             messages::error("Effect Pipeline", format!("source node skipped: {error:#}"));
@@ -1591,6 +1671,51 @@ impl VideoGpuRuntime {
             encoder,
             effect,
         } = args;
+        if !node_value(node, effect, "enabled")
+            .and_then(GpuValue::bool)
+            .unwrap_or(true)
+        {
+            return first;
+        }
+        if let Some(output) = self.apply_visual_plugin(
+            EffectRenderArgs {
+                device,
+                queue,
+                encoder,
+                effect,
+            },
+            &[first.clone(), second.clone()],
+            node,
+            [first.width, first.height],
+        ) {
+            return output;
+        }
+        if node.node_type == "builtin.compose" {
+            let mode = node_value(node, effect, "blend_mode")
+                .and_then(GpuValue::enum_index)
+                .unwrap_or(0);
+            let alpha_mode = node_value(node, effect, "alpha_blend_mode")
+                .and_then(GpuValue::enum_index)
+                .unwrap_or(0);
+            return self.composite(CompositeArgs {
+                device,
+                queue,
+                encoder,
+                destination: first,
+                source: second,
+                opacity: 1.0,
+                mode: BlendMode::ALL
+                    .get(mode as usize)
+                    .copied()
+                    .unwrap_or(BlendMode::Normal),
+                alpha_mode: AlphaBlendMode::ALL
+                    .get(alpha_mode as usize)
+                    .copied()
+                    .unwrap_or(AlphaBlendMode::SourceOver),
+            });
+        }
+        let first = self.rasterize(device, queue, encoder, first);
+        let second = self.rasterize(device, queue, encoder, second);
         let stage = stage_for_single_node(node);
         if let Err(error) = self.ensure_program(device, &stage, effect.plugins) {
             messages::error("Effect Pipeline", format!("binary node skipped: {error:#}"));
@@ -1682,6 +1807,69 @@ impl VideoGpuRuntime {
         output_size: [u32; 2],
     ) -> GpuFrame {
         let (stage, nodes) = stage_nodes;
+        if input.visual.is_some()
+            && nodes.len() > 1
+            && nodes.iter().any(|node| {
+                effect
+                    .plugins
+                    .effect(&node.node_type)
+                    .is_some_and(|definition| definition.scene.is_some())
+            })
+        {
+            return nodes.iter().fold(input, |input, node| {
+                self.apply_local_node_sized(
+                    EffectRenderArgs {
+                        device,
+                        queue,
+                        encoder,
+                        effect,
+                    },
+                    input,
+                    node,
+                    output_size,
+                )
+            });
+        }
+        if let [node] = nodes {
+            if !node_value(node, effect, "enabled")
+                .and_then(GpuValue::bool)
+                .unwrap_or(true)
+            {
+                return input;
+            }
+            if let Some(output) = self.apply_visual_plugin(
+                EffectRenderArgs {
+                    device,
+                    queue,
+                    encoder,
+                    effect,
+                },
+                std::slice::from_ref(&input),
+                node,
+                output_size,
+            ) {
+                return output;
+            }
+            if input.visual.is_some()
+                && effect
+                    .plugins
+                    .effect(&node.node_type)
+                    .is_some_and(|definition| {
+                        definition.role == Some(crate::plugin::EffectRole::VisualTransform)
+                    })
+            {
+                return self.transform_visual(
+                    device,
+                    queue,
+                    encoder,
+                    input,
+                    node,
+                    effect,
+                    output_size,
+                );
+            }
+        }
+        let input = self.rasterize(device, queue, encoder, input);
         if stage.fragment.execution == NodeExecution::CpuWasm {
             return input;
         }
@@ -1737,6 +1925,703 @@ impl VideoGpuRuntime {
         output
     }
 
+    pub(crate) fn rasterize(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: GpuFrame,
+    ) -> GpuFrame {
+        let Some(scene) = &frame.visual else {
+            return frame;
+        };
+        match scene.as_ref() {
+            VisualScene::Transformed { input, transform } => {
+                let Some(inverse) = transform.invert() else {
+                    return self.transparent(device, encoder, frame.width, frame.height);
+                };
+                let input = self.rasterize(device, queue, encoder, input.clone());
+                if transform.is_identity()
+                    && [frame.width, frame.height] == [input.width, input.height]
+                {
+                    return input;
+                }
+                let output =
+                    self.take_frame(device, frame.width, frame.height, "kama transformed scene");
+                let matrix = [
+                    [inverse.sx, inverse.kx, inverse.tx, 0.0],
+                    [inverse.ky, inverse.sy, inverse.ty, 0.0],
+                ];
+                let params = self.upload_uniform(
+                    device,
+                    queue,
+                    "kama scene transform",
+                    bytemuck::cast_slice(&matrix),
+                );
+                dispatch_unary_uniform(
+                    &mut self.bind_group_cache,
+                    device,
+                    encoder,
+                    &self.vector_transform,
+                    &input,
+                    &output,
+                    &params,
+                    "kama scene transform",
+                );
+                self.recycle_frame(input);
+                output
+            }
+            VisualScene::Filtered { input, filter } => {
+                let input = self.rasterize(device, queue, encoder, input.clone());
+                let output = match *filter {
+                    super::vector::VectorFilter::ColorMatrix(matrix) => {
+                        let output = self.take_frame(
+                            device,
+                            input.width,
+                            input.height,
+                            "kama vector color output",
+                        );
+                        let params = self.upload_uniform(
+                            device,
+                            queue,
+                            "kama vector color matrix",
+                            bytemuck::cast_slice(&matrix),
+                        );
+                        dispatch_unary_uniform(
+                            &mut self.bind_group_cache,
+                            device,
+                            encoder,
+                            &self.vector_color,
+                            &input,
+                            &output,
+                            &params,
+                            "kama vector color adjustment",
+                        );
+                        output
+                    }
+                    super::vector::VectorFilter::Blur(radius) => {
+                        if radius <= 0.001 {
+                            return input;
+                        }
+                        let (horizontal, output) = self.gaussian_blur(
+                            device,
+                            queue,
+                            encoder,
+                            &input,
+                            radius,
+                            None,
+                            "kama vector blur",
+                        );
+                        self.recycle_frame(horizontal);
+                        output
+                    }
+                };
+                self.recycle_frame(input);
+                output
+            }
+            VisualScene::Vector(vector) => match vector.rasterize_srgb([frame.width, frame.height])
+            {
+                Ok(pixmap) => {
+                    let input = self.upload_vector_pixmap(device, queue, encoder, &pixmap);
+                    let radius = vector.feather_radius();
+                    if radius <= 0.001 {
+                        return input;
+                    }
+                    let (horizontal, output) = self.gaussian_blur(
+                        device,
+                        queue,
+                        encoder,
+                        &input,
+                        radius,
+                        None,
+                        "kama vector feather",
+                    );
+                    self.recycle_frame(input);
+                    self.recycle_frame(horizontal);
+                    output
+                }
+                Err(error) => {
+                    messages::error("Vector rasterization", error.to_string());
+                    self.transparent(device, encoder, frame.width, frame.height)
+                }
+            },
+            VisualScene::Composite {
+                destination,
+                source,
+                opacity,
+                mode,
+                alpha_mode,
+            } => {
+                let destination = self.rasterize(device, queue, encoder, destination.clone());
+                let source = self.rasterize(device, queue, encoder, source.clone());
+                self.composite(CompositeArgs {
+                    device,
+                    queue,
+                    encoder,
+                    destination,
+                    source,
+                    opacity: *opacity,
+                    mode: *mode,
+                    alpha_mode: *alpha_mode,
+                })
+            }
+        }
+    }
+
+    fn upload_vector_pixmap(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        pixmap: &resvg::tiny_skia::Pixmap,
+    ) -> GpuFrame {
+        let staging = video_staging_texture(
+            device,
+            "kama vector sRGB upload",
+            pixmap.width(),
+            pixmap.height(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &staging,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixmap.data(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: pixmap.width().checked_mul(4),
+                rows_per_image: Some(pixmap.height()),
+            },
+            wgpu::Extent3d {
+                width: pixmap.width(),
+                height: pixmap.height(),
+                depth_or_array_layers: 1,
+            },
+        );
+        let output = self.take_frame(
+            device,
+            pixmap.width(),
+            pixmap.height(),
+            "kama linear vector image",
+        );
+        let view = staging.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kama vector upload bind group"),
+            layout: &self.upload_vector.get_bind_group_layout(0),
+            entries: &[texture_entry(0, &view), storage_entry(1, output.view())],
+        });
+        dispatch(
+            encoder,
+            &self.upload_vector,
+            &bind_group,
+            output.width,
+            output.height,
+        );
+        output
+    }
+
+    fn apply_visual_plugin(
+        &mut self,
+        args: EffectRenderArgs<'_, '_, '_>,
+        inputs: &[GpuFrame],
+        node: &EffectNode,
+        size: [u32; 2],
+    ) -> Option<GpuFrame> {
+        let EffectRenderArgs {
+            device,
+            queue,
+            encoder,
+            effect,
+        } = args;
+        let definition = effect.plugins.effect(&node.node_type)?;
+        let scene = inputs.iter().any(|input| input.visual.is_some()) && definition.scene.is_some();
+        let visual = if scene {
+            definition.scene.as_ref()?
+        } else {
+            definition.visual.as_ref()?
+        };
+        let result = (|| -> Result<GpuFrame> {
+            let mut visual_inputs = Vec::with_capacity(inputs.len());
+            let input_names = node.image_input_names();
+            for (index, input) in inputs.iter().enumerate() {
+                if scene {
+                    visual_inputs.push(super::wasm::VisualWasmInput::Scene([
+                        input.width,
+                        input.height,
+                    ]));
+                    continue;
+                }
+                let ty = input_names
+                    .get(index)
+                    .and_then(|name| definition.image_inputs.iter().find(|port| port.id == *name))
+                    .or_else(|| {
+                        definition
+                            .dynamic_image_inputs
+                            .as_ref()
+                            .and_then(|_| definition.image_inputs.first())
+                    })
+                    .map_or(crate::effects::VisualPortType::Raster, |port| port.ty);
+                if ty != crate::effects::VisualPortType::Raster {
+                    if input.visual.is_some()
+                        && let Some(svg) = self.visual_svg(device, queue, encoder, input)?
+                    {
+                        visual_inputs.push(super::wasm::VisualWasmInput::Vector(svg));
+                        continue;
+                    }
+                    if ty == crate::effects::VisualPortType::Vector {
+                        bail!("vector-only input received raster or mixed image data");
+                    }
+                }
+                visual_inputs.push(super::wasm::VisualWasmInput::Raster(
+                    self.read_visual_pixels(device, queue, encoder, input.clone())?,
+                ));
+            }
+            let mut parameters = node.host_inputs.clone();
+            for input in &definition.inputs {
+                if let Some(value) = node_value(node, effect, &input.id) {
+                    parameters.insert(
+                        input.id.clone(),
+                        HostBinding::Constant(HostValue::Gpu(value)),
+                    );
+                }
+            }
+            if self.visual_wasm.is_none() {
+                self.visual_wasm = Some(super::wasm::WasmRuntime::new()?);
+            }
+            let runtime = self
+                .visual_wasm
+                .as_mut()
+                .context("visual WASM runtime unavailable")?;
+            let output = runtime.render_visual(
+                super::wasm::WasmRenderRequest {
+                    module_path: &visual.module,
+                    entry: &visual.entry,
+                    parameters: &parameters,
+                    size,
+                    render_scale: effect.render_scale,
+                    render_origin: [0.0; 2],
+                    tight_bounds: false,
+                    parameter_time: effect.context.keyframe_time(),
+                    local_time: effect.context.local_time,
+                },
+                &visual_inputs,
+            )?;
+            match output {
+                super::wasm::VisualWasmOutput::Filtered { input, filter } => {
+                    if !scene {
+                        bail!("scene operations require a scene entry point");
+                    }
+                    let input = inputs
+                        .get(input)
+                        .context("scene output references an unknown input")?
+                        .clone();
+                    if size != [input.width, input.height] {
+                        bail!("filter output must retain input dimensions");
+                    }
+                    let frame =
+                        GpuFrame::deferred(device, size, VisualScene::Filtered { input, filter });
+                    Ok(
+                        if definition.output_type == crate::effects::VisualPortType::Raster {
+                            self.rasterize(device, queue, encoder, frame)
+                        } else {
+                            frame
+                        },
+                    )
+                }
+                super::wasm::VisualWasmOutput::Vector(svg) => {
+                    let vector = super::vector::VectorImage::from_svg(svg.as_bytes())?;
+                    let frame = GpuFrame::deferred(device, size, VisualScene::Vector(vector));
+                    Ok(
+                        if definition.output_type == crate::effects::VisualPortType::Raster {
+                            self.rasterize(device, queue, encoder, frame)
+                        } else {
+                            frame
+                        },
+                    )
+                }
+                super::wasm::VisualWasmOutput::Raster(cpu) => {
+                    if definition.output_type == crate::effects::VisualPortType::Vector {
+                        bail!("visual plugin declared vector output but returned raster data");
+                    }
+                    Ok(Self::upload(device, queue, &cpu))
+                }
+            }
+        })();
+        Some(result.unwrap_or_else(|error| {
+            messages::error(
+                "Visual plugin",
+                format!("{} failed: {error:#}", definition.key),
+            );
+            self.transparent(device, encoder, size[0], size[1])
+        }))
+    }
+
+    fn visual_svg(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &GpuFrame,
+    ) -> Result<Option<String>> {
+        let content = match frame.visual.as_deref() {
+            Some(VisualScene::Transformed { input, transform }) => {
+                let Some(content) = self.visual_svg(device, queue, encoder, input)? else {
+                    return Ok(None);
+                };
+                format!(
+                    "<g transform=\"matrix({} {} {} {} {} {})\">{content}</g>",
+                    transform.sx,
+                    transform.ky,
+                    transform.kx,
+                    transform.sy,
+                    transform.tx,
+                    transform.ty,
+                )
+            }
+            Some(VisualScene::Filtered { input, filter }) => {
+                let Some(content) = self.visual_svg(device, queue, encoder, input)? else {
+                    return Ok(None);
+                };
+                filter.svg(
+                    &format!("filter-{}", frame.surface_id),
+                    [frame.width, frame.height],
+                    &content,
+                )
+            }
+            Some(VisualScene::Vector(vector)) => {
+                return Ok(Some(vector.to_svg(
+                    [frame.width, frame.height],
+                    &format!("v{}-", frame.surface_id),
+                )));
+            }
+            Some(VisualScene::Composite {
+                destination,
+                source,
+                opacity,
+                mode: BlendMode::Normal,
+                alpha_mode: AlphaBlendMode::SourceOver,
+            }) => {
+                let Some(destination_svg) = self.visual_svg(device, queue, encoder, destination)?
+                else {
+                    return Ok(None);
+                };
+                let Some(source_svg) = self.visual_svg(device, queue, encoder, source)? else {
+                    return Ok(None);
+                };
+                let x = (frame.width as f32 - source.width as f32) * 0.5;
+                let y = (frame.height as f32 - source.height as f32) * 0.5;
+                format!(
+                    "{destination_svg}<g opacity=\"{opacity}\" transform=\"translate({x} {y})\">{source_svg}</g>"
+                )
+            }
+            Some(VisualScene::Composite { .. }) => {
+                return Ok(None);
+            }
+            None => {
+                use base64::Engine;
+                let cpu = self.read_visual_pixels(device, queue, encoder, frame.clone())?;
+                let mut bytes = Vec::with_capacity(cpu.pixels.len());
+                for pixel in cpu.pixels.as_chunks::<4>().0 {
+                    let alpha = pixel[3].clamp(0.0, 1.0);
+                    for channel in &pixel[..3] {
+                        let linear = if alpha > 0.0 { channel / alpha } else { 0.0 };
+                        let srgb = if linear <= 0.003_130_8 {
+                            linear * 12.92
+                        } else {
+                            1.055_f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
+                        };
+                        bytes.push(
+                            u8::try_from((srgb.clamp(0.0, 1.0) * 255.0).round() as i32)
+                                .unwrap_or(0),
+                        );
+                    }
+                    bytes.push(u8::try_from((alpha * 255.0).round() as i32).unwrap_or(0));
+                }
+                let image = image::RgbaImage::from_raw(cpu.width, cpu.height, bytes)
+                    .context("visual raster layout")?;
+                let mut png = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgba8(image)
+                    .write_to(&mut png, image::ImageFormat::Png)?;
+                let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+                format!(
+                    "<image width=\"{}\" height=\"{}\" href=\"data:image/png;base64,{data}\"/>",
+                    frame.width, frame.height
+                )
+            }
+        };
+        Ok(Some(format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\">{content}</svg>",
+            frame.width, frame.height
+        )))
+    }
+
+    pub(crate) fn read_visual_pixels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: GpuFrame,
+    ) -> anyhow::Result<CpuFrame> {
+        let frame = self.rasterize(device, queue, encoder, frame);
+        let (component_bytes, pixel_bytes) = if frame.format == wgpu::TextureFormat::Rgba32Float {
+            (4, 16)
+        } else {
+            (2, 8)
+        };
+        let row_bytes = frame
+            .width
+            .checked_mul(pixel_bytes)
+            .context("visual row overflow")?;
+        let padded_row = row_bytes
+            .checked_add(255)
+            .context("visual row alignment overflow")?
+            & !255;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kama visual plugin readback"),
+            size: u64::from(padded_row)
+                .checked_mul(u64::from(frame.height))
+                .context("visual readback size overflow")?,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &frame.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(frame.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: frame.width,
+                height: frame.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let replacement = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("kama resume after visual plugin"),
+        });
+        let submission = queue.submit(Some(std::mem::replace(encoder, replacement).finish()));
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            })
+            .context("wait for visual input")?;
+        receiver
+            .recv()
+            .context("visual input map callback")?
+            .context("map visual input")?;
+        let mapped = slice.get_mapped_range().context("read visual input")?;
+        let value_count = (frame.width as usize)
+            .checked_mul(frame.height as usize)
+            .and_then(|count| count.checked_mul(4))
+            .context("visual component count overflow")?;
+        let row_components = (frame.width as usize)
+            .checked_mul(4)
+            .context("visual row component overflow")?;
+        let mut pixels = Vec::with_capacity(value_count);
+        for row in mapped.chunks_exact(padded_row as usize) {
+            for component in row
+                .chunks_exact(
+                    usize::try_from(component_bytes).context("invalid visual component size")?,
+                )
+                .take(row_components)
+            {
+                pixels.push(match component {
+                    [a, b, c, d] => f32::from_le_bytes([*a, *b, *c, *d]),
+                    [a, b] => half::f16::from_le_bytes([*a, *b]).to_f32(),
+                    _ => bail!("invalid visual component layout"),
+                });
+            }
+        }
+        drop(mapped);
+        buffer.unmap();
+        Ok(CpuFrame::from_pixels(frame.width, frame.height, pixels))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn transform_visual(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        input: GpuFrame,
+        node: &EffectNode,
+        effect: &EffectInputs<'_, '_>,
+        size: [u32; 2],
+    ) -> GpuFrame {
+        let Some(scene) = &input.visual else {
+            return self.apply_local_node_sized(
+                EffectRenderArgs {
+                    device,
+                    queue,
+                    encoder,
+                    effect,
+                },
+                input,
+                node,
+                size,
+            );
+        };
+        match scene.as_ref() {
+            VisualScene::Filtered {
+                input: child,
+                filter,
+            } if filter.commutes_with_transform() => {
+                let child = self.transform_visual(
+                    device,
+                    queue,
+                    encoder,
+                    child.clone(),
+                    node,
+                    effect,
+                    size,
+                );
+                GpuFrame::deferred(
+                    device,
+                    size,
+                    VisualScene::Filtered {
+                        input: child,
+                        filter: *filter,
+                    },
+                )
+            }
+            VisualScene::Filtered { .. }
+            | VisualScene::Transformed { .. }
+            | VisualScene::Vector(_) => {
+                let position = node_value(node, effect, "position")
+                    .and_then(GpuValue::vec2)
+                    .unwrap_or([0.5; 2]);
+                let scale = node_value(node, effect, "scale")
+                    .and_then(GpuValue::vec2)
+                    .unwrap_or([1.0; 2])
+                    .map(|scale| {
+                        if scale.abs() < 0.000_001 {
+                            0.000_001
+                        } else {
+                            scale
+                        }
+                    });
+                let anchor = node_value(node, effect, "anchor")
+                    .and_then(GpuValue::vec2)
+                    .unwrap_or([0.5; 2]);
+                let rotation = node_value(node, effect, "rotation")
+                    .and_then(GpuValue::f32)
+                    .unwrap_or(0.0)
+                    .to_radians();
+                let (s, c) = rotation.sin_cos();
+                let center = [input.width as f32 * 0.5, input.height as f32 * 0.5];
+                let placed = [position[0] * size[0] as f32, position[1] * size[1] as f32];
+                let pivot = [
+                    anchor[0]
+                        .mul_add(input.width as f32, -center[0])
+                        .mul_add(scale[0], placed[0]),
+                    anchor[1]
+                        .mul_add(input.height as f32, -center[1])
+                        .mul_add(scale[1], placed[1]),
+                ];
+                let delta = [
+                    center[0].mul_add(-scale[0], placed[0]) - pivot[0],
+                    center[1].mul_add(-scale[1], placed[1]) - pivot[1],
+                ];
+                let transform = resvg::tiny_skia::Transform::from_row(
+                    c * scale[0],
+                    s * scale[0],
+                    -s * scale[1],
+                    c * scale[1],
+                    s.mul_add(-delta[1], c.mul_add(delta[0], pivot[0])),
+                    c.mul_add(delta[1], s.mul_add(delta[0], pivot[1])),
+                );
+                if transform.is_identity() && size == [input.width, input.height] {
+                    return input;
+                }
+                if let VisualScene::Vector(vector) = scene.as_ref() {
+                    return GpuFrame::deferred(
+                        device,
+                        size,
+                        VisualScene::Vector(vector.transformed(transform)),
+                    );
+                }
+                GpuFrame::deferred(device, size, VisualScene::Transformed { input, transform })
+            }
+            VisualScene::Composite {
+                destination,
+                source,
+                opacity,
+                mode,
+                alpha_mode,
+            } => {
+                let mut resolved_node = node.clone();
+                resolved_node.inputs = node
+                    .inputs
+                    .keys()
+                    .filter_map(|name| {
+                        node_value(node, effect, name)
+                            .map(|value| (name.clone(), Binding::Constant(value)))
+                    })
+                    .collect();
+                let anchor = node_value(node, effect, "anchor")
+                    .and_then(GpuValue::vec2)
+                    .unwrap_or([0.5; 2]);
+                let child_anchor = [
+                    (anchor[0] - 0.5).mul_add(input.width as f32 / source.width as f32, 0.5),
+                    (anchor[1] - 0.5).mul_add(input.height as f32 / source.height as f32, 0.5),
+                ];
+                let resolved_effect =
+                    EffectInputs::new(None, effect.plugins, effect.context, effect.values, 1.0);
+                let destination = self.transform_visual(
+                    device,
+                    queue,
+                    encoder,
+                    destination.clone(),
+                    &resolved_node,
+                    &resolved_effect,
+                    size,
+                );
+                resolved_node.inputs.insert(
+                    "anchor".into(),
+                    Binding::Constant(GpuValue::Vec2(child_anchor)),
+                );
+                let source = self.transform_visual(
+                    device,
+                    queue,
+                    encoder,
+                    source.clone(),
+                    &resolved_node,
+                    &resolved_effect,
+                    size,
+                );
+                GpuFrame::deferred(
+                    device,
+                    size,
+                    VisualScene::Composite {
+                        destination,
+                        source,
+                        opacity: *opacity,
+                        mode: *mode,
+                        alpha_mode: *alpha_mode,
+                    },
+                )
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn gaussian_blur(
         &mut self,
@@ -1748,6 +2633,28 @@ impl VideoGpuRuntime {
         threshold: Option<[f32; 2]>,
         label: &str,
     ) -> (GpuFrame, GpuFrame) {
+        // Wide kernels use spaced taps; prefiltering prevents hard edges from producing bands.
+        let prefiltered = if radius > 64.0 {
+            let (horizontal, output) = self.gaussian_blur(
+                device,
+                queue,
+                encoder,
+                input,
+                (radius / 64.0 * 1.5).clamp(1.0, 64.0),
+                threshold,
+                label,
+            );
+            self.recycle_frame(horizontal);
+            Some(output)
+        } else {
+            None
+        };
+        let threshold = if prefiltered.is_some() {
+            None
+        } else {
+            threshold
+        };
+        let input = prefiltered.as_ref().unwrap_or(input);
         let horizontal = self.take_frame(device, input.width, input.height, &format!("{label} h"));
         let output = self.take_frame(device, input.width, input.height, &format!("{label} v"));
         let sigma = (radius / 3.0).max(0.35);
@@ -1775,6 +2682,9 @@ impl VideoGpuRuntime {
                 label,
             );
         }
+        if let Some(prefiltered) = prefiltered {
+            self.recycle_frame(prefiltered);
+        }
         (horizontal, output)
     }
 
@@ -1792,8 +2702,8 @@ impl VideoGpuRuntime {
             .unwrap_or(true);
         let radius = node_value(node, effect, "radius")
             .and_then(GpuValue::f32)
-            .unwrap_or(4.0)
-            .clamp(0.0, 64.0);
+            .unwrap_or(4.0 * effect.render_scale.max(0.000_001))
+            .clamp(0.0, 64.0 * effect.render_scale.max(0.000_001));
         if !enabled || radius <= 0.001 {
             return input;
         }
@@ -1991,6 +2901,19 @@ impl VideoGpuRuntime {
         if opacity <= 0.0 {
             self.recycle_frame(source);
             return destination;
+        }
+        if destination.visual.is_some() || source.visual.is_some() {
+            return GpuFrame::deferred(
+                device,
+                [destination.width, destination.height],
+                VisualScene::Composite {
+                    destination,
+                    source,
+                    opacity,
+                    mode,
+                    alpha_mode,
+                },
+            );
         }
         let output = self.take_frame(
             device,
@@ -2499,6 +3422,7 @@ fn generator_parameters(
             })
             .or_else(|| input.ty.default_gpu(&input.default).ok());
         let resolved = resolved.map(|value| {
+            let value = input.ty.convert_gpu(value);
             if input.suffix.trim() == "px" {
                 scale_pixel_value(value, render_scale)
             } else {
@@ -2579,7 +3503,7 @@ fn padding_output_size(
 fn node_value(node: &EffectNode, effect: &EffectInputs<'_, '_>, input: &str) -> Option<GpuValue> {
     let mut values = effect.values.borrow_mut();
     let value = resolved_node_input_cached(node, effect.instance, input, &mut values)?;
-    let pixel_input = effect
+    let definition = effect
         .plugins
         .effect(&node.node_type)
         .and_then(|definition| {
@@ -2587,8 +3511,9 @@ fn node_value(node: &EffectNode, effect: &EffectInputs<'_, '_>, input: &str) -> 
                 .inputs
                 .iter()
                 .find(|candidate| candidate.id == input)
-        })
-        .is_some_and(|definition| definition.suffix.trim() == "px");
+        });
+    let value = definition.map_or(value, |definition| definition.ty.convert_gpu(value));
+    let pixel_input = definition.is_some_and(|definition| definition.suffix.trim() == "px");
     if !pixel_input || effect.render_scale.to_bits() == 1.0_f32.to_bits() {
         return Some(value);
     }
@@ -3513,8 +4438,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 #[cfg(test)]
 #[test]
-fn export_shaders_are_valid_wgsl() {
+fn runtime_shaders_are_valid_wgsl() {
     let shaders = [
+        VECTOR_COLOR_WGSL.to_owned(),
         export_shader(EXPORT_RGBA16_WGSL, false),
         export_shader(EXPORT_AYUV64_WGSL, true),
         export_shader(EXPORT_YUVA10_WGSL, true),
@@ -3737,6 +4663,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
+const VECTOR_TRANSFORM_WGSL: &str = include_str!("shaders/vector_transform.wgsl");
+const VECTOR_COLOR_WGSL: &str = include_str!("shaders/vector_color.wgsl");
+
 const GAUSSIAN_BLUR_WGSL: &str = r"
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba16float, write>;
@@ -3771,20 +4700,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let size = vec2<i32>(size_u);
     let pixel = vec2<i32>(gid.xy);
     let direction = vec2<i32>(round(params.direction_radius.xy));
-    let radius = clamp(params.direction_radius.z, 0.0, 64.0);
+    let radius = max(params.direction_radius.z, 0.0);
+    let stride = max(radius / 64.0, 1.0);
     let sigma = max(params.direction_radius.w, 0.05);
 
     var sum = load_clamped(pixel, size);
     var weight_sum = 1.0;
     for (var tap: i32 = 1; tap <= 64; tap = tap + 1) {
-        let distance = f32(tap);
-        let coverage = clamp(radius + 1.0 - distance, 0.0, 1.0);
+        let distance = f32(tap) * stride;
+        let coverage = clamp((radius + stride - distance) / stride, 0.0, 1.0);
         if coverage <= 0.0 {
             continue;
         }
         let gaussian = exp(-0.5 * (distance * distance) / (sigma * sigma));
         let weight = gaussian * coverage;
-        let offset = direction * tap;
+        let offset = direction * i32(round(distance));
         sum += load_clamped(pixel + offset, size) * weight;
         sum += load_clamped(pixel - offset, size) * weight;
         weight_sum += 2.0 * weight;
@@ -3954,6 +4884,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
     let out_rgb = straight_rgb * out_alpha;
     textureStore(output_texture, p, vec4<f32>(out_rgb, out_alpha));
+}
+";
+
+const VECTOR_UPLOAD_WGSL: &str = r"
+@group(0) @binding(0) var input_texture: texture_2d<f32>;
+@group(0) @binding(1) var output_texture: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dimensions = textureDimensions(input_texture);
+    if (gid.x >= dimensions.x || gid.y >= dimensions.y) { return; }
+    let p = vec2<i32>(gid.xy);
+    let color = textureLoad(input_texture, p, 0);
+    let straight = color.rgb / max(color.a, 0.000001);
+    let linear = select(pow((straight + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), straight / 12.92, straight <= vec3<f32>(0.04045));
+    textureStore(output_texture, p, vec4<f32>(linear * color.a, color.a));
 }
 ";
 

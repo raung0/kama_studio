@@ -177,6 +177,7 @@ fn embed_builtin_plugin(out_dir: &Path) {
     };
     let source = PathBuf::from(manifest_dir).join("../..").join("builtins");
     emit_rerun_if_changed(&source);
+    emit_rerun_if_changed(&source.join("../crates/plugin"));
 
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let modules = [

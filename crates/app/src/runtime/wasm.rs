@@ -27,6 +27,24 @@ const BASE_FUEL_PER_RENDER: u64 = 16_000_000;
 const FUEL_PER_OUTPUT_PIXEL: u64 = 768;
 const MAX_FUEL_PER_RENDER: u64 = 2_000_000_000;
 const MEMORY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_VISUAL_INPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_VISUAL_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone)]
+pub enum VisualWasmInput {
+    Raster(CpuFrame),
+    Vector(String),
+    Scene([u32; 2]),
+}
+
+pub enum VisualWasmOutput {
+    Raster(CpuFrame),
+    Vector(String),
+    Filtered {
+        input: usize,
+        filter: super::vector::VectorFilter,
+    },
+}
 
 fn render_fuel_budget(width: u32, height: u32) -> u64 {
     let pixels = u64::from(width.max(1)).saturating_mul(u64::from(height.max(1)));
@@ -83,6 +101,8 @@ struct PluginStore {
     render_origin: [f32; 2],
     tight_bounds: bool,
     text: Arc<Mutex<TextHost>>,
+    visual_inputs: Vec<VisualWasmInput>,
+    visual_output: Option<VisualWasmOutput>,
 }
 
 struct TextHost {
@@ -180,10 +200,12 @@ impl WasmRuntime {
             PluginStore {
                 limits,
                 parameters: hashed_parameters,
-                render_scale: render_scale.clamp(0.000_001, 1.0),
+                render_scale: render_scale.clamp(0.000_001, 32.0),
                 render_origin,
                 tight_bounds,
                 text: Arc::clone(&self.text),
+                visual_inputs: Vec::new(),
+                visual_output: None,
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -249,6 +271,154 @@ impl WasmRuntime {
         Ok(CpuFrame::from_pixels(width, height, pixels))
     }
 
+    pub fn render_visual(
+        &mut self,
+        request: WasmRenderRequest<'_>,
+        inputs: &[VisualWasmInput],
+    ) -> Result<VisualWasmOutput> {
+        let WasmRenderRequest {
+            module_path,
+            entry,
+            parameters,
+            size: [width, height],
+            render_scale,
+            render_origin,
+            tight_bounds,
+            parameter_time,
+            local_time,
+        } = request;
+        let module = self.module(module_path)?;
+        let resolved: BTreeMap<_, _> = parameters
+            .iter()
+            .filter_map(|(name, binding)| {
+                binding
+                    .evaluate(parameter_time)
+                    .map(|value| (name.clone(), value))
+            })
+            .collect();
+        let params = serde_json::to_vec(&resolved).context("serialize visual plugin parameters")?;
+        let hashed_parameters = resolved
+            .into_iter()
+            .map(|(name, value)| (plugin_parameter_hash(&name), value))
+            .collect();
+        for input in inputs {
+            let bytes = match input {
+                VisualWasmInput::Raster(frame) => frame
+                    .pixels
+                    .len()
+                    .checked_mul(4)
+                    .context("visual input size overflow")?,
+                VisualWasmInput::Vector(svg) => svg.len(),
+                VisualWasmInput::Scene(_) => 0,
+            };
+            if bytes > MAX_VISUAL_INPUT_BYTES {
+                bail!("visual input exceeds size limit");
+            }
+        }
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(MEMORY_LIMIT_BYTES)
+            .instances(1)
+            .memories(2)
+            .tables(8)
+            .build();
+        let visual_inputs = inputs.to_vec();
+        let mut store = Store::new(
+            &self.engine,
+            PluginStore {
+                limits,
+                parameters: hashed_parameters,
+                render_scale: render_scale.clamp(0.000_001, 32.0),
+                render_origin,
+                tight_bounds,
+                text: Arc::clone(&self.text),
+                visual_inputs,
+                visual_output: None,
+            },
+        );
+        store.limiter(|state| &mut state.limits);
+        store
+            .set_fuel(render_fuel_budget(width, height))
+            .map_err(anyhow::Error::from)
+            .context("set visual WASM render fuel budget")?;
+        let mut linker = Linker::new(&self.engine);
+        install_host_abi(&mut linker)?;
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("instantiate {}", module_path.display()))?;
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .context("visual plugin must export memory as `memory`")?;
+        let alloc = instance
+            .get_typed_func::<i32, i32>(&mut store, "kama_alloc")
+            .map_err(anyhow::Error::from)
+            .context("visual plugin must export kama_alloc(i32) -> i32")?;
+        let render = instance
+            .get_typed_func::<(i32, i32, i32, i32, f64), i32>(&mut store, entry)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("visual plugin missing render export `{entry}`"))?;
+        let params_len =
+            i32::try_from(params.len()).context("visual plugin parameter block too large")?;
+        let params_ptr = alloc
+            .call(&mut store, params_len)
+            .map_err(anyhow::Error::from)
+            .context("visual plugin kama_alloc failed")?;
+        memory
+            .write(
+                &mut store,
+                usize::try_from(params_ptr)
+                    .context("visual plugin returned a negative allocation pointer")?,
+                &params,
+            )
+            .context("write visual plugin parameters")?;
+        let output_ptr = render
+            .call(
+                &mut store,
+                (
+                    params_ptr,
+                    params_len,
+                    i32::try_from(width).context("visual width exceeds i32")?,
+                    i32::try_from(height).context("visual height exceeds i32")?,
+                    local_time,
+                ),
+            )
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("visual plugin `{entry}` trapped"))?;
+        if let Some(output) = store.data_mut().visual_output.take() {
+            return Ok(output);
+        }
+        if inputs
+            .iter()
+            .any(|input| matches!(input, VisualWasmInput::Scene(_)))
+        {
+            bail!("scene plugin did not return a scene operation");
+        }
+        let (value_count, byte_count) =
+            rgba32f_lengths(width, height).context("visual plugin frame is too large")?;
+        let mut bytes = vec![0; byte_count];
+        memory
+            .read(
+                &store,
+                usize::try_from(output_ptr)
+                    .context("visual plugin returned a negative frame pointer")?,
+                &mut bytes,
+            )
+            .context("visual plugin returned an out-of-bounds frame")?;
+        let pixels = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .take(value_count)
+            .map(|v| {
+                let value = f32::from_le_bytes(*v);
+                if value.is_finite() { value } else { 0.0 }
+            })
+            .collect();
+        Ok(VisualWasmOutput::Raster(CpuFrame::from_pixels(
+            width, height, pixels,
+        )))
+    }
+
     pub fn monitor_overlay(
         &mut self,
         module_path: &Path,
@@ -278,6 +448,8 @@ impl WasmRuntime {
                 render_origin: [0.0; 2],
                 tight_bounds: false,
                 text: Arc::clone(&self.text),
+                visual_inputs: Vec::new(),
+                visual_output: None,
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -807,6 +979,188 @@ fn install_host_abi(linker: &mut Linker<PluginStore>) -> Result<()> {
             for (target, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(&frame.pixels) {
                 target.copy_from_slice(&value.to_le_bytes());
             }
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_input_kind",
+        |caller: Caller<'_, PluginStore>, index: i32| -> i32 {
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| caller.data().visual_inputs.get(i))
+                .map_or(0, |input| match input {
+                    VisualWasmInput::Raster(_) => 1,
+                    VisualWasmInput::Vector(_) => 2,
+                    VisualWasmInput::Scene(_) => 3,
+                })
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_input_len",
+        |caller: Caller<'_, PluginStore>, index: i32| -> i32 {
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| caller.data().visual_inputs.get(i))
+                .and_then(|input| match input {
+                    VisualWasmInput::Raster(frame) => frame
+                        .pixels
+                        .len()
+                        .checked_mul(4)
+                        .and_then(|n| i32::try_from(n).ok()),
+                    VisualWasmInput::Vector(svg) => i32::try_from(svg.len()).ok(),
+                    VisualWasmInput::Scene(_) => Some(0),
+                })
+                .unwrap_or(0)
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_input_width",
+        |caller: Caller<'_, PluginStore>, index: i32| -> i32 {
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| caller.data().visual_inputs.get(i))
+                .and_then(|input| match input {
+                    VisualWasmInput::Raster(frame) => i32::try_from(frame.width).ok(),
+                    VisualWasmInput::Vector(_) => None,
+                    VisualWasmInput::Scene([width, _]) => i32::try_from(*width).ok(),
+                })
+                .unwrap_or(0)
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_input_height",
+        |caller: Caller<'_, PluginStore>, index: i32| -> i32 {
+            usize::try_from(index)
+                .ok()
+                .and_then(|i| caller.data().visual_inputs.get(i))
+                .and_then(|input| match input {
+                    VisualWasmInput::Raster(frame) => i32::try_from(frame.height).ok(),
+                    VisualWasmInput::Vector(_) => None,
+                    VisualWasmInput::Scene([_, height]) => i32::try_from(*height).ok(),
+                })
+                .unwrap_or(0)
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_input_copy",
+        |mut caller: Caller<'_, PluginStore>, index: i32, ptr: i32, capacity: i32| -> i32 {
+            let (Ok(index), Ok(start), Ok(capacity)) = (
+                usize::try_from(index),
+                usize::try_from(ptr),
+                usize::try_from(capacity),
+            ) else {
+                return -1;
+            };
+            let bytes = match caller.data().visual_inputs.get(index) {
+                Some(VisualWasmInput::Raster(frame)) => frame
+                    .pixels
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                Some(VisualWasmInput::Vector(svg)) => svg.as_bytes().to_vec(),
+                Some(VisualWasmInput::Scene(_)) | None => return -1,
+            };
+            if capacity < bytes.len() {
+                return -2;
+            }
+            let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -3;
+            };
+            let Some(end) = start.checked_add(bytes.len()) else {
+                return -4;
+            };
+            let Some(output) = memory.data_mut(&mut caller).get_mut(start..end) else {
+                return -5;
+            };
+            output.copy_from_slice(&bytes);
+            i32::try_from(bytes.len()).unwrap_or(-4)
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_output_svg",
+        |mut caller: Caller<'_, PluginStore>, ptr: i32, len: i32| -> i32 {
+            let (Ok(start), Ok(len)) = (usize::try_from(ptr), usize::try_from(len)) else {
+                return -1;
+            };
+            if len > MAX_VISUAL_OUTPUT_BYTES {
+                return -2;
+            }
+            let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -3;
+            };
+            let Some(end) = start.checked_add(len) else {
+                return -4;
+            };
+            let Some(bytes) = memory.data(&caller).get(start..end) else {
+                return -5;
+            };
+            let Ok(svg) = std::str::from_utf8(bytes) else {
+                return -6;
+            };
+            caller.data_mut().visual_output = Some(VisualWasmOutput::Vector(svg.to_owned()));
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_output_color_matrix",
+        |mut caller: Caller<'_, PluginStore>, input: i32, ptr: i32| -> i32 {
+            let (Ok(input), Ok(start)) = (usize::try_from(input), usize::try_from(ptr)) else {
+                return -1;
+            };
+            if !matches!(
+                caller.data().visual_inputs.get(input),
+                Some(VisualWasmInput::Scene(_))
+            ) {
+                return -1;
+            }
+            let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                return -2;
+            };
+            let mut bytes = [0_u8; 80];
+            if memory.read(&caller, start, &mut bytes).is_err() {
+                return -3;
+            }
+            let mut matrix = [[0.0_f32; 4]; 5];
+            for (value, bytes) in matrix.iter_mut().flatten().zip(bytes.as_chunks::<4>().0) {
+                *value = f32::from_le_bytes(*bytes);
+                if !value.is_finite() {
+                    return -4;
+                }
+            }
+            caller.data_mut().visual_output = Some(VisualWasmOutput::Filtered {
+                input,
+                filter: super::vector::VectorFilter::ColorMatrix(matrix),
+            });
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "kama",
+        "visual_output_blur",
+        |mut caller: Caller<'_, PluginStore>, input: i32, radius: f32| -> i32 {
+            let Ok(input) = usize::try_from(input) else {
+                return -1;
+            };
+            if !matches!(
+                caller.data().visual_inputs.get(input),
+                Some(VisualWasmInput::Scene(_))
+            ) {
+                return -1;
+            }
+            if !radius.is_finite() || !(0.0..=2048.0).contains(&radius) {
+                return -2;
+            }
+            caller.data_mut().visual_output = Some(VisualWasmOutput::Filtered {
+                input,
+                filter: super::vector::VectorFilter::Blur(radius),
+            });
             0
         },
     )?;

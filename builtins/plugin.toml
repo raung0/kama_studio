@@ -8,9 +8,14 @@ name = "Transform"
 category = "Transform"
 kind = "standalone"
 role = "visual_transform"
+output_type = "image"
 shader = "transform.wgsl"
 entry = "effect"
 uses = ["output_size", "source_size"]
+[[effects.image_inputs]]
+id = "image"
+name = "Image"
+type = "image"
 
 [[effects.inputs]]
 id = "position"
@@ -75,16 +80,28 @@ id = "invert"
 name = "Invert"
 category = "Color"
 kind = "pointwise"
+output_type = "image"
 shader = "invert.wgsl"
 entry = "effect"
+scene = { module = "generators.wasm", entry = "scene_invert" }
+[[effects.image_inputs]]
+id = "image"
+name = "Image"
+type = "image"
 
 [[effects]]
 id = "rgba"
 name = "RGBA"
 category = "Color"
 kind = "pointwise"
+output_type = "image"
 shader = "rgba.wgsl"
 entry = "effect"
+scene = { module = "generators.wasm", entry = "scene_rgba" }
+[[effects.image_inputs]]
+id = "image"
+name = "Image"
+type = "image"
 
 [[effects.inputs]]
 id = "red"
@@ -181,6 +198,7 @@ default = [0.18, 0.28, 0.48, 1.0]
 [[generators]]
 id = "shape"
 name = "Shape"
+output_type = "vector"
 description = "Rectangle or ellipse generated in the builtins WASM module"
 backend = "wasm"
 module = "generators.wasm"
@@ -255,9 +273,15 @@ id = "blur"
 name = "Blur"
 category = "Filter ▶ Blur"
 kind = "standalone"
+output_type = "image"
 shader = "blur.wgsl"
 entry = "effect"
+scene = { module = "generators.wasm", entry = "scene_blur" }
 uses = ["output_size"]
+[[effects.image_inputs]]
+id = "image"
+name = "Image"
+type = "image"
 [[effects.inputs]]
 id = "radius"
 name = "Radius"
@@ -428,8 +452,14 @@ id = "black_white"
 name = "Black & White"
 category = "Color"
 kind = "pointwise"
+output_type = "image"
 shader = "black_white.wgsl"
 entry = "effect"
+scene = { module = "generators.wasm", entry = "scene_black_white" }
+[[effects.image_inputs]]
+id = "image"
+name = "Image"
+type = "image"
 [[effects.inputs]]
 id = "amount"
 name = "Amount"
@@ -1017,6 +1047,7 @@ precision = 0
 [[generators]]
 id = "regular_polygon"
 name = "Regular Polygon"
+output_type = "vector"
 description = "GPU parametric regular polygon generator"
 backend = "gpu"
 shader = "polygon_generator.wgsl"
@@ -1114,12 +1145,50 @@ default = [0.5]
 [[generators]]
 id = "polygon"
 name = "Polygon"
-description = "Tight-bounds CPU polygon generator with pen-editable points"
+description = "Vector paths and parametric shapes with pen-editable points"
+output_type = "vector"
 backend = "wasm"
 module = "generators.wasm"
 entry = "generate_polygon"
 monitor_entry = "monitor_polygon"
 bounds = { points_input = "points", padding_input = "feather", padding_inputs = ["border_width"] }
+[[generators.inputs]]
+id = "shape_type"
+name = "Geometry"
+type = "enum"
+default = 0
+options = ["Path", "Rectangle", "Ellipse"]
+[[generators.inputs]]
+id = "shape_origin"
+name = "Shape Origin"
+type = "vec2"
+default = [0.0, 0.0]
+[[generators.inputs]]
+id = "size"
+name = "Size"
+type = "vec2"
+default = [960.0, 540.0]
+min = 0.5
+max = 16384.0
+visible_when = { input = "shape_type", equals = 1 }
+[[generators.inputs]]
+id = "radius"
+name = "Radius"
+type = "vec2"
+default = [480.0, 270.0]
+min = 0.5
+max = 8192.0
+visible_when = { input = "shape_type", equals = 2 }
+[[generators.inputs]]
+id = "controls_in"
+name = "Incoming Controls"
+type = "vec2_array"
+default = []
+[[generators.inputs]]
+id = "controls_out"
+name = "Outgoing Controls"
+type = "vec2_array"
+default = []
 [[generators.inputs]]
 id = "points"
 name = "Points"
@@ -1127,6 +1196,7 @@ type = "vec2_array"
 default = [[32.0, 24.0], [256.0, 24.0], [288.0, 176.0], [48.0, 208.0]]
 monitor_handle = "points"
 pen_tool = true
+visible_when = { input = "shape_type", equals = 0 }
 [[generators.inputs]]
 id = "color"
 name = "Fill Color"
@@ -1158,7 +1228,7 @@ name = "Feather"
 type = "f32"
 default = 1.5
 min = 0.0
-max = 32.0
+max = 2048.0
 step = 0.25
 suffix = " px"
 
@@ -1193,6 +1263,7 @@ default = false
 [[effects]]
 id = "compose"
 name = "Compose"
+output_type = "image"
 category = "Composite"
 kind = "standalone"
 shader = "compose.wgsl"
@@ -1201,10 +1272,12 @@ dynamic_image_inputs = { count_input = "count", prefix = "image_", min = 1, max 
 [[effects.image_inputs]]
 id = "image_1"
 name = "Image 1"
+type = "image"
 required = false
 [[effects.image_inputs]]
 id = "image_2"
 name = "Image 2"
+type = "image"
 required = false
 [[effects.inputs]]
 id = "count"

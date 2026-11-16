@@ -312,6 +312,22 @@ fn generator_worker_loop(
                     tight_bounds,
                 } => match definition.backend {
                     GeneratorBackend::Gpu => {
+                        let scale = scale.max(0.000_001);
+                        if let Some(vector) = crate::runtime::vector::VectorImage::generator(
+                            &definition.key,
+                            parameters,
+                            *parameter_time,
+                            [job.width as f32 / scale, job.height as f32 / scale],
+                            *render_origin,
+                        )? {
+                            return Ok(GpuFrame::deferred(
+                                device,
+                                [job.width, job.height],
+                                crate::runtime::video::VisualScene::Vector(vector.transformed(
+                                    resvg::tiny_skia::Transform::from_scale(scale, scale),
+                                )),
+                            ));
+                        }
                         let mut encoder =
                             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                                 label: Some("kama background generator encoder"),
@@ -325,7 +341,7 @@ fn generator_worker_loop(
                             parameters,
                             time: *parameter_time,
                             size: [job.width, job.height],
-                            render_scale: *scale,
+                            render_scale: scale,
                         })?;
                         queue.submit(Some(encoder.finish()));
                         Ok(frame)
@@ -409,6 +425,41 @@ fn cached_wasm_frame(
     Ok(frame)
 }
 
+fn visual_generator_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    runtime: &mut WasmRuntime,
+    definition: &GeneratorDefinition,
+    request: WasmRenderRequest<'_>,
+) -> Result<GpuFrame> {
+    let size = request.size;
+    match runtime.render_visual(request, &[])? {
+        crate::runtime::wasm::VisualWasmOutput::Filtered { .. } => {
+            anyhow::bail!(
+                "generator {} returned an operation without an input scene",
+                definition.key
+            );
+        }
+        crate::runtime::wasm::VisualWasmOutput::Vector(svg) => {
+            let vector = crate::runtime::vector::VectorImage::from_svg(svg.as_bytes())?;
+            Ok(GpuFrame::deferred(
+                device,
+                size,
+                crate::runtime::video::VisualScene::Vector(vector),
+            ))
+        }
+        crate::runtime::wasm::VisualWasmOutput::Raster(cpu) => {
+            if definition.output_type == crate::effects::VisualPortType::Vector {
+                anyhow::bail!(
+                    "generator {} declared vector output but returned raster data",
+                    definition.key
+                );
+            }
+            Ok(VideoGpuRuntime::upload(device, queue, &cpu))
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct SourceRenderTiming {
     timeline_fps: f64,
@@ -432,6 +483,52 @@ struct RenderContext<'a> {
 }
 
 impl RenderContext<'_> {
+    fn vector_generator(
+        &mut self,
+        key: &str,
+        parameters: &BTreeMap<String, HostBinding>,
+        time: f64,
+        size: [u32; 2],
+        origin: [f32; 2],
+        tight_bounds: bool,
+    ) -> Option<GpuFrame> {
+        let scale = self.render_scale.max(0.000_001);
+        let logical_size = if tight_bounds {
+            self.plugins
+                .generator(key)
+                .and_then(|definition| generator_content_bounds(definition, parameters, time))
+                .map(|(_, _, width, height)| [width as f32, height as f32])
+        } else {
+            None
+        }
+        .unwrap_or([size[0] as f32 / scale, size[1] as f32 / scale]);
+        match crate::runtime::vector::VectorImage::generator(
+            key,
+            parameters,
+            time,
+            logical_size,
+            origin,
+        ) {
+            Ok(Some(vector)) => {
+                let vector = vector.transformed(resvg::tiny_skia::Transform::from_scale(
+                    size[0] as f32 / logical_size[0].max(1.0),
+                    size[1] as f32 / logical_size[1].max(1.0),
+                ));
+                let frame = GpuFrame::deferred(
+                    self.device,
+                    size,
+                    crate::runtime::video::VisualScene::Vector(vector),
+                );
+                Some(frame)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                messages::error("Vector generator", error.to_string());
+                Some(self.transparent(size[0], size[1]))
+            }
+        }
+    }
+
     fn transparent(&mut self, width: u32, height: u32) -> GpuFrame {
         self.gpu
             .transparent(self.device, self.encoder, width, height)
@@ -614,6 +711,7 @@ pub struct FrameRenderer {
     gpu: Option<VideoGpuRuntime>,
     image_cache: HashMap<PathBuf, Arc<CpuFrame>>,
     image_gpu_cache: HashMap<PathBuf, GpuFrame>,
+    vector_cache: HashMap<PathBuf, crate::runtime::vector::VectorImage>,
     model_gpu: Option<crate::model3d::ModelGpuRuntime>,
     video_decoders: VideoDecoderPool,
     export_video_decoders: HashMap<u64, (PathBuf, ExportVideoDecoder, u64)>,
@@ -639,6 +737,7 @@ impl Default for FrameRenderer {
             gpu: None,
             image_cache: HashMap::new(),
             image_gpu_cache: HashMap::new(),
+            vector_cache: HashMap::new(),
             model_gpu: None,
             video_decoders: VideoDecoderPool::default(),
             export_video_decoders: HashMap::new(),
@@ -734,6 +833,7 @@ impl FrameRenderer {
         self.last_presentation_identity = None;
         self.image_cache.clear();
         self.image_gpu_cache.clear();
+        self.vector_cache.clear();
         self.model_gpu = None;
         self.video_gpu_cache.clear();
         self.render_cache_decoder = None;
@@ -921,6 +1021,7 @@ impl FrameRenderer {
             self.begin_export_decode_frame();
             let frame =
                 self.render_project(&mut render, timeline, [width, height], timeline_time)?;
+            let frame = render.gpu.rasterize(device, queue, render.encoder, frame);
             self.finish_export_decode_frame();
             let surface = self.export_readbacks.rgba();
 
@@ -1050,7 +1151,9 @@ impl FrameRenderer {
                         scrubbing: false,
                         blocking_decode: true,
                     };
-                    self.render_project(&mut render, timeline, [width, height], timeline_time)?
+                    let frame =
+                        self.render_project(&mut render, timeline, [width, height], timeline_time)?;
+                    render.gpu.rasterize(device, queue, render.encoder, frame)
                 };
                 self.finish_export_decode_frame();
                 let surface = self.export_readbacks.encode(index);
@@ -1740,6 +1843,36 @@ impl FrameRenderer {
                         )
                     }
                     MediaKind::Image { .. } => {
+                        if asset
+                            .path
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .is_some_and(|extension| {
+                                extension.eq_ignore_ascii_case("svg")
+                                    || extension.eq_ignore_ascii_case("svgz")
+                            })
+                        {
+                            let vector = if let Some(vector) = self.vector_cache.get(&asset.path) {
+                                vector.clone()
+                            } else {
+                                let vector =
+                                    crate::runtime::vector::VectorImage::from_file(&asset.path)?;
+                                self.vector_cache.insert(asset.path.clone(), vector.clone());
+                                vector
+                            };
+                            let size = vector.size();
+                            let vector =
+                                vector.transformed(resvg::tiny_skia::Transform::from_scale(
+                                    preview_width as f32 / size[0],
+                                    preview_height as f32 / size[1],
+                                ));
+                            let frame = GpuFrame::deferred(
+                                render.device,
+                                [preview_width, preview_height],
+                                crate::runtime::video::VisualScene::Vector(vector),
+                            );
+                            return Ok(frame);
+                        }
                         if let Some(cached) = self.image_gpu_cache.get(&asset.path) {
                             return Ok(cached.clone());
                         }
@@ -1836,6 +1969,48 @@ impl FrameRenderer {
                     render.render_scale,
                     [preview_width, preview_height],
                 );
+                let origin = generator_content_bounds(definition, parameters, keyframe_time)
+                    .map_or([0.0; 2], |(x, y, _, _)| [x, y]);
+                let async_vector = !render.blocking_decode
+                    && self.generator_worker.is_some()
+                    && definition.backend == GeneratorBackend::Gpu;
+                if !async_vector
+                    && let Some(frame) = render.vector_generator(
+                        generator_type,
+                        parameters,
+                        keyframe_time,
+                        [preview_width, preview_height],
+                        origin,
+                        true,
+                    )
+                {
+                    return Ok(frame);
+                }
+                if !async_vector
+                    && definition.output_type != crate::effects::VisualPortType::Raster
+                    && let Some((module_path, entry)) = definition.wasm_export()
+                {
+                    let frame = visual_generator_frame(
+                        render.device,
+                        render.queue,
+                        self.wasm
+                            .as_mut()
+                            .context("visual WASM runtime unavailable")?,
+                        definition,
+                        WasmRenderRequest {
+                            module_path,
+                            entry,
+                            parameters,
+                            size: [preview_width, preview_height],
+                            render_scale: render.render_scale,
+                            render_origin: origin,
+                            tight_bounds: definition.bounds.is_some(),
+                            parameter_time: keyframe_time,
+                            local_time,
+                        },
+                    )?;
+                    return Ok(frame);
+                }
                 if let Some(cached) = self.cached_generator_frame(clip_id, cache_key) {
                     return Ok(cached);
                 }
@@ -2165,10 +2340,57 @@ impl FrameRenderer {
             if let Some(generator) = plugins.generator(&node.node_type) {
                 let parameters = resolved_graph_generator_parameters(
                     node,
+                    generator,
                     instance,
                     view.values,
                     eval.context.keyframe_time(),
                 );
+                let async_vector =
+                    eval.generator_worker.is_some() && generator.backend == GeneratorBackend::Gpu;
+                if !async_vector
+                    && let Some(output) = eval.render.vector_generator(
+                        &generator.key,
+                        &parameters,
+                        eval.context.keyframe_time(),
+                        [input.width, input.height],
+                        [0.0; 2],
+                        false,
+                    )
+                {
+                    visiting.remove(&node_id);
+                    cache.insert(node_id, output.clone());
+                    return output;
+                }
+                if !async_vector
+                    && generator.output_type != crate::effects::VisualPortType::Raster
+                    && let (Some((module_path, entry)), Some(runtime)) =
+                        (generator.wasm_export(), eval.wasm.as_mut())
+                {
+                    let frame = visual_generator_frame(
+                        eval.render.device,
+                        eval.render.queue,
+                        runtime,
+                        generator,
+                        WasmRenderRequest {
+                            module_path,
+                            entry,
+                            parameters: &parameters,
+                            size: [input.width, input.height],
+                            render_scale: eval.wasm_scale,
+                            render_origin: [0.0; 2],
+                            tight_bounds: false,
+                            parameter_time: eval.context.keyframe_time(),
+                            local_time: eval.context.local_time,
+                        },
+                    )
+                    .unwrap_or_else(|error| {
+                        messages::error("Vector generator", error.to_string());
+                        eval.render.transparent(input.width, input.height)
+                    });
+                    visiting.remove(&node_id);
+                    cache.insert(node_id, frame.clone());
+                    return frame;
+                }
                 let render_key = generator_render_cache_key(
                     &generator.key,
                     &parameters,
@@ -2465,7 +2687,13 @@ impl FrameRenderer {
         }
 
         let local_input = frame;
-        let local_values = RefCell::new(ValueEvaluator::new(&[], context.value_context()));
+        let local_values = RefCell::new(ValueEvaluator::new(
+            instance
+                .pipeline
+                .and_then(|id| render.project.pipeline(id))
+                .map_or(&[][..], |pipeline| pipeline.value_nodes.as_slice()),
+            context.value_context(),
+        ));
         let local_effect = EffectInputs::new(
             Some(instance),
             render.plugins,
@@ -2604,6 +2832,7 @@ impl FrameRenderer {
         render_cache: Option<&RenderCachePreview>,
         preview_size: [u32; 2],
         render_scale: f32,
+        vector_preview: bool,
         scrubbing: bool,
         captured_frame: Option<([u32; 2], &[u8])>,
         presentation: &PresentationTexture,
@@ -2647,6 +2876,11 @@ impl FrameRenderer {
         }
         let mut signature =
             render_signature(project, timeline, preview_width, preview_height, scrubbing);
+        signature ^= if vector_preview {
+            0x5645_4354_4f52
+        } else {
+            0x5241_5354_4552
+        };
         if let Some((_, pixels)) = captured_frame {
             let mut hasher = DefaultHasher::new();
             signature.hash(&mut hasher);
@@ -2736,6 +2970,7 @@ impl FrameRenderer {
                     timeline.playhead(),
                 )?
             };
+            let frame = gpu.rasterize(device, queue, &mut encoder, frame);
             gpu.present(PresentationArgs {
                 device,
                 encoder: &mut encoder,
@@ -3146,7 +3381,33 @@ pub fn generator_content_bounds(
     time: f64,
 ) -> Option<(f32, f32, u32, u32)> {
     let bounds = definition.bounds.as_ref()?;
-    let points = generator_vec2_array(parameters, &bounds.points_input, time)?;
+    let mut points = generator_vec2_array(parameters, &bounds.points_input, time)?;
+    if definition.key == "builtin.polygon" {
+        let kind = generator_u32(parameters, "shape_type", time).unwrap_or(0);
+        if kind != 0 {
+            let origin = generator_vec2(parameters, "shape_origin", time).unwrap_or([0.0; 2]);
+            let size = if kind == 2 {
+                generator_vec2(parameters, "radius", time)
+                    .unwrap_or([480.0, 270.0])
+                    .map(|radius| radius * 2.0)
+            } else {
+                generator_vec2(parameters, "size", time).unwrap_or([960.0, 540.0])
+            };
+            points = vec![origin, [origin[0] + size[0], origin[1] + size[1]]];
+        } else {
+            let anchors = points.clone();
+            for name in ["controls_in", "controls_out"] {
+                if let Some(controls) = generator_vec2_array(parameters, name, time) {
+                    points.extend(
+                        anchors
+                            .iter()
+                            .zip(controls)
+                            .map(|(point, control)| [point[0] + control[0], point[1] + control[1]]),
+                    );
+                }
+            }
+        }
+    }
     if points.len() < 2 {
         return None;
     }
@@ -3203,6 +3464,7 @@ fn resolved_graph_node_value(
 
 fn resolved_graph_generator_parameters(
     node: &crate::effects::EffectNode,
+    generator: &GeneratorDefinition,
     instance: Option<&PipelineInstance>,
     values: &RefCell<ValueEvaluator<'_>>,
     time: f64,
@@ -3218,6 +3480,11 @@ fn resolved_graph_generator_parameters(
         .collect::<BTreeMap<_, _>>();
     for name in node.inputs.keys() {
         if let Some(value) = resolved_graph_node_value(node, instance, values, name) {
+            let value = generator
+                .inputs
+                .iter()
+                .find(|input| input.id == *name)
+                .map_or(value, |input| input.ty.convert_gpu(value));
             parameters.insert(
                 name.clone(),
                 HostBinding::Constant(crate::project::HostValue::Gpu(value)),
@@ -3430,6 +3697,7 @@ mod headless_preview_tests {
                     None,
                     [16, 16],
                     1.0,
+                    true,
                     false,
                     None,
                     &output,
@@ -3631,6 +3899,7 @@ mod headless_preview_tests {
                     [16, 16],
                     1.0,
                     true,
+                    true,
                     None,
                     &output,
                 )
@@ -3654,6 +3923,7 @@ mod headless_preview_tests {
                         None,
                         [16, 16],
                         1.0,
+                        true,
                         true,
                         None,
                         &output,
@@ -3784,6 +4054,7 @@ mod headless_preview_tests {
                         [16, 16],
                         1.0,
                         true,
+                        true,
                         None,
                         &output,
                     )
@@ -3912,6 +4183,7 @@ mod headless_preview_tests {
                     None,
                     [4, 4],
                     1.0,
+                    true,
                     false,
                     None,
                     &output,

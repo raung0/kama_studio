@@ -124,6 +124,7 @@ pub enum EditorCommand {
     TogglePenTool,
     OpenSettings,
     OpenKeybinds,
+    ConvertToPath,
     OpenUrl(&'static str),
     Exit,
 }
@@ -510,6 +511,14 @@ impl CommandRegistry {
                 Some(KeyBinding::primary('v')),
                 Some(AppIcon::Paste),
                 EditorCommand::timeline(TimelineAction::Paste),
+            ),
+            (
+                "edit.convert-to-path",
+                "Convert to Path",
+                Some("Convert selected vector shapes to paths"),
+                None,
+                Some(AppIcon::Pen),
+                EditorCommand::ConvertToPath,
             ),
             (
                 "timeline.power-duplicate",

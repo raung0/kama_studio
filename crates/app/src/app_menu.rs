@@ -391,6 +391,7 @@ pub const EDIT_MENU_COMMANDS: &[&str] = &[
     "edit.copy",
     "edit.cut",
     "edit.paste",
+    "edit.convert-to-path",
     "timeline.close-gap",
     "timeline.speed-duration",
     "timeline.cut-at-playhead",
@@ -781,6 +782,16 @@ impl NativeMenu {
             .iter()
             .find(|(item, _)| event.id == item.id())
             .map(|(_, command)| *command)
+    }
+
+    pub(super) fn set_convert_to_path_enabled(&self, enabled: bool) {
+        if let Some((item, _)) = self
+            .edit_items
+            .iter()
+            .find(|(_, command)| *command == "edit.convert-to-path")
+        {
+            item.set_enabled(enabled);
+        }
     }
 
     pub(super) fn refresh_recent_projects(&mut self) -> anyhow::Result<()> {
@@ -1351,6 +1362,7 @@ pub fn build_app_menu(
     cursor: [f32; 2],
     registry: &CommandRegistry,
     icons: &Icons,
+    can_convert_to_path: bool,
 ) {
     let file_open = state.is_file();
     let edit_open = state.is_edit();
@@ -1516,7 +1528,7 @@ pub fn build_app_menu(
                 label,
                 shortcut.as_deref(),
                 icon,
-                true,
+                *command != "edit.convert-to-path" || can_convert_to_path,
                 10.0,
                 None,
                 icons,

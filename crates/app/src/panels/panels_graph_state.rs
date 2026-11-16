@@ -4,7 +4,7 @@ use super::{
     GpuValue, GraphicEqBuild, Hash, HashMap, HashSet, IconId, Icons, Ime, InputType, Key, KeyEvent,
     ModifiersState, NamedKey, NumberControlsExt, NumberInput, NumberSettings, PipelineKind,
     PluginInput, PluginRegistry, Project, PropertyControls, RADIUS_SM, Rect, Renderer, Result,
-    Size, SliderControlsExt, Style, TextEdit, TimelineState, build_context_menu,
+    Size, SliderControlsExt, Style, TextEdit, TimelineState, ToggleButton, build_context_menu,
     build_graphic_eq_controls, colors_from_values, colors_to_values, context_menu_click,
     context_menu_rect, format_gpu_value, friendly_name, graph_canvas_rect, graph_card_header_parts,
     graph_card_scale, graph_component_rect, graph_component_style, graph_host_eq_parts,
@@ -14,14 +14,15 @@ use super::{
     graph_named_image_input_port, graph_output_label, graph_output_label_rect, graph_port,
     graph_property_label_parts, graph_property_row_rect, graph_rects_intersect,
     graph_scalar_input_point, graph_scalar_input_port, graph_screen_to_world, graph_selection_rect,
-    graph_toolbar_layout, graph_value_component_rect, graph_value_detail_rect,
-    graph_value_input_area, graph_value_input_component_rect, graph_value_input_label_rect,
-    graph_value_input_link_rect, graph_value_input_point, graph_value_input_port,
-    graph_value_link_rect, graph_value_output_point, graph_value_output_port,
-    graph_value_swatch_rect, hit_local, host_value_summary, i18n, keyframe_control, offset_rect,
-    plugin_input_uses_host_binding, plugin_node_input, plugin_node_inputs, plugin_node_name,
-    selected_generator_plugin_type, sync_text_edit, theme, toggle_icon_button, ui_color,
+    graph_toolbar_layout, graph_value_component_rect, graph_value_input_component_rect,
+    graph_value_input_label_rect, graph_value_input_link_rect, graph_value_input_point,
+    graph_value_input_port, graph_value_link_rect, graph_value_output_point,
+    graph_value_output_port, graph_value_swatch_rect, hit_local, host_value_summary, i18n,
+    keyframe_control, offset_rect, plugin_input_uses_host_binding, plugin_node_input,
+    plugin_node_inputs, plugin_node_name, selected_generator_plugin_type, sync_text_edit, theme,
+    toggle_icon_button, ui_color,
 };
+use crate::effects::VisualPortType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GraphNodeTarget {
@@ -46,6 +47,7 @@ impl GraphNodeTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GraphMonitorSelection {
+    Inactive,
     Local {
         node: u64,
     },
@@ -163,6 +165,7 @@ pub enum GraphWire {
         source: u64,
         destination: u64,
         input: String,
+        local: bool,
     },
 }
 
@@ -255,6 +258,7 @@ pub enum PipelineGraphAction {
         node: u64,
         input: String,
         source: u64,
+        local: bool,
     },
     SetValueComponent {
         node: u64,
@@ -297,9 +301,17 @@ pub enum PipelineGraphAction {
     },
     InsertNodeOnWire {
         node: u64,
+        local: bool,
         source: Option<u64>,
         destination: Option<u64>,
         destination_input: Option<String>,
+    },
+    InsertValueNodeOnWire {
+        node: u64,
+        source: u64,
+        destination: u64,
+        input: String,
+        local: bool,
     },
 }
 
@@ -321,6 +333,8 @@ pub(super) struct GraphCard {
     pub(super) kind: GraphNodeTarget,
     pub(super) label: String,
     pub(super) image_inputs: Vec<String>,
+    pub(super) visual_output: crate::effects::VisualPortType,
+    pub(super) visual_inputs: HashMap<String, crate::effects::VisualPortType>,
     pub(super) inputs: Vec<GraphInput>,
     pub(super) host_inputs: Vec<GraphInput>,
 }
@@ -393,6 +407,270 @@ struct GraphScene {
     wires: Vec<GraphWireGeometry>,
 }
 
+impl GraphScene {
+    fn value_source(&self, target: GraphNodeTarget, name: &str) -> Option<u64> {
+        self.wires.iter().find_map(|geometry| {
+            let GraphWire::Value {
+                source,
+                destination,
+                input,
+                local,
+            } = &geometry.wire
+            else {
+                return None;
+            };
+            let matches_target = match target {
+                GraphNodeTarget::Local(node) => *local && node == *destination,
+                GraphNodeTarget::Shared(node) | GraphNodeTarget::Value(node) => {
+                    !local && node == *destination
+                }
+                _ => false,
+            };
+            (matches_target && input == name).then_some(*source)
+        })
+    }
+}
+
+const fn visual_port_label(ty: VisualPortType) -> &'static str {
+    match ty {
+        VisualPortType::Raster => "Image",
+        VisualPortType::Vector => "Vector",
+        VisualPortType::Image => "Im/Vec",
+    }
+}
+
+const fn visual_port_color(ty: VisualPortType) -> Color {
+    match ty {
+        VisualPortType::Raster => Color::rgb8(0x59, 0xb8, 0xef),
+        VisualPortType::Vector => Color::rgb8(0x62, 0xd6, 0x93),
+        VisualPortType::Image => Color::rgb8(0xa0, 0xa0, 0xa0),
+    }
+}
+
+const fn numeric_port_type(value: GpuValue) -> InputType {
+    match value {
+        GpuValue::Vec2(_) => InputType::Vec2,
+        GpuValue::Vec3(_) => InputType::Vec3,
+        GpuValue::Vec4(_) => InputType::Vec4,
+        GpuValue::Color(_) => InputType::Color,
+        GpuValue::Bool(_) => InputType::Bool,
+        _ => InputType::F32,
+    }
+}
+
+const fn numeric_port_color(ty: InputType) -> Color {
+    match ty {
+        InputType::Vec2 | InputType::Vec2i => Color::rgb8(0xf1, 0xb8, 0x66),
+        InputType::Vec3 => Color::rgb8(0xe8, 0x92, 0x59),
+        InputType::Vec4 => Color::rgb8(0xe4, 0x79, 0x8c),
+        InputType::Color => Color::rgb8(0xed, 0x88, 0xd0),
+        InputType::Bool => Color::rgb8(0xd8, 0xcd, 0x66),
+        _ => Color::rgb8(0xb7, 0x8d, 0xff),
+    }
+}
+
+struct GraphVisualTypes<'a> {
+    graph: GraphModel<'a>,
+    cards: &'a [GraphCard],
+    outputs: HashMap<GraphNodeTarget, VisualPortType>,
+    visiting: HashSet<GraphNodeTarget>,
+    values: crate::effects::ValueEvaluator<'a>,
+}
+
+impl<'a> GraphVisualTypes<'a> {
+    fn new(graph: GraphModel<'a>, cards: &'a [GraphCard]) -> Self {
+        Self {
+            graph,
+            cards,
+            outputs: HashMap::new(),
+            visiting: HashSet::new(),
+            values: crate::effects::ValueEvaluator::new(
+                graph
+                    .pipeline()
+                    .map_or(&[], |pipeline| pipeline.value_nodes.as_slice()),
+                crate::effects::ValueEvalContext {
+                    timeline_time: graph.timeline.selected_keyframe_time(),
+                    local_time: graph
+                        .timeline
+                        .selected_clip()
+                        .map_or(0.0, |clip| clip.local_time(graph.timeline.playhead())),
+                    frame_index: 0,
+                    frame_rate: graph.project.active_settings().frame_rate,
+                },
+            ),
+        }
+    }
+
+    fn binding(
+        &mut self,
+        binding: &crate::effects::ImageBinding,
+        local: bool,
+    ) -> Option<VisualPortType> {
+        use crate::effects::ImageBinding;
+        match binding {
+            ImageBinding::Disconnected => None,
+            ImageBinding::PipelineInput if local => Some(self.shared_output()),
+            ImageBinding::PipelineInput => Some(self.output(GraphNodeTarget::Input)),
+            ImageBinding::Node(socket) => Some(self.output(if local {
+                GraphNodeTarget::Local(socket.node)
+            } else {
+                GraphNodeTarget::Shared(socket.node)
+            })),
+        }
+    }
+
+    fn shared_output(&mut self) -> VisualPortType {
+        if let Some(pipeline) = self.graph.pipeline() {
+            self.binding(&pipeline.output, false)
+                .unwrap_or(VisualPortType::Image)
+        } else {
+            self.output(GraphNodeTarget::Input)
+        }
+    }
+
+    fn input(&mut self, target: GraphNodeTarget, name: &str) -> VisualPortType {
+        let declared = self
+            .cards
+            .iter()
+            .find(|card| card.kind == target)
+            .and_then(|card| card.visual_inputs.get(name))
+            .copied()
+            .unwrap_or(VisualPortType::Image);
+        if declared != VisualPortType::Image {
+            return declared;
+        }
+        let graph = self.graph;
+        graph
+            .effect(target)
+            .and_then(|node| node.image_inputs.get(name))
+            .and_then(|binding| self.binding(binding, matches!(target, GraphNodeTarget::Local(_))))
+            .unwrap_or(declared)
+    }
+
+    fn output(&mut self, target: GraphNodeTarget) -> VisualPortType {
+        if let Some(&ty) = self.outputs.get(&target) {
+            return ty;
+        }
+        if !self.visiting.insert(target) {
+            return VisualPortType::Image;
+        }
+        let ty = self.resolve_output(target);
+        self.visiting.remove(&target);
+        self.outputs.insert(target, ty);
+        ty
+    }
+
+    fn resolve_output(&mut self, target: GraphNodeTarget) -> VisualPortType {
+        let graph = self.graph;
+        if target == GraphNodeTarget::Output {
+            return if graph.pinned.is_none()
+                && let Some(instance) = graph.timeline.selected_pipeline()
+            {
+                self.binding(&instance.local_output, true)
+                    .unwrap_or(VisualPortType::Image)
+            } else {
+                self.shared_output()
+            };
+        }
+        let Some(card) = self.cards.iter().find(|card| card.kind == target) else {
+            return VisualPortType::Image;
+        };
+        if card.visual_output != VisualPortType::Image || target == GraphNodeTarget::Input {
+            return card.visual_output;
+        }
+        let Some(node) = graph.effect(target) else {
+            return card.visual_output;
+        };
+        card.image_inputs
+            .iter()
+            .filter(|name| {
+                node.image_inputs.get(*name).is_some_and(|binding| {
+                    !matches!(binding, crate::effects::ImageBinding::Disconnected)
+                })
+            })
+            .map(|name| self.input(target, name))
+            .reduce(|a, b| if a == b { a } else { VisualPortType::Image })
+            .unwrap_or(VisualPortType::Image)
+    }
+
+    fn pending(&mut self, pending: PendingGraphWire) -> Color {
+        let ty = match pending {
+            PendingGraphWire::Value(node) => return numeric_port_color(self.value_type(node)),
+            PendingGraphWire::Image(source) => {
+                self.output(source.map_or(GraphNodeTarget::Input, GraphNodeTarget::Shared))
+            }
+            PendingGraphWire::LocalImage(Some(source)) => {
+                self.output(GraphNodeTarget::Local(source))
+            }
+            PendingGraphWire::LocalImage(None) => self.shared_output(),
+        };
+        visual_port_color(ty)
+    }
+
+    fn value_type(&mut self, node: u64) -> InputType {
+        numeric_port_type(self.values.evaluate(node).unwrap_or(GpuValue::F32(0.0)))
+    }
+
+    fn numeric_input(&self, target: GraphNodeTarget, name: &str) -> InputType {
+        self.cards
+            .iter()
+            .find(|card| card.kind == target)
+            .and_then(|card| card.inputs.iter().find(|input| input.name == name))
+            .and_then(|input| input.definition.as_ref())
+            .map_or_else(
+                || {
+                    graph_effect_value(target, name, self.graph)
+                        .map_or(InputType::F32, numeric_port_type)
+                },
+                |input| input.ty,
+            )
+    }
+
+    fn wire_colors(&mut self, wire: &GraphWire) -> (Color, Color) {
+        let from = self.pending(pending_from_wire(wire));
+        let to = match wire {
+            GraphWire::Image {
+                destination: Some(node),
+                input,
+                ..
+            } => visual_port_color(self.input(
+                GraphNodeTarget::Shared(*node),
+                input.as_deref().unwrap_or("image"),
+            )),
+            GraphWire::LocalImage {
+                destination: Some(node),
+                ..
+            } => visual_port_color(self.input(GraphNodeTarget::Local(*node), "image")),
+            GraphWire::Value {
+                destination,
+                input,
+                local,
+                ..
+            } if *local || self.graph.value_node(*destination).is_none() => {
+                numeric_port_color(self.numeric_input(
+                    if *local {
+                        GraphNodeTarget::Local(*destination)
+                    } else {
+                        GraphNodeTarget::Shared(*destination)
+                    },
+                    input,
+                ))
+            }
+            GraphWire::Value {
+                destination, input, ..
+            } if self
+                .graph
+                .value_node(*destination)
+                .is_some_and(|node| node.component_input_index(input).is_some()) =>
+            {
+                numeric_port_color(InputType::F32)
+            }
+            _ => from,
+        };
+        (from, to)
+    }
+}
+
 fn graph_input_at<T: AsRef<str>>(
     inputs: &[T],
     point: [f32; 2],
@@ -428,6 +706,9 @@ fn occupied_graph_input(
                 .wires
                 .iter()
                 .find(|geometry| matches!(&geometry.wire, GraphWire::LocalImage { destination: Some(destination), .. } if *destination == node)),
+            GraphNodeTarget::Local(node) => graph_input_at(&card.inputs, point, |index| graph_scalar_input_port(rect, card, index))
+                .and_then(|input| scene.wires.iter().find(|geometry| matches!(&geometry.wire,
+                    GraphWire::Value { destination, input: candidate, local: true, .. } if *destination == node && candidate == input))),
             GraphNodeTarget::Shared(node) => graph_input_at(&card.image_inputs, point, |index| {
                 graph_named_image_input_port(rect, index)
             })
@@ -441,7 +722,7 @@ fn occupied_graph_input(
                 graph_input_at(&card.inputs, point, |index| graph_scalar_input_port(rect, card, index))
                     .and_then(|input| {
                         scene.wires.iter().find(|geometry| {
-                            matches!(&geometry.wire, GraphWire::Value { destination, input: candidate, .. }
+                            matches!(&geometry.wire, GraphWire::Value { destination, input: candidate, local: false, .. }
                                 if *destination == node && candidate == input)
                         })
                     })
@@ -451,7 +732,7 @@ fn occupied_graph_input(
             })
             .and_then(|input| {
                 scene.wires.iter().find(|geometry| {
-                    matches!(&geometry.wire, GraphWire::Value { destination, input: candidate, .. }
+                    matches!(&geometry.wire, GraphWire::Value { destination, input: candidate, local: false, .. }
                         if *destination == node && candidate == input)
                 })
             }),
@@ -504,15 +785,25 @@ fn graph_output_at(
 
 fn graph_connect_action(
     pending: PendingGraphWire,
+    source_type: crate::effects::VisualPortType,
     card: &GraphCard,
     rect: Rect,
     point: [f32; 2],
     followed_shared: bool,
+    graph: GraphModel<'_>,
 ) -> Option<PipelineGraphAction> {
     match (pending, card.kind) {
         (PendingGraphWire::LocalImage(source), GraphNodeTarget::Local(node))
             if source != Some(node) && graph_image_input_port(rect).contains(point) =>
         {
+            if card
+                .visual_inputs
+                .values()
+                .next()
+                .is_some_and(|ty| !ty.accepts(source_type))
+            {
+                return None;
+            }
             Some(PipelineGraphAction::ConnectLocalImage { node, source })
         }
         (PendingGraphWire::LocalImage(source), GraphNodeTarget::Output)
@@ -523,6 +814,11 @@ fn graph_connect_action(
         (PendingGraphWire::Image(source), GraphNodeTarget::Shared(node)) => {
             graph_input_at(&card.image_inputs, point, |index| {
                 graph_named_image_input_port(rect, index)
+            })
+            .filter(|input| {
+                card.visual_inputs
+                    .get(*input)
+                    .is_none_or(|ty| ty.accepts(source_type))
             })
             .map(|input| PipelineGraphAction::ConnectImage {
                 node,
@@ -550,24 +846,29 @@ fn graph_connect_action(
                 PipelineGraphAction::SetOutput { source }
             })
         }
-        (PendingGraphWire::Value(source), GraphNodeTarget::Shared(node)) => {
-            graph_input_at(&card.inputs, point, |index| {
-                graph_scalar_input_port(rect, card, index)
-            })
-            .map(|input| PipelineGraphAction::ConnectValue {
-                node,
-                input: input.into(),
-                source,
-            })
-        }
+        (
+            PendingGraphWire::Value(source),
+            GraphNodeTarget::Shared(node) | GraphNodeTarget::Local(node),
+        ) => graph_input_at(&card.inputs, point, |index| {
+            graph_scalar_input_port(rect, card, index)
+        })
+        .filter(|input| !graph_input_has_keyframes(card.kind, input, graph))
+        .map(|input| PipelineGraphAction::ConnectValue {
+            node,
+            input: input.into(),
+            source,
+            local: matches!(card.kind, GraphNodeTarget::Local(_)),
+        }),
         (PendingGraphWire::Value(source), GraphNodeTarget::Value(node)) if source != node => {
             graph_input_at(&card.inputs, point, |index| {
                 graph_value_input_port(rect, index)
             })
+            .filter(|input| !graph_input_has_keyframes(card.kind, input, graph))
             .map(|input| PipelineGraphAction::ConnectValue {
                 node,
                 input: input.into(),
                 source,
+                local: false,
             })
         }
         _ => None,
@@ -698,10 +999,31 @@ fn graph_effect_card(
     graph: GraphModel<'_>,
     plugins: &PluginRegistry,
 ) -> GraphCard {
+    let definition = plugins.effect(&node.node_type);
     GraphCard {
         kind,
         label: plugin_node_name(plugins, &node.node_type),
         image_inputs: node.image_input_names(),
+        visual_output: definition.map_or_else(
+            || {
+                plugins.generator(&node.node_type).map_or(
+                    if node.node_type == crate::effects::PIPELINE_NODE_TYPE {
+                        crate::effects::VisualPortType::Image
+                    } else {
+                        crate::effects::VisualPortType::Raster
+                    },
+                    |generator| generator.output_type,
+                )
+            },
+            |definition| definition.output_type,
+        ),
+        visual_inputs: definition.map_or_else(HashMap::new, |definition| {
+            definition
+                .image_inputs
+                .iter()
+                .map(|input| (input.id.clone(), input.ty))
+                .collect()
+        }),
         inputs: graph_node_inputs(node, kind, graph, plugins),
         host_inputs: graph_host_inputs(node, kind, graph, plugins),
     }
@@ -727,6 +1049,40 @@ fn graph_cards(graph: GraphModel<'_>, plugins: &PluginRegistry) -> Vec<GraphCard
         kind: GraphNodeTarget::Input,
         label: source_label,
         image_inputs: Vec::new(),
+        visual_output: if pinned.is_some() {
+            crate::effects::VisualPortType::Image
+        } else {
+            timeline
+                .selected_generator()
+                .and_then(|source| match source {
+                    GeneratorSource::Plugin { generator_type, .. } => plugins
+                        .generator(generator_type)
+                        .map(|generator| generator.output_type),
+                    GeneratorSource::Wasm { .. } => None,
+                })
+                .or_else(|| {
+                    let crate::project::VisualSource::Media(id) = &timeline.selected_clip()?.source
+                    else {
+                        return None;
+                    };
+                    let asset = project.media(*id)?;
+                    let vector = asset
+                        .path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| {
+                            extension.eq_ignore_ascii_case("svg")
+                                || extension.eq_ignore_ascii_case("svgz")
+                        });
+                    Some(if vector {
+                        crate::effects::VisualPortType::Vector
+                    } else {
+                        crate::effects::VisualPortType::Raster
+                    })
+                })
+                .unwrap_or(crate::effects::VisualPortType::Image)
+        },
+        visual_inputs: HashMap::new(),
         inputs: source_inputs,
         host_inputs: source_host_inputs,
     }];
@@ -745,6 +1101,8 @@ fn graph_cards(graph: GraphModel<'_>, plugins: &PluginRegistry) -> Vec<GraphCard
                 kind: GraphNodeTarget::Value(node.id),
                 label: node.kind.label().to_string(),
                 image_inputs: Vec::new(),
+                visual_output: crate::effects::VisualPortType::Raster,
+                visual_inputs: HashMap::new(),
                 inputs: node
                     .kind
                     .input_names()
@@ -772,6 +1130,8 @@ fn graph_cards(graph: GraphModel<'_>, plugins: &PluginRegistry) -> Vec<GraphCard
         kind: GraphNodeTarget::Output,
         label: i18n::text("graph-output"),
         image_inputs: Vec::new(),
+        visual_output: crate::effects::VisualPortType::Image,
+        visual_inputs: HashMap::new(),
         inputs: Vec::new(),
         host_inputs: Vec::new(),
     });
@@ -1016,6 +1376,38 @@ fn graph_card_rects(
             )
         })
         .collect()
+}
+
+fn graph_input_has_keyframes(target: GraphNodeTarget, input: &str, graph: GraphModel<'_>) -> bool {
+    match target {
+        GraphNodeTarget::Input => {
+            graph.pinned.is_none() && graph.timeline.generator_has_keyframes(input)
+        }
+        GraphNodeTarget::Shared(node) if graph.pinned.is_none() => graph
+            .timeline
+            .pipeline_input_has_keyframes(graph.project, node, input),
+        GraphNodeTarget::Local(_) | GraphNodeTarget::Shared(_) => graph
+            .effect(target)
+            .and_then(|node| node.inputs.get(input))
+            .is_some_and(crate::effects::Binding::has_keyframes),
+        GraphNodeTarget::Value(node) => graph
+            .value_node(node)
+            .and_then(|node| node.inputs.get(input))
+            .is_some_and(crate::effects::Binding::has_keyframes),
+        GraphNodeTarget::Output => false,
+    }
+}
+
+fn graph_enable_button_rect(card: Rect) -> Rect {
+    let (header, _) = graph_card_header_parts(card);
+    let scale = graph_card_scale(card);
+    let size = 17.0 * scale;
+    Rect::new(
+        4.0f32.mul_add(-scale, header.x + header.width - size),
+        (header.height - size).mul_add(0.5, header.y),
+        size,
+        size,
+    )
 }
 
 fn graph_effect_value(
@@ -1585,20 +1977,23 @@ fn graph_wire_geometry(
                     ));
                 }
             }
-            for (input_index, (name, binding)) in node
-                .inputs
-                .iter()
-                .filter(|(name, _)| name.as_str() != "enabled")
-                .enumerate()
-            {
-                let Some((source, from)) = graph_value_source(cards, rects, binding) else {
+            for (input_index, input) in destination.inputs.iter().enumerate() {
+                if graph_input_has_keyframes(destination.kind, &input.name, graph) {
+                    continue;
+                }
+                let Some((source, from)) = node
+                    .inputs
+                    .get(&input.name)
+                    .and_then(|binding| graph_value_source(cards, rects, binding))
+                else {
                     continue;
                 };
                 wires.push(GraphWireGeometry::editable(
                     GraphWire::Value {
                         source,
                         destination: node.id,
-                        input: name.clone(),
+                        input: input.name.clone(),
+                        local: false,
                     },
                     from,
                     graph_scalar_input_point(destination_rect, destination, input_index),
@@ -1627,6 +2022,7 @@ fn graph_wire_geometry(
                         source,
                         destination: node.id,
                         input: input.name.clone(),
+                        local: false,
                     },
                     from,
                     graph_value_input_point(destination_rect, input_index),
@@ -1644,6 +2040,26 @@ fn graph_wire_geometry(
             let Some(&destination_rect) = rects.get(destination_index) else {
                 continue;
             };
+            if let Some(destination) = cards.get(destination_index) {
+                for (input_index, input) in destination.inputs.iter().enumerate() {
+                    if let Some((source, from)) = node
+                        .inputs
+                        .get(&input.name)
+                        .and_then(|binding| graph_value_source(cards, rects, binding))
+                    {
+                        wires.push(GraphWireGeometry::editable(
+                            GraphWire::Value {
+                                source,
+                                destination: node.id,
+                                input: input.name.clone(),
+                                local: true,
+                            },
+                            from,
+                            graph_scalar_input_point(destination_rect, destination, input_index),
+                        ));
+                    }
+                }
+            }
             let binding = node
                 .image_inputs
                 .get("image")
@@ -1753,7 +2169,7 @@ fn draw_graph_grid(ctx: &mut kama_ui::BuildCtx, canvas: Rect, pan: [f32; 2], zoo
 }
 
 fn graph_curve_points(from: [f32; 2], to: [f32; 2], zoom: f32) -> Vec<[f32; 2]> {
-    const STEPS: usize = 24;
+    const STEPS: usize = 64;
     let zoom = zoom.max(0.000_1);
     let handle = ((to[0] - from[0]).abs() * 0.45).clamp(52.0 * zoom, 180.0 * zoom);
     let c1 = [from[0] + handle, from[1]];
@@ -1783,8 +2199,9 @@ fn draw_graph_curve(
     id: usize,
     from: [f32; 2],
     to: [f32; 2],
-    color: Color,
+    colors: (Color, Color),
     zoom: f32,
+    selected: bool,
 ) {
     let points = graph_curve_points(from, to, zoom);
     let margin = (3.0 * zoom).max(1.0);
@@ -1806,8 +2223,8 @@ fn draw_graph_curve(
         (max_x - min_x).max(1.0),
         (max_y - min_y).max(1.0),
     );
-    let half_width = (1.5 * zoom).max(0.6);
-    let mut vertices = Vec::with_capacity(24 * 6);
+    let half_width = (if selected { 2.5 } else { 1.5 } * zoom).max(0.6);
+    let mut vertices = Vec::with_capacity(points.len().saturating_sub(1).saturating_mul(6));
     for pair in points.windows(2) {
         let [a, b] = pair else { continue };
         let dx = b[0] - a[0];
@@ -1821,12 +2238,44 @@ fn draw_graph_curve(
         let b1 = [b[0] - nx - bounds.x, b[1] - ny - bounds.y];
         vertices.extend([a0, b0, a1, a1, b0, b1]);
     }
-    kama_ui::ui!(ctx, {
-        Rect(("pipeline-edge", id), bounds) {
-            fill: color;
-            vertices: vertices;
-        }
-    });
+    let gradient = colors.0 != colors.1;
+    let chunk_size = if gradient { 6 } else { vertices.len() };
+    for (index, chunk) in vertices.chunks(chunk_size.max(1)).enumerate() {
+        let t = index as f32 / points.len().saturating_sub(2).max(1) as f32;
+        let color = colors.0.mix(colors.1, t * t * 2.0_f32.mul_add(-t, 3.0));
+        let min_x = chunk
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min);
+        let min_y = chunk
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = chunk
+            .iter()
+            .map(|point| point[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_y = chunk
+            .iter()
+            .map(|point| point[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let segment_bounds = Rect::new(
+            bounds.x + min_x,
+            bounds.y + min_y,
+            (max_x - min_x).max(1.0),
+            (max_y - min_y).max(1.0),
+        );
+        let segment_vertices: Vec<_> = chunk
+            .iter()
+            .map(|point| [point[0] - min_x, point[1] - min_y])
+            .collect();
+        kama_ui::ui!(ctx, {
+            Rect(("pipeline-edge", id, index), segment_bounds) {
+                fill: color;
+                vertices: segment_vertices;
+            }
+        });
+    }
 }
 
 fn point_segment_distance(point: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -1852,9 +2301,21 @@ fn graph_wire_hit(from: [f32; 2], to: [f32; 2], point: [f32; 2], zoom: f32) -> b
 }
 
 fn graph_wire_crosses_rect(from: [f32; 2], to: [f32; 2], rect: Rect, zoom: f32) -> bool {
-    graph_curve_points(from, to, zoom)
-        .into_iter()
-        .any(|point| rect.contains(point))
+    let points = graph_curve_points(from, to, zoom);
+    [rect.x, rect.x + rect.width].into_iter().all(|edge| {
+        points.windows(2).any(|pair| {
+            let [a, b] = pair else {
+                return false;
+            };
+            let dx = b[0] - a[0];
+            if dx.abs() <= f32::EPSILON {
+                return false;
+            }
+            let t = (edge - a[0]) / dx;
+            let y = (b[1] - a[1]).mul_add(t, a[1]);
+            (0.0..=1.0).contains(&t) && (rect.y..=rect.y + rect.height).contains(&y)
+        })
+    })
 }
 
 impl PipelineGraphState {
@@ -1885,11 +2346,12 @@ impl PipelineGraphState {
     }
 
     pub fn monitor_selection(&self, timeline: &TimelineState) -> Option<GraphMonitorSelection> {
-        match self.selected_node? {
-            GraphNodeTarget::Local(node) if self.pinned_pipeline.is_none() => {
+        // Only the source node may use the monitor's fallback to clip-generator handles.
+        match self.selected_node {
+            Some(GraphNodeTarget::Local(node)) if self.pinned_pipeline.is_none() => {
                 Some(GraphMonitorSelection::Local { node })
             }
-            GraphNodeTarget::Shared(node) => {
+            Some(GraphNodeTarget::Shared(node)) => {
                 let pipeline = self.pinned_pipeline.or_else(|| {
                     timeline
                         .selected_pipeline()
@@ -1901,10 +2363,8 @@ impl PipelineGraphState {
                     follows_clip: self.pinned_pipeline.is_none(),
                 })
             }
-            GraphNodeTarget::Input
-            | GraphNodeTarget::Local(_)
-            | GraphNodeTarget::Value(_)
-            | GraphNodeTarget::Output => None,
+            Some(GraphNodeTarget::Input) if self.pinned_pipeline.is_none() => None,
+            _ => Some(GraphMonitorSelection::Inactive),
         }
     }
 
@@ -2184,6 +2644,13 @@ impl PipelineGraphState {
         self.reset_interaction(true);
     }
 
+    pub fn select_source(&mut self) {
+        let reset_view = self.pinned_pipeline.is_some();
+        self.pinned_pipeline = None;
+        self.reset_interaction(reset_view);
+        self.select_single_node(GraphNodeTarget::Input);
+    }
+
     pub fn open_pipeline(&mut self, pipeline: u64) {
         self.pinned_pipeline = Some(pipeline);
         self.reset_interaction(true);
@@ -2374,18 +2841,7 @@ impl PipelineGraphState {
             });
         }
 
-        let Some(value) = value else {
-            let value_rect = graph_property_value_area(card_rect, card, input_index, false);
-            ui_text!(
-                ctx,
-                ("pipeline-linked-label", target, input_index),
-                value_rect,
-                7.6 * self.zoom,
-                Color::rgb8(0xb7, 0x8d, 0xff),
-                "connected",
-            );
-            return;
-        };
+        let value = value.unwrap_or(GpuValue::F32(0.0));
 
         if self.zoom < GRAPH_CONTROLS_MIN_ZOOM {
             let value_rect = graph_property_value_area(card_rect, card, input_index, false);
@@ -2579,21 +3035,16 @@ impl PipelineGraphState {
             return;
         }
 
+        let mut visual_types = GraphVisualTypes::new(graph, &scene.cards);
         for (index, geometry) in scene.wires.iter().enumerate() {
-            let selected = self.selected_wire.as_ref() == Some(&geometry.wire);
             draw_graph_curve(
                 ctx,
                 index,
                 geometry.from,
                 geometry.to,
-                if selected {
-                    Color::rgb8(0xff, 0xc4, 0x54)
-                } else if geometry.editable {
-                    theme::accent()
-                } else {
-                    Color::rgb8(0x68, 0x78, 0x86)
-                },
+                visual_types.wire_colors(&geometry.wire),
                 self.zoom,
+                self.selected_wire.as_ref() == Some(&geometry.wire),
             );
         }
 
@@ -2606,8 +3057,9 @@ impl PipelineGraphState {
                 50_000,
                 from,
                 cursor,
-                Color::rgb8(0xff, 0xd0, 0x78),
+                (visual_types.pending(pending), visual_types.pending(pending)),
                 self.zoom,
+                false,
             );
         }
 
@@ -2620,7 +3072,15 @@ impl PipelineGraphState {
             let selected =
                 self.selected_node == Some(target) || self.selected_nodes.contains(&target);
             let card_scale = graph_card_scale(card_rect);
-            let (header, title) = graph_card_header_parts(card_rect);
+            let (header, mut title) = graph_card_header_parts(card_rect);
+            let has_enable = graph
+                .effect(target)
+                .is_some_and(|node| node.inputs.contains_key("enabled"));
+            if has_enable {
+                title.width = 4.0f32
+                    .mul_add(-card_scale, graph_enable_button_rect(card_rect).x - title.x)
+                    .max(0.0);
+            }
             kama_ui::ui!(ctx, {
                 Rect(("pipeline-node", index), card_rect) {
                     fill: if selected { theme::control().mix(theme::accent(), 0.12) } else { theme::control() };
@@ -2643,13 +3103,36 @@ impl PipelineGraphState {
                 }
             });
 
+            if has_enable {
+                let button = graph_enable_button_rect(card_rect);
+                let enabled = graph_effect_value(target, "enabled", graph).and_then(GpuValue::bool);
+                let editable =
+                    enabled.is_some() && !graph_input_has_keyframes(target, "enabled", graph);
+                ctx.with_enabled(editable, |ctx| {
+                    ToggleButton::build(
+                        ctx,
+                        FormatKey::new(format_args!("pipeline-node-enabled-{index}")),
+                        button,
+                        "E",
+                        enabled.unwrap_or(true),
+                        graph_style,
+                    );
+                });
+                kama_ui::ui!(ctx, {
+                    Rect(("pipeline-node-enabled-tip", index), button) {
+                        tooltip: if !editable { "Controlled externally; edit in Inspector" } else if enabled == Some(true) { "Disable effect" } else { "Enable effect" };
+                    }
+                });
+            }
+
             match card.kind {
                 GraphNodeTarget::Output => {
+                    let ty = visual_types.output(GraphNodeTarget::Output);
                     graph_port(
                         ctx,
                         ("pipeline-input-port", index),
                         graph_image_input_port(card_rect),
-                        theme::accent(),
+                        visual_port_color(ty),
                         (5.0 * card_scale).max(2.0),
                     );
                     graph_label(
@@ -2657,15 +3140,20 @@ impl PipelineGraphState {
                         ("pipeline-output-input-label", index),
                         graph_image_input_label_rect(card_rect, 0),
                         card_scale,
-                        graph_image_socket_label(kind),
+                        if kind == PipelineKind::Audio {
+                            graph_image_socket_label(kind)
+                        } else {
+                            visual_port_label(ty)
+                        },
                     );
                 }
                 GraphNodeTarget::Value(id) => {
+                    let ty = visual_types.value_type(id);
                     graph_port(
                         ctx,
                         ("pipeline-value-output", index),
                         graph_value_output_port(card_rect),
-                        Color::rgb8(0xb7, 0x8d, 0xff),
+                        numeric_port_color(ty),
                         (5.0 * card_scale).max(2.0),
                     );
                     graph_output_label(
@@ -2673,17 +3161,47 @@ impl PipelineGraphState {
                         ("pipeline-value-output-label", index),
                         graph_output_label_rect(card_rect),
                         card_scale,
-                        "Value",
+                        match ty {
+                            InputType::Vec2 | InputType::Vec2i => "Vec2",
+                            InputType::Vec3 => "Vec3",
+                            InputType::Vec4 => "Vec4",
+                            InputType::Color => "Color",
+                            InputType::Bool => "Bool",
+                            _ => "Number",
+                        },
                     );
                     if let Some(value_node) = graph.value_node(id) {
                         for (input_index, input) in card.inputs.iter().enumerate() {
-                            graph_port(
-                                ctx,
-                                ("pipeline-value-input", index, input_index),
-                                graph_value_input_port(card_rect, input_index),
-                                Color::rgb8(0xb7, 0x8d, 0xff),
-                                (5.0 * card_scale).max(2.0),
-                            );
+                            let input_color =
+                                if value_node.component_input_index(&input.name).is_some() {
+                                    numeric_port_color(InputType::F32)
+                                } else {
+                                    value_node
+                                        .inputs
+                                        .get(&input.name)
+                                        .and_then(|binding| match binding {
+                                            crate::effects::Binding::Connection(socket) => {
+                                                Some(numeric_port_color(
+                                                    visual_types.value_type(socket.node),
+                                                ))
+                                            }
+                                            _ => binding
+                                                .evaluate(timeline.selected_keyframe_time())
+                                                .map(|value| {
+                                                    numeric_port_color(numeric_port_type(value))
+                                                }),
+                                        })
+                                        .unwrap_or_else(|| numeric_port_color(InputType::F32))
+                                };
+                            if !graph_input_has_keyframes(card.kind, &input.name, graph) {
+                                graph_port(
+                                    ctx,
+                                    ("pipeline-value-input", index, input_index),
+                                    graph_value_input_port(card_rect, input_index),
+                                    input_color,
+                                    (5.0 * card_scale).max(2.0),
+                                );
+                            }
                             graph_label(
                                 ctx,
                                 ("pipeline-value-input-label", index, input_index),
@@ -2692,11 +3210,24 @@ impl PipelineGraphState {
                                 &input.name,
                             );
                             let target = GraphNodeTarget::Value(id);
-                            let binding = value_node.inputs.get(&input.name);
-                            if let Some(value) = binding.and_then(|binding| {
-                                binding.evaluate(timeline.selected_keyframe_time())
-                            }) {
-                                self.build_graph_numeric(
+                            let manual = value_node
+                                .input_value(&input.name, timeline.selected_keyframe_time());
+                            let value = manual
+                                .or_else(|| {
+                                    visual_types
+                                        .values
+                                        .evaluate(scene.value_source(target, &input.name)?)
+                                })
+                                .unwrap_or(GpuValue::F32(0.0));
+                            let enabled = manual.is_some()
+                                && !graph_input_has_keyframes(target, &input.name, graph);
+                            let mut disabled = (!enabled).then(|| Self {
+                                zoom: self.zoom,
+                                ..Self::default()
+                            });
+                            let builder = disabled.as_mut().unwrap_or(self);
+                            ctx.with_enabled(enabled, |ctx| {
+                                builder.build_graph_numeric(
                                     ctx,
                                     &GraphControlTarget::Property(GraphPropertyKey {
                                         target,
@@ -2723,16 +3254,7 @@ impl PipelineGraphState {
                                     (icons.get(AppIcon::Link), icons.get(AppIcon::Unlink)),
                                     graph_style,
                                 );
-                            } else {
-                                ui_text!(
-                                    ctx,
-                                    ("pipeline-value-input-connected", index, input_index),
-                                    graph_value_input_area(card_rect, input_index, false),
-                                    7.6 * card_scale,
-                                    Color::rgb8(0xb7, 0x8d, 0xff),
-                                    "connected"
-                                );
-                            }
+                            });
                         }
                         if value_node.kind.is_constant() {
                             let color =
@@ -2747,47 +3269,42 @@ impl PipelineGraphState {
                                     graph_style,
                                 );
                             }
-                            self.build_graph_numeric(
-                                ctx,
-                                &GraphControlTarget::ValueNode(id),
-                                value_node.value,
-                                || graph_value_link_rect(card_rect),
-                                |component, _, linkable| {
-                                    graph_value_component_rect(card_rect, component, linkable)
-                                },
-                                FormatKey::new(format_args!("graph-value-link-{id}")),
-                                |component| format!("graph-value-{id}-{component}"),
-                                (
-                                    if color {
-                                        (0.0, 1.0)
-                                    } else {
-                                        (f64::NEG_INFINITY, f64::INFINITY)
+                            if value_node.kind.input_names().is_empty() {
+                                self.build_graph_numeric(
+                                    ctx,
+                                    &GraphControlTarget::ValueNode(id),
+                                    value_node.value,
+                                    || graph_value_link_rect(card_rect),
+                                    |component, _, linkable| {
+                                        graph_value_component_rect(card_rect, component, linkable)
                                     },
-                                    if color { 0.005 } else { 0.01 },
-                                    3,
-                                    "",
-                                ),
-                                (icons.get(AppIcon::Link), icons.get(AppIcon::Unlink)),
-                                graph_style,
-                            );
-                        } else {
-                            graph_label(
-                                ctx,
-                                ("pipeline-value-detail", index),
-                                graph_value_detail_rect(card_rect),
-                                card_scale,
-                                value_node.kind.detail(),
-                            );
+                                    FormatKey::new(format_args!("graph-value-link-{id}")),
+                                    |component| format!("graph-value-{id}-{component}"),
+                                    (
+                                        if color {
+                                            (0.0, 1.0)
+                                        } else {
+                                            (f64::NEG_INFINITY, f64::INFINITY)
+                                        },
+                                        if color { 0.005 } else { 0.01 },
+                                        3,
+                                        "",
+                                    ),
+                                    (icons.get(AppIcon::Link), icons.get(AppIcon::Unlink)),
+                                    graph_style,
+                                );
+                            }
                         }
                     }
                 }
                 GraphNodeTarget::Input | GraphNodeTarget::Local(_) | GraphNodeTarget::Shared(_) => {
                     for (image_index, image_input) in card.image_inputs.iter().enumerate() {
+                        let ty = visual_types.input(card.kind, image_input);
                         graph_port(
                             ctx,
                             ("pipeline-image-input", index, image_index),
                             graph_named_image_input_port(card_rect, image_index),
-                            theme::muted(),
+                            visual_port_color(ty),
                             (5.0 * card_scale).max(2.0),
                         );
                         graph_label(
@@ -2795,14 +3312,22 @@ impl PipelineGraphState {
                             ("pipeline-image-input-label", index, image_index),
                             graph_image_input_label_rect(card_rect, image_index),
                             card_scale,
-                            friendly_name(image_input),
+                            if image_input == "image" {
+                                visual_port_label(ty).to_string()
+                            } else {
+                                format!(
+                                    "{} · {}",
+                                    friendly_name(image_input),
+                                    visual_port_label(ty)
+                                )
+                            },
                         );
                     }
                     graph_port(
                         ctx,
                         ("pipeline-image-output", index),
                         graph_image_output_port(card_rect),
-                        theme::muted(),
+                        visual_port_color(visual_types.output(card.kind)),
                         (5.0 * card_scale).max(2.0),
                     );
                     graph_output_label(
@@ -2810,17 +3335,19 @@ impl PipelineGraphState {
                         ("pipeline-image-output-label", index),
                         graph_output_label_rect(card_rect),
                         card_scale,
-                        graph_image_socket_label(kind),
+                        visual_port_label(visual_types.output(card.kind)),
                     );
                     for (input_index, input) in card.inputs.iter().enumerate() {
                         let name = input.name.as_str();
-                        graph_port(
-                            ctx,
-                            ("pipeline-value-input", index, input_index),
-                            graph_scalar_input_port(card_rect, card, input_index),
-                            Color::rgb8(0xb7, 0x8d, 0xff),
-                            (4.0 * self.zoom).max(2.0),
-                        );
+                        if !graph_input_has_keyframes(card.kind, name, graph) {
+                            graph_port(
+                                ctx,
+                                ("pipeline-value-input", index, input_index),
+                                graph_scalar_input_port(card_rect, card, input_index),
+                                numeric_port_color(visual_types.numeric_input(card.kind, name)),
+                                (4.0 * self.zoom).max(2.0),
+                            );
+                        }
                         let value = graph_effect_value(card.kind, name, graph);
                         let unique = matches!(
                             card.kind,
@@ -2828,13 +3355,37 @@ impl PipelineGraphState {
                                 if self.pinned_pipeline.is_none()
                                     && timeline.pipeline_input_is_override(id, name)
                         );
-                        self.build_node_property(
-                            ctx,
-                            card,
-                            (rect, card_rect, input_index),
-                            (target, name, value, unique),
-                            icons,
-                        );
+                        let enabled =
+                            value.is_some() && !graph_input_has_keyframes(target, name, graph);
+                        let value =
+                            value
+                                .or_else(|| {
+                                    let value = visual_types
+                                        .values
+                                        .evaluate(scene.value_source(target, name)?)?;
+                                    Some(input.definition.as_ref().map_or(value, |definition| {
+                                        definition.ty.convert_gpu(value)
+                                    }))
+                                })
+                                .or_else(|| {
+                                    input.definition.as_ref().and_then(|definition| {
+                                        definition.ty.default_gpu(&definition.default).ok()
+                                    })
+                                });
+                        let mut disabled = (!enabled).then(|| Self {
+                            zoom: self.zoom,
+                            ..Self::default()
+                        });
+                        let builder = disabled.as_mut().unwrap_or(self);
+                        ctx.with_enabled(enabled, |ctx| {
+                            builder.build_node_property(
+                                ctx,
+                                card,
+                                (rect, card_rect, input_index),
+                                (target, name, value, unique),
+                                icons,
+                            );
+                        });
                     }
                     for (host_index, input) in card.host_inputs.iter().enumerate() {
                         let name = input.name.as_str();
@@ -3372,6 +3923,26 @@ impl PipelineGraphState {
             };
             if card_rect.contains(point) {
                 let target = card.kind;
+                if graph
+                    .effect(target)
+                    .is_some_and(|node| node.inputs.contains_key("enabled"))
+                    && graph_enable_button_rect(card_rect).contains(point)
+                {
+                    self.select_single_node(target);
+                    self.bring_to_front(target);
+                    return if !graph_input_has_keyframes(target, "enabled", graph)
+                        && let Some(enabled) =
+                            graph_effect_value(target, "enabled", graph).and_then(GpuValue::bool)
+                    {
+                        PipelineGraphAction::SetEffectValue {
+                            target,
+                            input: "enabled".into(),
+                            value: GpuValue::Bool(!enabled),
+                        }
+                    } else {
+                        PipelineGraphAction::None
+                    };
+                }
                 let command_additive = modifiers.control_key() || modifiers.super_key();
                 if command_additive && self.selected_nodes.contains(&target) {
                     self.selected_nodes.remove(&target);
@@ -3671,16 +4242,29 @@ impl PipelineGraphState {
                 && timeline
                     .selected_pipeline()
                     .is_some_and(|instance| instance.pipeline.is_some());
+            let graph = GraphModel::new(project, timeline, self.pinned_pipeline);
+            let mut visual_types = GraphVisualTypes::new(graph, &scene.cards);
+            let source_type = match pending {
+                PendingGraphWire::LocalImage(Some(node)) => {
+                    visual_types.output(GraphNodeTarget::Local(node))
+                }
+                PendingGraphWire::LocalImage(None) => visual_types.shared_output(),
+                PendingGraphWire::Image(source) => visual_types
+                    .output(source.map_or(GraphNodeTarget::Input, GraphNodeTarget::Shared)),
+                PendingGraphWire::Value(_) => VisualPortType::Image,
+            };
             let action = graph_card_draw_order(&scene.cards, &self.z_order)
                 .into_iter()
                 .rev()
                 .find_map(|index| {
                     graph_connect_action(
                         pending,
+                        source_type,
                         scene.cards.get(index)?,
                         *scene.rects.get(index)?,
                         point,
                         followed_shared,
+                        graph,
                     )
                 })
                 .unwrap_or(PipelineGraphAction::None);
@@ -3695,13 +4279,41 @@ impl PipelineGraphState {
 
         let dragged = self.drag.take();
         if let Some(GraphDrag {
-            target: GraphNodeTarget::Shared(node),
+            target: GraphNodeTarget::Value(node),
             ..
         }) = dragged
-            && let Some(card_index) = scene
+            && let Some(index) = scene
                 .cards
                 .iter()
-                .position(|card| matches!(card.kind, GraphNodeTarget::Shared(id) if id == node))
+                .position(|card| card.kind == GraphNodeTarget::Value(node))
+            && let Some(&dropped) = scene.rects.get(index)
+            && let Some(wire) = scene
+                .wires
+                .iter()
+                .filter(|geometry| geometry.editable)
+                .find(|geometry| {
+                    matches!(&geometry.wire, GraphWire::Value { source, destination, local, .. }
+                    if *source != node && (*local || *destination != node))
+                        && graph_wire_crosses_rect(geometry.from, geometry.to, dropped, self.zoom)
+                })
+            && let GraphWire::Value {
+                source,
+                destination,
+                input,
+                local,
+            } = &wire.wire
+        {
+            return PipelineGraphAction::InsertValueNodeOnWire {
+                node,
+                source: *source,
+                destination: *destination,
+                input: input.clone(),
+                local: *local,
+            };
+        }
+        if let Some(GraphDrag { target, .. }) = dragged
+            && let GraphNodeTarget::Shared(node) | GraphNodeTarget::Local(node) = target
+            && let Some(card_index) = scene.cards.iter().position(|card| card.kind == target)
             && let Some(&dropped) = scene.rects.get(card_index)
             && let Some((source, destination, destination_input)) = scene
                 .wires
@@ -3712,7 +4324,8 @@ impl PipelineGraphState {
                         source,
                         destination,
                         input,
-                    } if *source != Some(node)
+                    } if matches!(target, GraphNodeTarget::Shared(_))
+                        && *source != Some(node)
                         && *destination != Some(node)
                         && graph_wire_crosses_rect(
                             geometry.from,
@@ -3723,11 +4336,27 @@ impl PipelineGraphState {
                     {
                         Some((*source, *destination, input.clone()))
                     }
+                    GraphWire::LocalImage {
+                        source,
+                        destination,
+                    } if matches!(target, GraphNodeTarget::Local(_))
+                        && *source != Some(node)
+                        && *destination != Some(node)
+                        && graph_wire_crosses_rect(
+                            geometry.from,
+                            geometry.to,
+                            dropped,
+                            self.zoom,
+                        ) =>
+                    {
+                        Some((*source, *destination, None))
+                    }
                     _ => None,
                 })
         {
             return PipelineGraphAction::InsertNodeOnWire {
                 node,
+                local: matches!(target, GraphNodeTarget::Local(_)),
                 source,
                 destination,
                 destination_input,
@@ -4093,7 +4722,14 @@ impl PipelineGraphState {
                         timeline.set_generator_value(&key.input, next);
                     }
                 }
-                GraphNodeTarget::Value(_) | GraphNodeTarget::Output => {}
+                GraphNodeTarget::Value(node) => {
+                    if let Some(pipeline) = self.target_pipeline(project, timeline) {
+                        project.set_value_node_input_component(
+                            pipeline, node, &key.input, component, value, linked,
+                        );
+                    }
+                }
+                GraphNodeTarget::Output => {}
             },
             GraphControlTarget::HostGradientStop { .. } => {}
         }

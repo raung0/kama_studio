@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::{
     effects::{
         Binding, BindingOverrides, DynamicImageInputs, EffectNode, GpuValue, ImageBinding,
-        LOCAL_TRANSFORM_NODE_ID, NodeExecution, PipelineInstance,
+        LOCAL_TRANSFORM_NODE_ID, NodeExecution, PipelineInstance, VisualPortType,
     },
     embedded_vfs, messages,
     project::{GeneratorSource, HostBinding, HostValue},
@@ -76,6 +76,19 @@ pub enum InputType {
 }
 
 impl InputType {
+    pub fn convert_gpu(self, value: GpuValue) -> GpuValue {
+        let Some(scalar) = value.numeric(None).map(|value| value as f32) else {
+            return value;
+        };
+        match self {
+            Self::Vec2 | Self::Vec2i => GpuValue::Vec2([scalar; 2]),
+            Self::Vec3 => GpuValue::Vec3([scalar; 3]),
+            Self::Vec4 => GpuValue::Vec4([scalar; 4]),
+            Self::Color => GpuValue::Color([scalar; 4]),
+            _ => value,
+        }
+    }
+
     pub fn wgsl_read(self, slot: usize) -> Option<String> {
         Some(match self {
             Self::F32 | Self::Angle => format!("effect_params.data[{slot}u].x"),
@@ -403,12 +416,10 @@ pub struct PluginImageInput {
     pub id: String,
     pub name: String,
     pub required: bool,
+    pub ty: VisualPortType,
 }
 
-fn instantiate_plugin_inputs(
-    key: &str,
-    inputs: &[PluginInput],
-) -> Result<BTreeMap<String, Binding>> {
+fn instantiate_plugin_inputs(inputs: &[PluginInput]) -> Result<BTreeMap<String, Binding>> {
     let mut bindings =
         BTreeMap::from([("enabled".into(), Binding::Constant(GpuValue::Bool(true)))]);
     for input in inputs {
@@ -416,11 +427,7 @@ fn instantiate_plugin_inputs(
             input.ty,
             InputType::Text | InputType::Vec2Array | InputType::F32List
         ) {
-            bail!(
-                "plugin node {} declares unsupported host-only input {}",
-                key,
-                input.id
-            );
+            continue;
         }
         if input.id != "enabled" {
             bindings.insert(
@@ -448,6 +455,9 @@ pub struct EffectDefinition {
     pub dynamic_image_inputs: Option<DynamicImageInputs>,
     pub inputs: Vec<PluginInput>,
     pub monitor: Option<MonitorWasmDefinition>,
+    pub output_type: VisualPortType,
+    pub visual: Option<MonitorWasmDefinition>,
+    pub scene: Option<MonitorWasmDefinition>,
 }
 
 impl EffectDefinition {
@@ -484,8 +494,18 @@ impl EffectDefinition {
                 .map(|input| (input.id.clone(), ImageBinding::Disconnected))
                 .collect(),
             stack_input: self.primary_image_input().map(str::to_owned),
-            inputs: instantiate_plugin_inputs(&self.key, &self.inputs)?,
-            host_inputs: BTreeMap::new(),
+            inputs: instantiate_plugin_inputs(&self.inputs)?,
+            host_inputs: self
+                .inputs
+                .iter()
+                .filter(|input| {
+                    matches!(
+                        input.ty,
+                        InputType::Text | InputType::Vec2Array | InputType::F32List
+                    )
+                })
+                .map(|input| Ok((input.id.clone(), input.ty.default_host(&input.default)?)))
+                .collect::<Result<_>>()?,
             dynamic_image_inputs: self.dynamic_image_inputs.clone(),
         };
         node.sync_dynamic_image_inputs();
@@ -579,6 +599,7 @@ pub struct GeneratorDefinition {
     pub monitor_entry: Option<String>,
     pub monitor_module: Option<PathBuf>,
     pub inputs: Vec<PluginInput>,
+    pub output_type: VisualPortType,
 }
 
 impl GeneratorDefinition {
@@ -717,6 +738,9 @@ impl PluginRegistry {
                     .effects
                     .get(&key)
                     .context("effect disappeared during validation")?;
+                if effect.visual.is_some() {
+                    return Ok(());
+                }
                 let source = match effect.kind {
                     EffectKind::Pointwise => {
                         build_fused_pointwise_shader(std::slice::from_ref(&effect.key), self)?
@@ -794,8 +818,28 @@ impl PluginRegistry {
             .filter(|(_, generator)| generator.backend == GeneratorBackend::Wasm)
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
+        let scene_keys = self
+            .effects
+            .iter()
+            .filter(|(_, effect)| effect.scene.is_some())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
         match WasmRuntime::new() {
             Ok(mut runtime) => {
+                for key in &scene_keys {
+                    let result = self
+                        .effects
+                        .get(key)
+                        .context("scene effect disappeared during validation")
+                        .and_then(|effect| validate_scene_effect(&mut runtime, effect));
+                    if let Err(error) = result {
+                        self.effects.remove(key);
+                        messages::error(
+                            "Plugin validation",
+                            format!("scene effect {key} disabled: {error:#}"),
+                        );
+                    }
+                }
                 for key in &generator_keys {
                     let definition = self.generators.get(key).cloned();
                     let result = definition
@@ -811,6 +855,15 @@ impl PluginRegistry {
                 }
             }
             Err(error) => {
+                if !scene_keys.is_empty() {
+                    messages::error(
+                        "Plugin validation",
+                        format!(
+                            "scene WASM runtime unavailable; scene effects disabled: {error:#}"
+                        ),
+                    );
+                    self.effects.retain(|_, effect| effect.scene.is_none());
+                }
                 if !generator_keys.is_empty() {
                     messages::error(
                         "Plugin validation",
@@ -873,7 +926,12 @@ impl PluginRegistry {
     }
 
     pub fn generators(&self) -> impl Iterator<Item = &GeneratorDefinition> {
-        sorted_definitions(self.generators.values())
+        sorted_definitions(self.generators.values().filter(|generator| {
+            !matches!(
+                generator.key.as_str(),
+                "builtin.shape" | "builtin.regular_polygon"
+            )
+        }))
     }
 
     fn contains_definition(&self, key: &str) -> bool {
@@ -904,15 +962,40 @@ impl PluginRegistry {
             if effect.id.trim().is_empty() || effect.name.trim().is_empty() {
                 bail!("effect {key} has an empty id/name");
             }
-            if effect.shader.trim().is_empty() || effect.entry.trim().is_empty() {
+            if (effect.shader.trim().is_empty() && effect.visual.is_none())
+                || effect.entry.trim().is_empty()
+            {
                 bail!("effect {key} has an empty shader/entry");
             }
+            if effect.visual.is_some() && effect.kind != EffectKind::Standalone {
+                bail!("visual WASM effect {key} must use standalone execution");
+            }
+            if let Some(visual) = &effect.visual
+                && (visual.module.trim().is_empty() || visual.entry.trim().is_empty())
+            {
+                bail!("visual WASM effect {key} has an empty module/export");
+            }
+            if let Some(scene) = &effect.scene
+                && (scene.module.trim().is_empty() || scene.entry.trim().is_empty())
+            {
+                bail!("scene WASM effect {key} has an empty module/export");
+            }
             let shader_path = base.join(&effect.shader);
-            let source = read_plugin_text(&shader_path)
-                .with_context(|| format!("read shader {}", shader_path.display()))?;
+            let source = if effect.shader.trim().is_empty() {
+                String::new()
+            } else {
+                read_plugin_text(&shader_path)
+                    .with_context(|| format!("read shader {}", shader_path.display()))?
+            };
             let inputs: Vec<PluginInput> =
                 effect.inputs.into_iter().map(PluginInput::from).collect();
-            validate_plugin_inputs(&key, &inputs, false, false, true)?;
+            validate_plugin_inputs(
+                &key,
+                &inputs,
+                effect.visual.is_some(),
+                effect.visual.is_some(),
+                true,
+            )?;
             if effect.role == Some(EffectRole::VisualTransform)
                 && self
                     .effects
@@ -927,6 +1010,7 @@ impl PluginRegistry {
                         id: "image".into(),
                         name: "Image".into(),
                         required: true,
+                        ty: VisualPortType::Raster,
                     }]
                 },
                 |inputs| {
@@ -936,6 +1020,7 @@ impl PluginRegistry {
                             id: input.id,
                             name: input.name,
                             required: input.required,
+                            ty: input.ty,
                         })
                         .collect()
                 },
@@ -947,6 +1032,18 @@ impl PluginRegistry {
                 bail!("effect {key} may declare at most two shader image inputs");
             }
             let mut image_ids = HashSet::new();
+            let preserves_visual = effect.visual.is_some()
+                || effect.scene.is_some()
+                || effect.role == Some(EffectRole::VisualTransform)
+                || key == "builtin.compose";
+            if !preserves_visual
+                && (effect.output_type != VisualPortType::Raster
+                    || image_inputs
+                        .iter()
+                        .any(|input| input.ty != VisualPortType::Raster))
+            {
+                bail!("effect {key} declares vector-aware ports without a visual implementation");
+            }
             for image in &image_inputs {
                 if image.id.trim().is_empty() || image.name.trim().is_empty() {
                     bail!("effect {key} has an image input with an empty id/name");
@@ -1014,6 +1111,15 @@ impl PluginRegistry {
                     }),
                     inputs,
                     monitor,
+                    output_type: effect.output_type,
+                    visual: effect.visual.map(|visual| MonitorWasmDefinition {
+                        module: base.join(visual.module),
+                        entry: visual.entry,
+                    }),
+                    scene: effect.scene.map(|scene| MonitorWasmDefinition {
+                        module: base.join(scene.module),
+                        entry: scene.entry,
+                    }),
                 },
             );
         }
@@ -1078,6 +1184,12 @@ impl PluginRegistry {
                 .transpose()?;
             if generator.backend == GeneratorBackend::Gpu && source.is_none() {
                 bail!("GPU generator {key} must declare a shader");
+            }
+            if generator.backend == GeneratorBackend::Gpu
+                && generator.output_type != VisualPortType::Raster
+                && key != "builtin.regular_polygon"
+            {
+                bail!("GPU generator {key} cannot emit vector data; use a WASM visual export");
             }
             if generator.backend == GeneratorBackend::Wasm && module.is_none() {
                 bail!("WASM generator {key} must declare a module");
@@ -1182,6 +1294,7 @@ impl PluginRegistry {
                     monitor_entry: generator.monitor_entry,
                     monitor_module: generator.monitor_module.map(|path| base.join(path)),
                     inputs,
+                    output_type: generator.output_type,
                 },
             );
         }
@@ -1223,6 +1336,52 @@ fn validate_audio_effect(
         .with_context(|| format!("smoke-test audio effect {}", effect.key))
 }
 
+fn validate_scene_effect(runtime: &mut WasmRuntime, effect: &EffectDefinition) -> Result<()> {
+    let scene = effect
+        .scene
+        .as_ref()
+        .context("scene effect has no entry point")?;
+    let parameters = effect
+        .inputs
+        .iter()
+        .map(|input| Ok((input.id.clone(), input.ty.default_host(&input.default)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let inputs = effect
+        .image_inputs
+        .iter()
+        .map(|_| crate::runtime::wasm::VisualWasmInput::Scene([1, 1]))
+        .collect::<Vec<_>>();
+    let output = runtime.render_visual(
+        WasmRenderRequest {
+            module_path: &scene.module,
+            entry: &scene.entry,
+            parameters: &parameters,
+            size: [1, 1],
+            render_scale: 1.0,
+            render_origin: [0.0; 2],
+            tight_bounds: false,
+            parameter_time: 0.0,
+            local_time: 0.0,
+        },
+        &inputs,
+    )?;
+    match output {
+        crate::runtime::wasm::VisualWasmOutput::Vector(svg) => {
+            crate::runtime::vector::VectorImage::from_svg(svg.as_bytes())?;
+        }
+        crate::runtime::wasm::VisualWasmOutput::Raster(_)
+            if effect.output_type == VisualPortType::Vector =>
+        {
+            bail!(
+                "scene effect {} declared vector output but returned raster data",
+                effect.key
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_wasm_generator(
     runtime: &mut WasmRuntime,
     generator: &GeneratorDefinition,
@@ -1236,19 +1395,48 @@ fn validate_wasm_generator(
     let parameters = generator
         .instantiate_parameters()
         .with_context(|| format!("instantiate defaults for WASM generator {}", generator.key))?;
-    runtime
-        .render(WasmRenderRequest {
-            module_path: module,
-            entry,
-            parameters: &parameters,
-            size: [1, 1],
-            render_scale: 1.0,
-            render_origin: [0.0, 0.0],
-            tight_bounds: false,
-            parameter_time: 0.0,
-            local_time: 0.0,
-        })
-        .with_context(|| format!("smoke-test WASM generator {}", generator.key))?;
+    let request = WasmRenderRequest {
+        module_path: module,
+        entry,
+        parameters: &parameters,
+        size: [1, 1],
+        render_scale: 1.0,
+        render_origin: [0.0, 0.0],
+        tight_bounds: false,
+        parameter_time: 0.0,
+        local_time: 0.0,
+    };
+    if generator.output_type == VisualPortType::Raster
+        || matches!(generator.key.as_str(), "builtin.polygon" | "builtin.shape")
+    {
+        runtime
+            .render(request)
+            .with_context(|| format!("smoke-test WASM generator {}", generator.key))?;
+    } else {
+        let output = runtime
+            .render_visual(request, &[])
+            .with_context(|| format!("smoke-test visual WASM generator {}", generator.key))?;
+        match output {
+            crate::runtime::wasm::VisualWasmOutput::Vector(svg) => {
+                crate::runtime::vector::VectorImage::from_svg(svg.as_bytes())?;
+            }
+            crate::runtime::wasm::VisualWasmOutput::Raster(_)
+                if generator.output_type == VisualPortType::Vector =>
+            {
+                bail!(
+                    "generator {} declared vector output but returned raster data",
+                    generator.key
+                );
+            }
+            crate::runtime::wasm::VisualWasmOutput::Raster(_) => {}
+            crate::runtime::wasm::VisualWasmOutput::Filtered { .. } => {
+                bail!(
+                    "generator {} returned an operation without an input scene",
+                    generator.key
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1294,6 +1482,7 @@ struct RawEffect {
     kind: EffectKind,
     #[serde(default)]
     role: Option<EffectRole>,
+    #[serde(default)]
     shader: String,
     #[serde(default = "default_effect_entry")]
     entry: String,
@@ -1307,6 +1496,12 @@ struct RawEffect {
     inputs: Vec<RawInput>,
     #[serde(default)]
     monitor: Option<RawMonitorWasm>,
+    #[serde(default)]
+    output_type: VisualPortType,
+    #[serde(default)]
+    visual: Option<RawMonitorWasm>,
+    #[serde(default)]
+    scene: Option<RawMonitorWasm>,
 }
 
 #[derive(Deserialize)]
@@ -1388,6 +1583,8 @@ struct RawGenerator {
     monitor_module: Option<String>,
     #[serde(default)]
     inputs: Vec<RawInput>,
+    #[serde(default)]
+    output_type: VisualPortType,
 }
 
 #[derive(Deserialize)]
@@ -1396,6 +1593,8 @@ struct RawImageInput {
     name: String,
     #[serde(default = "default_true")]
     required: bool,
+    #[serde(default, rename = "type")]
+    ty: VisualPortType,
 }
 
 const fn default_true() -> bool {

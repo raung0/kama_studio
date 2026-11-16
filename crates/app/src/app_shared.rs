@@ -179,6 +179,7 @@ pub fn external_media_preview_spec(path: &Path) -> Option<MediaDropPreviewSpec> 
         return None;
     }
     if extension == "wasm"
+        || matches!(extension.as_str(), "svg" | "svgz")
         || model3d::is_supported_path(path)
         || image::image_dimensions(path).is_ok()
     {

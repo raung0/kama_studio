@@ -387,6 +387,7 @@ impl TimelineState {
                 self.pending_action = Some(TimelineAction::CutClipAt { clip: id, time });
                 return true;
             }
+            self.pending_action = Some(TimelineAction::SelectGraphSource);
             if rect.width >= 30.0 && (left || right) {
                 if self.selected.contains(&id) {
                     self.primary_selected = Some(id);

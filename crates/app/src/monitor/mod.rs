@@ -1,4 +1,7 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+};
 
 use crate::{
     assets::{AppIcon, Icons},
@@ -17,6 +20,10 @@ use crate::{
     runtime::wasm::{WasmRuntime, plugin_parameter_hash},
     theme,
     timeline::{Clip, TimelineState, TrackKind},
+    widgets::{
+        ContextMenuClick, ContextMenuItem, build_context_menu, context_menu_click,
+        context_menu_rect,
+    },
 };
 use kama_ui::{
     Color, IconId, Rect, Size,
@@ -34,6 +41,15 @@ labeled_enum! {
     }
 }
 
+labeled_enum! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    enum PenMode {
+        EditPoints => "Edit Points",
+        Rectangle => "Rectangle",
+        Ellipse => "Ellipse",
+    }
+}
+
 impl PreviewResolution {
     const fn divisor(self) -> u32 {
         match self {
@@ -44,6 +60,15 @@ impl PreviewResolution {
         }
     }
 
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0)
+    }
+}
+
+impl PenMode {
     fn index(self) -> usize {
         Self::ALL
             .iter()
@@ -231,6 +256,10 @@ struct PenPointHandle {
 
 #[derive(Clone, Debug)]
 enum PenEditTarget {
+    Local {
+        node: u64,
+        input: String,
+    },
     Clip {
         input: String,
     },
@@ -257,6 +286,7 @@ impl PenEditTarget {
 
     fn points(&self, project: &Project, timeline: &TimelineState) -> Option<Vec<[f32; 2]>> {
         let value = match self {
+            Self::Local { node, input } => timeline.selected_local_node_host_value(*node, input),
             Self::Clip { input } => timeline.generator_host_value(input),
             Self::Graph {
                 pipeline,
@@ -288,7 +318,7 @@ impl PenEditTarget {
 
     fn input(&self) -> &str {
         match self {
-            Self::Clip { input } | Self::Graph { input, .. } => input,
+            Self::Clip { input } | Self::Graph { input, .. } | Self::Local { input, .. } => input,
         }
     }
 
@@ -299,6 +329,7 @@ impl PenEditTarget {
         input: &str,
     ) -> Option<crate::project::HostValue> {
         match self {
+            Self::Local { node, .. } => timeline.selected_local_node_host_value(*node, input),
             Self::Clip { .. } => timeline.generator_host_value(input),
             Self::Graph {
                 pipeline,
@@ -317,6 +348,9 @@ impl PenEditTarget {
         value: crate::project::HostValue,
     ) {
         match self {
+            Self::Local { node, .. } => {
+                timeline.set_selected_local_node_host_value(*node, input, value);
+            }
             Self::Clip { .. } => timeline.set_generator_host_value(input, value),
             Self::Graph {
                 pipeline,
@@ -327,6 +361,19 @@ impl PenEditTarget {
                 project.set_pipeline_node_host_value(*pipeline, *node, input, *time, value);
             }
         }
+    }
+}
+
+fn host_shape_type(value: Option<crate::project::HostValue>) -> Option<u32> {
+    match value? {
+        crate::project::HostValue::Gpu(GpuValue::Enum(value) | GpuValue::U32(value)) => Some(value),
+        crate::project::HostValue::Gpu(GpuValue::I32(value)) => u32::try_from(value).ok(),
+        crate::project::HostValue::Gpu(GpuValue::F32(value))
+            if value.is_finite() && value >= 0.0 =>
+        {
+            u32::try_from(value as i64).ok()
+        }
+        _ => None,
     }
 }
 
@@ -398,12 +445,94 @@ fn set_pen_gradient_midpoints(
 struct PenToolDrag {
     target: PenEditTarget,
     index: usize,
+    control: Option<&'static str>,
+    start: [f32; 2],
+    moved: bool,
+    grab_offset: [f32; 2],
+    initial_anchor: [f32; 2],
+    initial_points: Vec<(usize, [f32; 2])>,
+    opposite_length: Option<f32>,
+    symmetric: bool,
     preview: Rect,
     render_size: [u32; 2],
     source_geometry: SourceGeometry,
     source_origin: [f32; 2],
     source_scale: [f32; 2],
     snap: SnapSession,
+}
+
+#[derive(Clone, Debug)]
+struct PrimitiveDrag {
+    target: PenEditTarget,
+    shape_type: u32,
+    start: [f32; 2],
+    center: [f32; 2],
+    pointer_offset: [f32; 2],
+    preview: Rect,
+    render_size: [u32; 2],
+    source_geometry: SourceGeometry,
+    source_origin: [f32; 2],
+    source_scale: [f32; 2],
+    clip: Option<Clip>,
+    follows_clip: bool,
+    timeline_time: f32,
+}
+
+impl PrimitiveDrag {
+    fn bounds(&self, point: [f32; 2], modifiers: ModifiersState) -> ([f32; 2], [f32; 2]) {
+        let source = self.screen_to_source(point);
+        let current = [
+            source[0] + self.pointer_offset[0],
+            source[1] + self.pointer_offset[1],
+        ];
+        let centered = modifiers.control_key() || modifiers.super_key();
+        let pivot = if centered { self.center } else { self.start };
+        let mut delta = [current[0] - pivot[0], current[1] - pivot[1]];
+        if modifiers.shift_key() {
+            let side = delta[0].abs().max(delta[1].abs());
+            delta = delta.map(|component| if component < 0.0 { -side } else { side });
+        }
+        if centered {
+            let half_size = delta.map(f32::abs);
+            (
+                [pivot[0] - half_size[0], pivot[1] - half_size[1]],
+                half_size.map(|half| half * 2.0),
+            )
+        } else {
+            (
+                [pivot[0] + delta[0].min(0.0), pivot[1] + delta[1].min(0.0)],
+                delta.map(f32::abs),
+            )
+        }
+    }
+
+    fn screen_to_source(&self, point: [f32; 2]) -> [f32; 2] {
+        let mut source = if self.follows_clip {
+            self.clip.as_ref().map_or([0.0, 0.0], |clip| {
+                screen_to_selected_clip_source_point(
+                    self.preview,
+                    point,
+                    clip,
+                    self.render_size[0],
+                    self.render_size[1],
+                    self.source_geometry,
+                    self.timeline_time,
+                )
+            })
+        } else {
+            screen_to_project(
+                self.preview,
+                point,
+                [
+                    self.render_size[0].max(1) as f32,
+                    self.render_size[1].max(1) as f32,
+                ],
+            )
+        };
+        source[0] = source[0] / self.source_scale[0].max(0.000_001) + self.source_origin[0];
+        source[1] = source[1] / self.source_scale[1].max(0.000_001) + self.source_origin[1];
+        source
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -561,6 +690,67 @@ pub enum MonitorAction {
     CaptureTemporaryFrame,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum PenPointType {
+    Corner,
+    Incoming,
+    Outgoing,
+    Smooth,
+}
+
+#[derive(Clone)]
+enum PointMenuAction {
+    SetType(PenPointType),
+    Delete,
+}
+
+#[derive(Clone, Copy)]
+struct PointContextMenu {
+    point: [f32; 2],
+    index: usize,
+    clip: Option<u32>,
+    graph_selection: Option<GraphMonitorSelection>,
+    curves: bool,
+    can_delete: bool,
+}
+
+const fn point_menu_items(
+    menu: PointContextMenu,
+) -> [ContextMenuItem<'static, PointMenuAction>; 5] {
+    [
+        ContextMenuItem::new(
+            "Corner (No Handles)",
+            Some(AppIcon::Pen),
+            PointMenuAction::SetType(PenPointType::Corner),
+        )
+        .enabled(menu.curves),
+        ContextMenuItem::new(
+            "Incoming Handle Only",
+            Some(AppIcon::Pen),
+            PointMenuAction::SetType(PenPointType::Incoming),
+        )
+        .enabled(menu.curves),
+        ContextMenuItem::new(
+            "Outgoing Handle Only",
+            Some(AppIcon::Pen),
+            PointMenuAction::SetType(PenPointType::Outgoing),
+        )
+        .enabled(menu.curves),
+        ContextMenuItem::new(
+            "Smooth (Two Handles)",
+            Some(AppIcon::Pen),
+            PointMenuAction::SetType(PenPointType::Smooth),
+        )
+        .enabled(menu.curves),
+        ContextMenuItem::new(
+            "Delete Point",
+            Some(AppIcon::Delete),
+            PointMenuAction::Delete,
+        )
+        .enabled(menu.can_delete),
+    ]
+}
+
 #[derive(Clone, Copy)]
 pub struct MonitorBuildContext<'a> {
     pub project: &'a Project,
@@ -586,11 +776,20 @@ default_state! {
         monitor_wasm: RefCell<Option<WasmRuntime>> = RefCell::new(WasmRuntime::new().ok()),
         gizmo_drag: Option<TransformGizmoDrag>,
         pen_drag: Option<PenToolDrag>,
+        primitive_drag: Option<PrimitiveDrag>,
         gradient_midpoint_drag: Option<GradientMidpointDrag>,
         generator_vec2_drag: Option<GeneratorVec2Drag>,
         plugin_handle_drag: Option<PluginHandleDrag>,
         pen_tool: bool,
-        selected_pen_point: Option<usize>,
+        pen_mode: PenMode = PenMode::EditPoints,
+        pen_mode_combo: ComboBox = ComboBox::new(PenMode::EditPoints.index())
+            .open_direction(ComboBoxOpenDirection::Up),
+        vector_preview: bool = true,
+        selected_pen_points: BTreeSet<usize>,
+        last_point_click: Option<(std::time::Instant, [f32; 2])>,
+        point_selection_owner: Option<(Option<u32>, Option<GraphMonitorSelection>)>,
+        point_menu: Option<PointContextMenu>,
+        cursor: [f32; 2],
         view_pan_drag: Option<([f32; 2], [f32; 2])>,
         view_pan: [f32; 2],
         view_zoom: f32 = 1.0,
@@ -607,6 +806,31 @@ default_state! {
 }
 
 impl MonitorState {
+    pub(crate) fn sync_point_selection(
+        &mut self,
+        timeline: &TimelineState,
+        graph_selection: Option<GraphMonitorSelection>,
+    ) {
+        let owner = (
+            timeline.selected_clip().map(|clip| clip.id),
+            graph_selection,
+        );
+        if self.point_selection_owner != Some(owner) {
+            self.selected_pen_points.clear();
+            self.pen_drag = None;
+            self.point_menu = None;
+            self.point_selection_owner = Some(owner);
+        }
+    }
+
+    pub(crate) fn has_modifier_sensitive_drag(&self) -> bool {
+        self.primitive_drag.is_some()
+            || self
+                .pen_drag
+                .as_ref()
+                .is_some_and(|drag| drag.control.is_some())
+    }
+
     pub(crate) fn preview_render_size(&self, project: &Project) -> [u32; 2] {
         self.preview_dimensions(project).into()
     }
@@ -629,15 +853,245 @@ impl MonitorState {
 
     pub fn tick(&mut self, dt: f32) {
         self.preview_combo.tick(dt);
+        self.pen_mode_combo.tick(dt);
+    }
+
+    pub(crate) const fn vector_preview(&self) -> bool {
+        self.vector_preview
+    }
+
+    pub fn can_convert_selection_to_path(
+        project: &Project,
+        timeline: &TimelineState,
+        plugins: &PluginRegistry,
+        graph_selection: Option<GraphMonitorSelection>,
+    ) -> bool {
+        let shape_type = if let Some(GraphMonitorSelection::Local { node }) = graph_selection {
+            let Some(graph_node) = timeline.selected_pipeline().and_then(|instance| {
+                instance
+                    .local_nodes
+                    .iter()
+                    .find(|candidate| candidate.id == node)
+            }) else {
+                return false;
+            };
+            if graph_node.node_type != "builtin.polygon"
+                || plugins.generator(&graph_node.node_type).is_none()
+            {
+                return false;
+            }
+            timeline.selected_local_node_host_value(node, "shape_type")
+        } else if let Some(selection) = graph_selection {
+            let Some((pipeline, node, follows_clip)) = shared_graph_selection(selection) else {
+                return false;
+            };
+            let Some(graph_node) = project.pipeline(pipeline).and_then(|p| p.node(node)) else {
+                return false;
+            };
+            if graph_node.node_type != "builtin.polygon"
+                || plugins.generator(&graph_node.node_type).is_none()
+            {
+                return false;
+            }
+            let instance = follows_clip
+                .then(|| timeline.selected_pipeline())
+                .flatten()
+                .filter(|instance| instance.pipeline == Some(pipeline));
+            instance
+                .and_then(|instance| instance.overrides.get(node, "shape_type"))
+                .or_else(|| graph_node.inputs.get("shape_type"))
+                .and_then(|binding| binding.evaluate(f64::from(timeline.playhead())))
+                .map(crate::project::HostValue::Gpu)
+        } else {
+            let Some(clip) = timeline.selected_clip() else {
+                return false;
+            };
+            if !matches!(&clip.source, VisualSource::Generator(GeneratorSource::Plugin { generator_type, .. }) if generator_type == "builtin.polygon")
+            {
+                return false;
+            }
+            timeline.generator_host_value("shape_type")
+        };
+        matches!(host_shape_type(shape_type), Some(1 | 2))
+    }
+
+    pub fn convert_selection_to_path(
+        &mut self,
+        project: &mut Project,
+        timeline: &mut TimelineState,
+        plugins: &PluginRegistry,
+        graph_selection: Option<GraphMonitorSelection>,
+    ) -> bool {
+        if !Self::can_convert_selection_to_path(project, timeline, plugins, graph_selection) {
+            return false;
+        }
+        let time = f64::from(timeline.playhead());
+        let graph_node = match graph_selection {
+            Some(GraphMonitorSelection::Local { node }) => {
+                timeline.selected_pipeline().and_then(|instance| {
+                    Some((
+                        instance
+                            .local_nodes
+                            .iter()
+                            .find(|candidate| candidate.id == node)?,
+                        Some(instance),
+                        instance.pipeline.and_then(|id| project.pipeline(id)),
+                    ))
+                })
+            }
+            Some(selection) => {
+                shared_graph_selection(selection).and_then(|(pipeline, node, follows_clip)| {
+                    let pipeline = project.pipeline(pipeline)?;
+                    let instance = follows_clip
+                        .then(|| timeline.selected_pipeline())
+                        .flatten()
+                        .filter(|instance| instance.pipeline == Some(pipeline.id));
+                    Some((pipeline.node(node)?, instance, Some(pipeline)))
+                })
+            }
+            None => None,
+        };
+        let frame_rate = project.active_settings().frame_rate;
+        let values = RefCell::new(crate::effects::ValueEvaluator::new(
+            graph_node
+                .and_then(|(_, _, pipeline)| pipeline)
+                .map_or(&[][..], |pipeline| pipeline.value_nodes.as_slice()),
+            crate::effects::ValueEvalContext {
+                timeline_time: time,
+                local_time: graph_node
+                    .and_then(|(_, instance, _)| instance)
+                    .and_then(|_| timeline.selected_clip())
+                    .map_or(time, |clip| clip.local_time(timeline.playhead())),
+                frame_index: ((time * frame_rate).floor().max(0.0) as i64).unsigned_abs(),
+                frame_rate,
+            },
+        ));
+        let get = |name: &str| -> Option<crate::project::HostValue> {
+            if let Some((node, instance, _)) = graph_node {
+                let value = crate::effects::resolved_node_input_cached(
+                    node,
+                    instance,
+                    name,
+                    &mut values.borrow_mut(),
+                )?;
+                let value = plugins
+                    .generator(&node.node_type)
+                    .and_then(|definition| definition.inputs.iter().find(|input| input.id == name))
+                    .map_or(value, |input| input.ty.convert_gpu(value));
+                Some(crate::project::HostValue::Gpu(value))
+            } else {
+                timeline.generator_host_value(name)
+            }
+        };
+        let shape_type = get("shape_type")
+            .and_then(|value| host_shape_type(Some(value)))
+            .unwrap_or(0);
+        if shape_type == 0 {
+            return false;
+        }
+        let size = get("size")
+            .and_then(|v| match v {
+                crate::project::HostValue::Gpu(GpuValue::Vec2(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or([960.0, 540.0]);
+        let radius = get("radius")
+            .and_then(|v| match v {
+                crate::project::HostValue::Gpu(GpuValue::Vec2(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or([size[0] * 0.5, size[1] * 0.5]);
+        let origin = get("shape_origin")
+            .and_then(|v| match v {
+                crate::project::HostValue::Gpu(GpuValue::Vec2(v)) => Some(v),
+                _ => None,
+            })
+            .unwrap_or([0.0, 0.0]);
+        let (points, controls_in, controls_out) = if shape_type == 2 {
+            let k = 0.552_284_8_f32;
+            let [rx, ry] = radius;
+            (
+                vec![
+                    [origin[0] + rx, origin[1]],
+                    [2.0_f32.mul_add(rx, origin[0]), origin[1] + ry],
+                    [origin[0] + rx, 2.0_f32.mul_add(ry, origin[1])],
+                    [origin[0], origin[1] + ry],
+                ],
+                vec![[-k * rx, 0.0], [0.0, -k * ry], [k * rx, 0.0], [0.0, k * ry]],
+                vec![[k * rx, 0.0], [0.0, k * ry], [-k * rx, 0.0], [0.0, -k * ry]],
+            )
+        } else {
+            let [w, h] = size;
+            (
+                vec![
+                    origin,
+                    [origin[0] + w, origin[1]],
+                    [origin[0] + w, origin[1] + h],
+                    [origin[0], origin[1] + h],
+                ],
+                vec![[0.0; 2]; 4],
+                vec![[0.0; 2]; 4],
+            )
+        };
+        let set = |project: &mut Project,
+                   timeline: &mut TimelineState,
+                   name: &str,
+                   value: crate::project::HostValue| {
+            if let Some(GraphMonitorSelection::Local { node }) = graph_selection {
+                timeline.set_selected_local_node_host_value(node, name, value)
+            } else if let Some(selection) = graph_selection {
+                if let Some((pipeline, node, follows_clip)) = shared_graph_selection(selection) {
+                    if follows_clip
+                        && timeline
+                            .selected_pipeline()
+                            .is_some_and(|instance| instance.pipeline == Some(pipeline))
+                        && let crate::project::HostValue::Gpu(value) = &value
+                    {
+                        return timeline.set_pipeline_input_value(project, node, name, *value);
+                    }
+                    project.set_pipeline_node_host_value(pipeline, node, name, time, value)
+                } else {
+                    false
+                }
+            } else {
+                timeline.set_generator_host_value(name, value);
+                true
+            }
+        };
+        let ok = set(
+            project,
+            timeline,
+            "shape_type",
+            crate::project::HostValue::Gpu(GpuValue::Enum(0)),
+        ) && set(
+            project,
+            timeline,
+            "points",
+            crate::project::HostValue::Vec2Array(points),
+        ) && set(
+            project,
+            timeline,
+            "controls_in",
+            crate::project::HostValue::Vec2Array(controls_in),
+        ) && set(
+            project,
+            timeline,
+            "controls_out",
+            crate::project::HostValue::Vec2Array(controls_out),
+        );
+        if ok {
+            self.pen_mode = PenMode::EditPoints;
+            self.pen_mode_combo
+                .set_selected(PenMode::EditPoints.index());
+        }
+        ok
     }
 
     pub fn toggle_pen_tool(&mut self) {
         self.pen_tool = !self.pen_tool;
         self.pen_drag = None;
+        self.primitive_drag = None;
         self.gradient_midpoint_drag = None;
-        if !self.pen_tool {
-            self.selected_pen_point = None;
-        }
     }
 
     pub const fn zoom_to_fit(&mut self) {
@@ -712,18 +1166,33 @@ impl MonitorState {
     }
 
     pub fn is_animating(&self) -> bool {
-        self.preview_combo.is_animating()
+        self.preview_combo.is_animating() || self.pen_mode_combo.is_animating()
     }
 
     fn preview_dimensions(&self, project: &Project) -> (u32, u32) {
         let divisor = self.preview_resolution.divisor();
-        (
+        let mut width = f64::from(
             project.active_settings().canvas_size[0]
                 .max(1)
                 .div_ceil(divisor),
+        );
+        let mut height = f64::from(
             project.active_settings().canvas_size[1]
                 .max(1)
                 .div_ceil(divisor),
+        );
+        if self.vector_preview {
+            let zoom = f64::from(self.view_zoom.max(1.0));
+            width *= zoom;
+            height *= zoom;
+        }
+        let scale = (8192.0 / width.max(1.0))
+            .min(8192.0 / height.max(1.0))
+            .min((32_000_000.0 / (width * height).max(1.0)).sqrt())
+            .min(1.0);
+        (
+            u32::try_from((width * scale).floor().clamp(1.0, 8192.0) as i64).unwrap_or(1),
+            u32::try_from((height * scale).floor().clamp(1.0, 8192.0) as i64).unwrap_or(1),
         )
     }
 
@@ -772,7 +1241,17 @@ impl MonitorState {
         let preview_width = preview.width;
         let preview_height = preview.height;
         let (render_width, render_height) = self.preview_dimensions(project);
+        let live_geometry = monitor_source_geometry(
+            source_geometry,
+            project,
+            timeline,
+            plugins,
+            render_width,
+            render_height,
+        );
+        let source_geometry = &live_geometry;
         let texture = output.texture;
+        let stage = local_rect;
 
         kama_ui::ui!(ctx, {
             Block {
@@ -783,10 +1262,10 @@ impl MonitorState {
 
                 Block {
                     id: "monitor-stage";
-                    bounds: (0.0, 0.0, local_rect.width, local_rect.height);
+                    bounds: (stage.x, stage.y, stage.width, stage.height);
+                    clip_children: true;
 
                     @rust {
-                        let stage = monitor_stage_rect(local_rect);
                         let mut frame = ctx.new()
                             .id("monitor-frame")
                             .bounds((
@@ -802,6 +1281,64 @@ impl MonitorState {
                         let _ = frame.build();
                     }
                 }
+            }
+        });
+
+        ctx.with_clip(local_rect, |ctx| {
+            let graph_transform_selected = graph_selection.is_some_and(|selection| {
+                graph_selection_is_transform(timeline, plugins, selection)
+            });
+            if (graph_selection.is_none() || graph_transform_selected)
+                && let Some(geometry) = transform_gizmo_geometry(
+                    preview,
+                    timeline,
+                    render_width,
+                    render_height,
+                    source_geometry,
+                )
+            {
+                draw_transform_gizmo(ctx, geometry);
+            }
+            let edit = MonitorEditView {
+                preview,
+                plugins,
+                graph_selection,
+                render_size: [render_width, render_height],
+                source_geometry,
+                monitor_wasm: &self.monitor_wasm,
+            }
+            .context(project, timeline);
+            if let Some(setup) = pen_edit_setup(edit) {
+                draw_primitive_outline(ctx, &setup, project, timeline);
+                draw_curve_handles(ctx, &setup, &self.selected_pen_points, project, timeline);
+            }
+            if let Some((handles, lines)) = selected_generator_pen_handles(edit) {
+                draw_pen_tool_handles(ctx, &handles, &lines, &self.selected_pen_points);
+            }
+            if let Some(handles) = selected_gradient_midpoint_handles(edit) {
+                draw_gradient_midpoint_handles(ctx, handles);
+            }
+            if let Some(handles) = selected_plugin_handles(edit) {
+                draw_plugin_handles(ctx, &handles);
+            }
+            if let Some(handles) = selected_generator_vec2_handles(edit) {
+                draw_generator_vec2_handles(ctx, &handles);
+            }
+            let snap = self
+                .gizmo_drag
+                .as_ref()
+                .map(|drag| &drag.snap)
+                .or_else(|| self.gradient_midpoint_drag.as_ref().map(|drag| &drag.snap))
+                .or_else(|| self.pen_drag.as_ref().map(|drag| &drag.snap))
+                .or_else(|| self.generator_vec2_drag.as_ref().map(|drag| &drag.snap))
+                .or_else(|| self.plugin_handle_drag.as_ref().map(|drag| &drag.snap));
+            if let Some(snap) = snap {
+                draw_snap_guides(
+                    ctx,
+                    preview,
+                    snap.x_lock.map(|lock| lock.target - rect.x),
+                    snap.y_lock.map(|lock| lock.target - rect.y),
+                );
             }
         });
 
@@ -825,6 +1362,20 @@ impl MonitorState {
             "monitor-preview-resolution",
             combo,
             &options,
+            chevron,
+            popup_bounds,
+            crate::widgets::component_style(),
+        );
+        let pen_mode_rect = monitor_pen_mode_combo_rect(local_rect);
+        let pen_mode_options = PenMode::ALL
+            .iter()
+            .map(|mode| mode.label())
+            .collect::<Vec<_>>();
+        self.pen_mode_combo.build_in(
+            ctx,
+            "monitor-pen-mode",
+            pen_mode_rect,
+            &pen_mode_options,
             chevron,
             popup_bounds,
             crate::widgets::component_style(),
@@ -853,6 +1404,14 @@ impl MonitorState {
                 self.pen_tool,
                 true,
                 &i18n::text("monitor-pen-tool"),
+            ),
+            (
+                "monitor-vector-preview",
+                monitor_vector_preview_button_rect(local_rect),
+                AppIcon::Image,
+                self.vector_preview,
+                true,
+                &i18n::text("monitor-vector-preview"),
             ),
             (
                 "monitor-master-mute",
@@ -890,71 +1449,45 @@ impl MonitorState {
             monitor_icon_toggle(ctx, id, rect, icons.get(icon), active, enabled, tooltip);
         }
 
-        let handle_clip = monitor_stage_rect(local_rect);
-        ctx.with_clip(handle_clip, |ctx| {
-            let graph_transform_selected = graph_selection.is_some_and(|selection| {
-                graph_selection_is_transform(timeline, plugins, selection)
-            });
-            if (graph_selection.is_none() || graph_transform_selected)
-                && let Some(geometry) = transform_gizmo_geometry(
-                    preview,
-                    timeline,
-                    render_width,
-                    render_height,
-                    source_geometry,
-                )
-            {
-                draw_transform_gizmo(ctx, geometry);
-            }
-            let edit = MonitorEditView {
-                preview,
-                plugins,
-                graph_selection,
-                render_size: [render_width, render_height],
-                source_geometry,
-                monitor_wasm: &self.monitor_wasm,
-            }
-            .context(project, timeline);
-            if let Some((handles, lines)) = selected_generator_pen_handles(edit) {
-                draw_pen_tool_handles(ctx, &handles, &lines, self.selected_pen_point);
-            }
-            if let Some(handles) = selected_gradient_midpoint_handles(edit) {
-                draw_gradient_midpoint_handles(ctx, handles);
-            }
-            if let Some(handles) = selected_plugin_handles(edit) {
-                draw_plugin_handles(ctx, &handles);
-            }
-            if let Some(handles) = selected_generator_vec2_handles(edit) {
-                draw_generator_vec2_handles(ctx, &handles);
-            }
-            let snap = self
-                .gizmo_drag
-                .as_ref()
-                .map(|drag| &drag.snap)
-                .or_else(|| self.gradient_midpoint_drag.as_ref().map(|drag| &drag.snap))
-                .or_else(|| self.pen_drag.as_ref().map(|drag| &drag.snap))
-                .or_else(|| self.generator_vec2_drag.as_ref().map(|drag| &drag.snap))
-                .or_else(|| self.plugin_handle_drag.as_ref().map(|drag| &drag.snap));
-            if let Some(snap) = snap {
-                draw_snap_guides(
-                    ctx,
-                    preview,
-                    snap.x_lock.map(|lock| (lock.target - rect.x, lock.feature)),
-                    snap.y_lock.map(|lock| (lock.target - rect.y, lock.feature)),
-                );
-            }
-        });
+        if let Some(menu) = self.point_menu
+            && menu.clip == timeline.selected_clip().map(|clip| clip.id)
+            && menu.graph_selection == graph_selection
+            && self.selected_pen_points.contains(&menu.index)
+        {
+            let items = point_menu_items(menu);
+            let menu_rect = context_menu_rect(local_rect, menu.point, items.len());
+            build_context_menu(
+                ctx,
+                "monitor-point",
+                menu_rect,
+                [self.cursor[0] - rect.x, self.cursor[1] - rect.y],
+                &items,
+                &icons,
+            );
+        }
     }
 
     pub fn close_popups(&mut self) {
         self.preview_combo.close();
+        self.pen_mode_combo.close();
+        self.point_menu = None;
+    }
+
+    pub const fn dismiss_point_menu(&mut self) -> bool {
+        self.point_menu.take().is_some()
     }
 
     pub fn popup_contains(&self, rect: Rect, point: [f32; 2]) -> bool {
-        self.preview_combo.popup_contains(
+        self.point_menu.is_some_and(|menu| {
+            context_menu_rect(rect, menu.point, point_menu_items(menu).len()).contains(point)
+        }) || self.preview_combo.popup_contains(
             monitor_resolution_combo_rect(rect),
             point,
             PreviewResolution::ALL.len(),
+        ) || self.pen_mode_combo.popup_contains(
+            monitor_pen_mode_combo_rect(rect),
+            point,
+            PenMode::ALL.len(),
         )
     }
 
@@ -964,6 +1497,11 @@ impl MonitorState {
             point,
             delta,
             PreviewResolution::ALL.len(),
+        ) || self.pen_mode_combo.scroll(
+            monitor_pen_mode_combo_rect(rect),
+            point,
+            delta,
+            PenMode::ALL.len(),
         )
     }
 
@@ -1047,6 +1585,83 @@ impl MonitorState {
         true
     }
 
+    fn selected_curve_point_setup(
+        &self,
+        rect: Rect,
+        project: &Project,
+        timeline: &TimelineState,
+        plugins: &PluginRegistry,
+        graph_selection: Option<GraphMonitorSelection>,
+        source_geometry: &HashMap<u32, SourceGeometry>,
+    ) -> Option<(PenEditSetup, Vec<usize>)> {
+        let view = MonitorEditView {
+            preview: self.preview_rect(rect, project),
+            plugins,
+            graph_selection,
+            render_size: self.preview_dimensions(project).into(),
+            source_geometry,
+            monitor_wasm: &self.monitor_wasm,
+        };
+        let setup = pen_edit_setup(view.context(project, timeline))?;
+        let indices: Vec<_> = self
+            .selected_pen_points
+            .iter()
+            .copied()
+            .filter(|&index| index < setup.points.len())
+            .collect();
+        (!indices.is_empty() && pen_setup_supports_curves(&setup, project, timeline))
+            .then_some((setup, indices))
+    }
+
+    pub fn set_selected_point_type(
+        &mut self,
+        rect: Rect,
+        kind: PenPointType,
+        edit: MonitorPointerContext<'_>,
+    ) -> bool {
+        let MonitorPointerContext {
+            project,
+            timeline,
+            plugins,
+            graph_selection,
+            source_geometry,
+            ..
+        } = edit;
+        let Some((setup, indices)) = self.selected_curve_point_setup(
+            rect,
+            project,
+            timeline,
+            plugins,
+            graph_selection,
+            source_geometry,
+        ) else {
+            return false;
+        };
+        for index in indices {
+            let (incoming, outgoing) = point_type_controls(&setup, index, kind, project, timeline);
+            set_pen_control(
+                &setup.target,
+                project,
+                timeline,
+                "controls_in",
+                index,
+                setup.points.len(),
+                incoming,
+            );
+            set_pen_control(
+                &setup.target,
+                project,
+                timeline,
+                "controls_out",
+                index,
+                setup.points.len(),
+                outgoing,
+            );
+        }
+        self.pen_drag = None;
+        true
+    }
+
     pub fn delete_selected_pen_point(
         &mut self,
         rect: Rect,
@@ -1056,12 +1671,11 @@ impl MonitorState {
         graph_selection: Option<GraphMonitorSelection>,
         source_geometry: &HashMap<u32, SourceGeometry>,
     ) -> bool {
-        if !self.pen_tool {
+        self.sync_point_selection(timeline, graph_selection);
+        self.point_menu = None;
+        if self.selected_pen_points.is_empty() {
             return false;
         }
-        let Some(index) = self.selected_pen_point else {
-            return false;
-        };
         let view = MonitorEditView {
             preview: self.preview_rect(rect, project),
             plugins,
@@ -1071,44 +1685,175 @@ impl MonitorState {
             monitor_wasm: &self.monitor_wasm,
         };
         let Some(mut setup) = pen_edit_setup(view.context(project, timeline)) else {
-            self.selected_pen_point = None;
+            self.selected_pen_points.clear();
             return true;
         };
-        if index >= setup.points.len() {
-            self.selected_pen_point = None;
+        if !pen_setup_is_path(&setup, project, timeline) {
             return true;
         }
-        let minimum = if setup.closed { 3 } else { 1 };
-        if setup.points.len() <= minimum {
+        self.selected_pen_points
+            .retain(|&index| index < setup.points.len());
+        if self.selected_pen_points.is_empty() {
+            return true;
+        }
+        let minimum = if pen_setup_supports_curves(&setup, project, timeline) {
+            0
+        } else if setup.closed {
+            3
+        } else {
+            1
+        };
+        if setup
+            .points
+            .len()
+            .saturating_sub(self.selected_pen_points.len())
+            < minimum
+        {
             return true;
         }
         let old_point_count = setup.points.len();
+        let mut controls_in = setup
+            .target
+            .host_value(project, timeline, "controls_in")
+            .and_then(|value| match value {
+                crate::project::HostValue::Vec2Array(values) if values.len() == old_point_count => {
+                    Some(values)
+                }
+                _ => None,
+            });
+        let mut controls_out = setup
+            .target
+            .host_value(project, timeline, "controls_out")
+            .and_then(|value| match value {
+                crate::project::HostValue::Vec2Array(values) if values.len() == old_point_count => {
+                    Some(values)
+                }
+                _ => None,
+            });
         let mut gradient_colors = setup.colors_input.as_deref().map(|input| {
             pen_gradient_colors(&setup.target, input, project, timeline, old_point_count)
         });
         let mut gradient_midpoints = setup.midpoints_input.as_deref().map(|input| {
             pen_gradient_midpoints(&setup.target, input, project, timeline, old_point_count)
         });
-        setup.points.remove(index);
-        let remaining = setup.points.len();
+        for &index in self.selected_pen_points.iter().rev() {
+            let previous_count = setup.points.len();
+            setup.points.remove(index);
+            if let Some(values) = controls_in.as_mut() {
+                values.remove(index);
+            }
+            if let Some(values) = controls_out.as_mut() {
+                values.remove(index);
+            }
+            if let Some(colors) = gradient_colors.as_mut()
+                && index < colors.len()
+            {
+                colors.remove(index);
+            }
+            if let Some(midpoints) = gradient_midpoints.as_mut() {
+                remove_midpoint(midpoints, index, previous_count);
+            }
+        }
         setup.target.set_points(project, timeline, setup.points);
+        if let Some(values) = controls_in {
+            setup.target.set_host_value(
+                project,
+                timeline,
+                "controls_in",
+                crate::project::HostValue::Vec2Array(values),
+            );
+        }
+        if let Some(values) = controls_out {
+            setup.target.set_host_value(
+                project,
+                timeline,
+                "controls_out",
+                crate::project::HostValue::Vec2Array(values),
+            );
+        }
         if let (Some(colors), Some(input)) =
             (gradient_colors.as_mut(), setup.colors_input.as_deref())
         {
-            if index < colors.len() {
-                colors.remove(index);
-            }
             set_pen_gradient_colors(&setup.target, input, project, timeline, colors);
         }
         if let (Some(midpoints), Some(input)) = (
             gradient_midpoints.as_mut(),
             setup.midpoints_input.as_deref(),
         ) {
-            remove_midpoint(midpoints, index, old_point_count);
             set_pen_gradient_midpoints(&setup.target, input, project, timeline, midpoints.clone());
         }
         self.pen_drag = None;
-        self.selected_pen_point = remaining.checked_sub(1).map(|last| index.min(last));
+        self.selected_pen_points.clear();
+        true
+    }
+
+    pub fn pointer_right_pressed(
+        &mut self,
+        rect: Rect,
+        point: [f32; 2],
+        input: MonitorPointerContext<'_>,
+    ) -> bool {
+        let MonitorPointerContext {
+            project,
+            timeline,
+            plugins,
+            graph_selection,
+            source_geometry,
+            ..
+        } = input;
+        self.close_popups();
+        self.sync_point_selection(timeline, graph_selection);
+        self.cursor = point;
+        if !monitor_stage_rect(rect).contains(point) {
+            return false;
+        }
+        let view = MonitorEditView {
+            preview: self.preview_rect(rect, project),
+            plugins,
+            graph_selection,
+            render_size: self.preview_dimensions(project).into(),
+            source_geometry,
+            monitor_wasm: &self.monitor_wasm,
+        };
+        let Some(setup) = pen_edit_setup(view.context(project, timeline)) else {
+            return false;
+        };
+        if !pen_setup_is_path(&setup, project, timeline) {
+            return false;
+        }
+        let Some(handle) = setup
+            .handles()
+            .into_iter()
+            .filter(|handle| distance_sq(point, handle.point) <= 10.0 * 10.0)
+            .min_by(|a, b| distance_sq(point, a.point).total_cmp(&distance_sq(point, b.point)))
+        else {
+            return false;
+        };
+        let curves = pen_setup_supports_curves(&setup, project, timeline);
+        let minimum = if curves {
+            0
+        } else if setup.closed {
+            3
+        } else {
+            1
+        };
+        if !self.selected_pen_points.contains(&handle.index) {
+            self.selected_pen_points.clear();
+            self.selected_pen_points.insert(handle.index);
+        }
+        self.point_menu = Some(PointContextMenu {
+            point: [point[0] - rect.x, point[1] - rect.y],
+            index: handle.index,
+            clip: timeline.selected_clip().map(|clip| clip.id),
+            graph_selection,
+            curves,
+            can_delete: setup
+                .points
+                .len()
+                .saturating_sub(self.selected_pen_points.len())
+                >= minimum,
+        });
+        self.pointer_released();
         true
     }
 
@@ -1126,6 +1871,58 @@ impl MonitorState {
             timeline,
             source_geometry,
         } = input;
+        let now = std::time::Instant::now();
+        let insert_point = self
+            .last_point_click
+            .take()
+            .is_some_and(|(time, previous)| {
+                now.duration_since(time) <= std::time::Duration::from_millis(500)
+                    && distance_sq(point, previous) <= 5.0 * 5.0
+            });
+        if !insert_point && monitor_stage_rect(rect).contains(point) {
+            self.last_point_click = Some((now, point));
+        }
+        self.cursor = point;
+        self.sync_point_selection(timeline, graph_selection);
+        if let Some(menu) = self.point_menu.take() {
+            if menu.clip != timeline.selected_clip().map(|clip| clip.id)
+                || menu.graph_selection != graph_selection
+                || !self.selected_pen_points.contains(&menu.index)
+            {
+                return true;
+            }
+            let items = point_menu_items(menu);
+            let menu_rect = context_menu_rect(rect, menu.point, items.len());
+            if let ContextMenuClick::Action(action) = context_menu_click(menu_rect, point, &items) {
+                match action {
+                    PointMenuAction::SetType(kind) => {
+                        self.set_selected_point_type(
+                            rect,
+                            kind,
+                            MonitorPointerContext {
+                                modifiers,
+                                project,
+                                plugins,
+                                graph_selection,
+                                timeline,
+                                source_geometry,
+                            },
+                        );
+                    }
+                    PointMenuAction::Delete => {
+                        self.delete_selected_pen_point(
+                            rect,
+                            project,
+                            timeline,
+                            plugins,
+                            graph_selection,
+                            source_geometry,
+                        );
+                    }
+                }
+            }
+            return true;
+        }
         let combo = monitor_resolution_combo_rect(rect);
         if let Some(index) =
             self.preview_combo
@@ -1147,6 +1944,21 @@ impl MonitorState {
         }
         if monitor_pen_button_rect(rect).contains(point) {
             self.toggle_pen_tool();
+            return true;
+        }
+        if monitor_vector_preview_button_rect(rect).contains(point) {
+            self.vector_preview = !self.vector_preview;
+            return true;
+        }
+        let pen_mode_rect = monitor_pen_mode_combo_rect(rect);
+        if let Some(index) = self
+            .pen_mode_combo
+            .option_at(pen_mode_rect, point, PenMode::ALL.len())
+        {
+            self.pen_mode_combo.select(index, true);
+            if let Some(mode) = PenMode::ALL.get(index).copied() {
+                self.pen_mode = mode;
+            }
             return true;
         }
         if monitor_mute_button_rect(rect).contains(point) {
@@ -1171,10 +1983,53 @@ impl MonitorState {
             self.preview_combo.toggle();
             return true;
         }
+        if pen_mode_rect.contains(point) {
+            self.pen_mode_combo.toggle();
+            return true;
+        }
         self.preview_combo.close();
+        self.pen_mode_combo.close();
 
+        if !monitor_stage_rect(rect).contains(point) {
+            return false;
+        }
         let preview = self.preview_rect(rect, project);
         let (preview_width, preview_height) = self.preview_dimensions(project);
+        let mut graph_selection = graph_selection;
+        if self.pen_tool && monitor_stage_rect(rect).contains(point) && preview.contains(point) {
+            let polygon_selected = match graph_selection {
+                Some(GraphMonitorSelection::Inactive) => false,
+                Some(GraphMonitorSelection::Local { node }) => timeline.selected_pipeline().is_some_and(|instance| instance.local_nodes.iter().any(|candidate| candidate.id == node && candidate.node_type == "builtin.polygon")),
+                Some(GraphMonitorSelection::Shared { pipeline, node, .. }) => project.pipeline(pipeline).and_then(|pipeline| pipeline.node(node)).is_some_and(|node| node.node_type == "builtin.polygon"),
+                None => timeline.selected_clip().is_some_and(|clip| matches!(&clip.source, VisualSource::Generator(GeneratorSource::Plugin { generator_type, .. }) if generator_type == "builtin.polygon")),
+            };
+            if !polygon_selected {
+                if self.pen_mode == PenMode::EditPoints && !insert_point {
+                    return true;
+                }
+                let Some(definition) = plugins.generator("builtin.polygon") else {
+                    return true;
+                };
+                let Ok(pipeline) = plugins.visual_pipeline_instance() else {
+                    return true;
+                };
+                if !timeline.insert_drawn_polygon(definition, pipeline) {
+                    return true;
+                }
+                graph_selection = None;
+                self.selected_pen_points.clear();
+            }
+        }
+        self.sync_point_selection(timeline, graph_selection);
+        let live_geometry = monitor_source_geometry(
+            source_geometry,
+            project,
+            timeline,
+            plugins,
+            preview_width,
+            preview_height,
+        );
+        let source_geometry = &live_geometry;
         let edit_view = MonitorEditView {
             preview,
             plugins,
@@ -1200,6 +2055,196 @@ impl MonitorState {
         let allow_transform_gizmo = graph_selection.is_none() || graph_transform_selected;
 
         if monitor_stage_rect(rect).contains(point) {
+            if let Some(setup) = pen_edit_setup(edit_view.context(project, timeline))
+                && pen_setup_is_path(&setup, project, timeline)
+            {
+                for &index in &self.selected_pen_points {
+                    let Some(anchor) = setup.points.get(index) else {
+                        continue;
+                    };
+                    for input in ["controls_in", "controls_out"] {
+                        let offset = pen_control(&setup, project, timeline, input, index);
+                        if distance_sq(offset, [0.0; 2]) <= 0.000_001 {
+                            continue;
+                        }
+                        let control =
+                            setup.source_to_screen([anchor[0] + offset[0], anchor[1] + offset[1]]);
+                        if distance_sq(point, control) <= 9.0 * 9.0 {
+                            let mut drag = setup.drag(index, point, handle_snap);
+                            drag.control = Some(input);
+                            drag.grab_offset = [control[0] - point[0], control[1] - point[1]];
+                            let opposite_input = if input == "controls_in" {
+                                "controls_out"
+                            } else {
+                                "controls_in"
+                            };
+                            let opposite =
+                                pen_control(&setup, project, timeline, opposite_input, index);
+                            drag.opposite_length = smooth_opposite_length(offset, opposite);
+                            if modifiers.alt_key() {
+                                drag.opposite_length = None;
+                                set_pen_control(
+                                    &setup.target,
+                                    project,
+                                    timeline,
+                                    input,
+                                    index,
+                                    setup.points.len(),
+                                    [0.0; 2],
+                                );
+                            }
+                            self.pen_drag = Some(drag);
+                            self.primitive_drag = None;
+                            self.gizmo_drag = None;
+                            self.generator_vec2_drag = None;
+                            self.plugin_handle_drag = None;
+                            return true;
+                        }
+                    }
+                }
+            }
+            if let Some(setup) = pen_edit_setup(edit_view.context(project, timeline))
+                && let Some((shape_type, corners)) = primitive_corners(&setup, project, timeline)
+                && let Some((corner, opposite)) = corners
+                    .iter()
+                    .zip(corners.iter().cycle().skip(2))
+                    .find(|(corner, _)| {
+                        distance_sq(point, setup.source_to_screen(**corner)) <= 12.0 * 12.0
+                    })
+            {
+                let cursor = setup.screen_to_source(point);
+                self.primitive_drag = Some(PrimitiveDrag {
+                    target: setup.target.clone(),
+                    shape_type,
+                    start: *opposite,
+                    center: [
+                        corner[0].midpoint(opposite[0]),
+                        corner[1].midpoint(opposite[1]),
+                    ],
+                    pointer_offset: [corner[0] - cursor[0], corner[1] - cursor[1]],
+                    preview,
+                    render_size: [preview_width, preview_height],
+                    source_geometry: setup.source_geometry,
+                    source_origin: setup.source_origin,
+                    source_scale: setup.source_scale,
+                    follows_clip: setup.target.follows_clip(),
+                    clip: setup.clip,
+                    timeline_time: setup.timeline_time,
+                });
+                self.pen_drag = None;
+                self.gizmo_drag = None;
+                self.generator_vec2_drag = None;
+                self.plugin_handle_drag = None;
+                return true;
+            }
+            if selected_generator_pen_handles(edit_view.context(project, timeline)).is_some_and(
+                |(handles, _)| {
+                    handles
+                        .iter()
+                        .any(|handle| distance_sq(point, handle.point) <= 10.0 * 10.0)
+                },
+            ) && handle_selected_generator_pen_press(
+                point,
+                modifiers,
+                edit_view,
+                self.pen_tool,
+                insert_point,
+                project,
+                timeline,
+                handle_snap.clone(),
+                &mut self.pen_drag,
+                &mut self.selected_pen_points,
+            ) {
+                self.gizmo_drag = None;
+                self.generator_vec2_drag = None;
+                self.plugin_handle_drag = None;
+                return true;
+            }
+            if !self.pen_tool && !modifiers.shift_key() {
+                self.selected_pen_points.clear();
+            }
+            if self.pen_tool && self.pen_mode != PenMode::EditPoints {
+                let target = graph_selection.map_or_else(
+                    || {
+                        timeline.selected_clip().and_then(|clip| {
+                            matches!(&clip.source, VisualSource::Generator(GeneratorSource::Plugin { generator_type, .. }) if generator_type == "builtin.polygon")
+                                .then(|| PenEditTarget::Clip { input: "shape_type".into() })
+                        })
+                    },
+                    |selection| {
+                        if let GraphMonitorSelection::Local { node } = selection {
+                            return timeline.selected_pipeline()?.local_nodes.iter()
+                                .find(|candidate| candidate.id == node && candidate.node_type == "builtin.polygon")
+                                .map(|_| PenEditTarget::Local { node, input: "shape_type".into() });
+                        }
+                        shared_graph_selection(selection).and_then(|(pipeline, node, follows_clip)| {
+                            project
+                                .pipeline(pipeline)
+                                .and_then(|p| p.node(node))
+                                .filter(|node| node.node_type == "builtin.polygon")
+                                .map(|_| PenEditTarget::Graph {
+                                    pipeline,
+                                    node,
+                                    input: "shape_type".into(),
+                                    time: f64::from(timeline.playhead()),
+                                    follows_clip,
+                                })
+                        })
+                    },
+                );
+                if let Some(target) = target {
+                    let Some(setup) = pen_edit_setup(edit_view.context(project, timeline)) else {
+                        return true;
+                    };
+                    let start = setup.screen_to_source(point);
+                    let shape_target = match target {
+                        PenEditTarget::Local { node, .. } => PenEditTarget::Local {
+                            node,
+                            input: "shape_type".into(),
+                        },
+                        PenEditTarget::Clip { .. } => PenEditTarget::Clip {
+                            input: "shape_type".into(),
+                        },
+                        PenEditTarget::Graph {
+                            pipeline,
+                            node,
+                            time,
+                            follows_clip,
+                            ..
+                        } => PenEditTarget::Graph {
+                            pipeline,
+                            node,
+                            input: "shape_type".into(),
+                            time,
+                            follows_clip,
+                        },
+                    };
+                    let shape_type = if self.pen_mode == PenMode::Rectangle {
+                        1
+                    } else {
+                        2
+                    };
+                    self.primitive_drag = Some(PrimitiveDrag {
+                        target: shape_target,
+                        shape_type,
+                        start,
+                        center: start,
+                        pointer_offset: [0.0; 2],
+                        preview,
+                        render_size: [preview_width, preview_height],
+                        source_geometry: setup.source_geometry,
+                        source_origin: setup.source_origin,
+                        source_scale: setup.source_scale,
+                        clip: setup.clip,
+                        follows_clip: setup.target.follows_clip(),
+                        timeline_time: setup.timeline_time,
+                    });
+                    self.pen_drag = None;
+                    self.gizmo_drag = None;
+                    return true;
+                }
+                return true;
+            }
             if handle_selected_gradient_midpoint_press(
                 point,
                 edit_view.context(project, timeline),
@@ -1240,11 +2285,12 @@ impl MonitorState {
                 modifiers,
                 edit_view,
                 self.pen_tool,
+                insert_point,
                 project,
                 timeline,
                 handle_snap.clone(),
                 &mut self.pen_drag,
-                &mut self.selected_pen_point,
+                &mut self.selected_pen_points,
             ) {
                 self.gizmo_drag = None;
                 self.generator_vec2_drag = None;
@@ -1305,11 +2351,12 @@ impl MonitorState {
                     modifiers,
                     edit_view,
                     self.pen_tool,
+                    insert_point,
                     project,
                     timeline,
                     handle_snap,
                     &mut self.pen_drag,
-                    &mut self.selected_pen_point,
+                    &mut self.selected_pen_points,
                 ) {
                     self.gizmo_drag = None;
                     self.plugin_handle_drag = None;
@@ -1479,6 +2526,47 @@ impl MonitorState {
         _plugins: &PluginRegistry,
         timeline: &mut TimelineState,
     ) -> bool {
+        if self
+            .last_point_click
+            .is_some_and(|(_, previous)| distance_sq(point, previous) > 5.0 * 5.0)
+        {
+            self.last_point_click = None;
+        }
+        self.cursor = point;
+        if self.point_menu.is_some() {
+            return true;
+        }
+        if let Some(drag) = self.primitive_drag.as_ref() {
+            let (origin, size) = drag.bounds(point, modifiers);
+            drag.target.set_host_value(
+                project,
+                timeline,
+                "shape_type",
+                crate::project::HostValue::Gpu(GpuValue::Enum(drag.shape_type)),
+            );
+            drag.target.set_host_value(
+                project,
+                timeline,
+                "shape_origin",
+                crate::project::HostValue::Gpu(GpuValue::Vec2(origin)),
+            );
+            if drag.shape_type == 1 {
+                drag.target.set_host_value(
+                    project,
+                    timeline,
+                    "size",
+                    crate::project::HostValue::Gpu(GpuValue::Vec2(size)),
+                );
+            } else {
+                drag.target.set_host_value(
+                    project,
+                    timeline,
+                    "radius",
+                    crate::project::HostValue::Gpu(GpuValue::Vec2([size[0] * 0.5, size[1] * 0.5])),
+                );
+            }
+            return true;
+        }
         if let Some((start, pan)) = self.view_pan_drag {
             self.view_pan = [pan[0] + point[0] - start[0], pan[1] + point[1] - start[1]];
             return true;
@@ -1615,8 +2703,24 @@ impl MonitorState {
             return true;
         }
         if let Some(mut drag) = self.pen_drag.take() {
-            let correction = drag.snap.snap([point[0]; 3], [point[1]; 3], 8.0);
-            let snapped_point = [point[0] + correction[0], point[1] + correction[1]];
+            if !drag.moved {
+                if distance_sq(point, drag.start) <= 3.0 * 3.0 {
+                    self.pen_drag = Some(drag);
+                    return true;
+                }
+                drag.moved = true;
+            }
+            let grabbed_point = [
+                point[0] + drag.grab_offset[0],
+                point[1] + drag.grab_offset[1],
+            ];
+            let correction = drag
+                .snap
+                .snap([grabbed_point[0]; 3], [grabbed_point[1]; 3], 8.0);
+            let snapped_point = [
+                grabbed_point[0] + correction[0],
+                grabbed_point[1] + correction[1],
+            ];
             let Some(mut source) = drag_source_point(
                 drag.preview,
                 snapped_point,
@@ -1636,11 +2740,67 @@ impl MonitorState {
                 self.pen_drag = None;
                 return false;
             };
-            let Some(value) = points.get_mut(drag.index) else {
-                self.pen_drag = None;
-                return false;
-            };
-            *value = source;
+            if let Some(input) = drag.control {
+                let Some(anchor) = points.get(drag.index) else {
+                    return false;
+                };
+                let mut offset = [source[0] - anchor[0], source[1] - anchor[1]];
+                let length = offset[0].hypot(offset[1]);
+                if modifiers.shift_key() && length > 0.000_001 {
+                    let step = std::f32::consts::FRAC_PI_4;
+                    let angle = (offset[1].atan2(offset[0]) / step).round() * step;
+                    offset = [angle.cos() * length, angle.sin() * length];
+                }
+                set_pen_control(
+                    &drag.target,
+                    project,
+                    timeline,
+                    input,
+                    drag.index,
+                    points.len(),
+                    offset,
+                );
+                let opposite = if input == "controls_in" {
+                    "controls_out"
+                } else {
+                    "controls_in"
+                };
+                if drag.symmetric {
+                    set_pen_control(
+                        &drag.target,
+                        project,
+                        timeline,
+                        opposite,
+                        drag.index,
+                        points.len(),
+                        offset.map(|component| -component),
+                    );
+                } else if !modifiers.alt_key()
+                    && let Some(opposite_length) = drag.opposite_length
+                    && length > 0.000_001
+                {
+                    set_pen_control(
+                        &drag.target,
+                        project,
+                        timeline,
+                        opposite,
+                        drag.index,
+                        points.len(),
+                        offset.map(|component| -component * opposite_length / length),
+                    );
+                }
+                self.pen_drag = Some(drag);
+                return true;
+            }
+            let delta = [
+                source[0] - drag.initial_anchor[0],
+                source[1] - drag.initial_anchor[1],
+            ];
+            for &(index, original) in &drag.initial_points {
+                if let Some(value) = points.get_mut(index) {
+                    *value = [original[0] + delta[0], original[1] + delta[1]];
+                }
+            }
             drag.target.set_points(project, timeline, points);
             self.pen_drag = Some(drag);
             return true;
@@ -1803,11 +2963,17 @@ impl MonitorState {
     }
 
     pub fn pointer_released(&mut self) -> bool {
+        let primitive = self.primitive_drag.take().is_some();
         let pen = self.pen_drag.take().is_some();
         let gradient_midpoint = self.gradient_midpoint_drag.take().is_some();
         let generator = self.generator_vec2_drag.take().is_some();
         let plugin_handle = self.plugin_handle_drag.take().is_some();
-        self.gizmo_drag.take().is_some() || pen || gradient_midpoint || generator || plugin_handle
+        self.gizmo_drag.take().is_some()
+            || pen
+            || primitive
+            || gradient_midpoint
+            || generator
+            || plugin_handle
     }
 }
 
@@ -1818,6 +2984,8 @@ struct MonitorChromeRects {
     frame_snap: Rect,
     clip_snap: Rect,
     pen: Rect,
+    vector_preview: Rect,
+    pen_mode: Rect,
     mute: Rect,
     capture: [Rect; 3],
 }
@@ -1837,61 +3005,84 @@ fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
             .build()
     }
 
-    let ((fit_stage, combo, frame_snap, clip_snap, pen, mute, captures), measured) =
-        kama_ui::measure_layout(rect, |ctx| {
-            let mut fit_stage = kama_ui::BlockId::default();
-            let mut combo = kama_ui::BlockId::default();
-            let mut frame_snap = kama_ui::BlockId::default();
-            let mut clip_snap = kama_ui::BlockId::default();
-            let mut pen = kama_ui::BlockId::default();
-            let mut mute = kama_ui::BlockId::default();
-            let mut captures = [kama_ui::BlockId::default(); 3];
-            let _ = ctx
-                .new()
-                .size(kama_ui::taffy::Size::from_lengths(rect.width, rect.height))
-                .column()
-                .gap(6.0)
-                .children(|ctx| {
-                    fit_stage = ctx.new().width(Size::Fill).height(Size::Fill).build();
-                    let _ = ctx
-                        .new()
-                        .size(kama_ui::taffy::Size::from_lengths(rect.width, 32.0))
-                        .row()
-                        .padding_edges(kama_ui::taffy::Rect {
-                            left: kama_ui::taffy::LengthPercentage::length(4.0),
-                            right: kama_ui::taffy::LengthPercentage::length(4.0),
-                            ..kama_ui::taffy::Rect::length(0.0)
-                        })
-                        .align_items(kama_ui::Align::Center)
-                        .children(|ctx| {
-                            combo = ctx
-                                .new()
-                                .size(kama_ui::taffy::Size::from_lengths(172.0, 28.0))
-                                .min_size(kama_ui::taffy::Size {
-                                    width: kama_ui::taffy::LengthPercentageAuto::length(1.0),
-                                    height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
-                                })
-                                .max_size(kama_ui::taffy::Size {
-                                    width: kama_ui::taffy::LengthPercentageAuto::percent(1.0),
-                                    height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
-                                })
-                                .margin(kama_ui::taffy::Rect {
-                                    right: kama_ui::taffy::LengthPercentageAuto::length(6.0),
-                                    ..kama_ui::taffy::Rect::length(0.0)
-                                })
-                                .build();
-                            frame_snap = control(ctx, 4.0);
-                            clip_snap = control(ctx, 6.0);
-                            pen = control(ctx, 6.0);
-                            mute = control(ctx, 6.0);
-                            captures[0] = control(ctx, 4.0);
-                            captures[1] = control(ctx, 4.0);
-                            captures[2] = control(ctx, 0.0);
-                        })
-                        .build();
-                });
-            (fit_stage, combo, frame_snap, clip_snap, pen, mute, captures)
-        });
+    let (
+        (fit_stage, combo, frame_snap, clip_snap, pen, vector_preview, pen_mode, mute, captures),
+        measured,
+    ) = kama_ui::measure_layout(rect, |ctx| {
+        let mut fit_stage = kama_ui::BlockId::default();
+        let mut combo = kama_ui::BlockId::default();
+        let mut frame_snap = kama_ui::BlockId::default();
+        let mut clip_snap = kama_ui::BlockId::default();
+        let mut pen = kama_ui::BlockId::default();
+        let mut vector_preview = kama_ui::BlockId::default();
+        let mut pen_mode = kama_ui::BlockId::default();
+        let mut mute = kama_ui::BlockId::default();
+        let mut captures = [kama_ui::BlockId::default(); 3];
+        let _ = ctx
+            .new()
+            .size(kama_ui::taffy::Size::from_lengths(rect.width, rect.height))
+            .column()
+            .gap(6.0)
+            .children(|ctx| {
+                fit_stage = ctx.new().width(Size::Fill).height(Size::Fill).build();
+                let _ = ctx
+                    .new()
+                    .size(kama_ui::taffy::Size::from_lengths(rect.width, 32.0))
+                    .row()
+                    .padding_edges(kama_ui::taffy::Rect {
+                        left: kama_ui::taffy::LengthPercentage::length(4.0),
+                        right: kama_ui::taffy::LengthPercentage::length(4.0),
+                        ..kama_ui::taffy::Rect::length(0.0)
+                    })
+                    .align_items(kama_ui::Align::Center)
+                    .children(|ctx| {
+                        combo = ctx
+                            .new()
+                            .size(kama_ui::taffy::Size::from_lengths(172.0, 28.0))
+                            .min_size(kama_ui::taffy::Size {
+                                width: kama_ui::taffy::LengthPercentageAuto::length(1.0),
+                                height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
+                            })
+                            .max_size(kama_ui::taffy::Size {
+                                width: kama_ui::taffy::LengthPercentageAuto::percent(1.0),
+                                height: kama_ui::taffy::LengthPercentageAuto::length(28.0),
+                            })
+                            .margin(kama_ui::taffy::Rect {
+                                right: kama_ui::taffy::LengthPercentageAuto::length(6.0),
+                                ..kama_ui::taffy::Rect::length(0.0)
+                            })
+                            .build();
+                        frame_snap = control(ctx, 4.0);
+                        clip_snap = control(ctx, 6.0);
+                        pen = control(ctx, 6.0);
+                        pen_mode = ctx
+                            .new()
+                            .size(kama_ui::taffy::Size::from_lengths(100.0, 28.0))
+                            .margin(kama_ui::taffy::Rect {
+                                right: kama_ui::taffy::LengthPercentageAuto::length(6.0),
+                                ..kama_ui::taffy::Rect::length(0.0)
+                            })
+                            .build();
+                        vector_preview = control(ctx, 6.0);
+                        mute = control(ctx, 6.0);
+                        captures[0] = control(ctx, 4.0);
+                        captures[1] = control(ctx, 4.0);
+                        captures[2] = control(ctx, 0.0);
+                    })
+                    .build();
+            });
+        (
+            fit_stage,
+            combo,
+            frame_snap,
+            clip_snap,
+            pen,
+            vector_preview,
+            pen_mode,
+            mute,
+            captures,
+        )
+    });
     MonitorChromeRects {
         fit_stage: measured.rect(fit_stage).expect("monitor fit stage layout"),
         combo: measured.rect(combo).expect("monitor combo layout"),
@@ -1900,6 +3091,10 @@ fn monitor_chrome_rects(rect: Rect) -> MonitorChromeRects {
             .expect("monitor frame snap layout"),
         clip_snap: measured.rect(clip_snap).expect("monitor clip snap layout"),
         pen: measured.rect(pen).expect("monitor pen layout"),
+        vector_preview: measured
+            .rect(vector_preview)
+            .expect("monitor vector preview layout"),
+        pen_mode: measured.rect(pen_mode).expect("monitor pen mode layout"),
         mute: measured.rect(mute).expect("monitor mute layout"),
         capture: captures.map(|id| measured.rect(id).expect("monitor capture layout")),
     }
@@ -1967,6 +3162,14 @@ fn monitor_pen_button_rect(rect: Rect) -> Rect {
     monitor_chrome_rects(rect).pen
 }
 
+fn monitor_pen_mode_combo_rect(rect: Rect) -> Rect {
+    monitor_chrome_rects(rect).pen_mode
+}
+
+fn monitor_vector_preview_button_rect(rect: Rect) -> Rect {
+    monitor_chrome_rects(rect).vector_preview
+}
+
 fn monitor_mute_button_rect(rect: Rect) -> Rect {
     monitor_chrome_rects(rect).mute
 }
@@ -1982,8 +3185,8 @@ fn monitor_capture_button_rect(rect: Rect, index: usize) -> Rect {
 const MONITOR_MIN_ZOOM: f32 = 0.05;
 const MONITOR_MAX_ZOOM: f32 = 16.0;
 
-const fn monitor_stage_rect(rect: Rect) -> Rect {
-    rect
+fn monitor_stage_rect(rect: Rect) -> Rect {
+    monitor_chrome_rects(rect).fit_stage
 }
 
 fn monitor_fit_preview_rect(rect: Rect, canvas_width: u32, canvas_height: u32) -> Rect {
@@ -2028,6 +3231,36 @@ fn monitor_preview_rect(
         width.max(1.0),
         height.max(1.0),
     )
+}
+
+fn monitor_source_geometry(
+    cached: &HashMap<u32, SourceGeometry>,
+    project: &Project,
+    timeline: &TimelineState,
+    plugins: &PluginRegistry,
+    width: u32,
+    height: u32,
+) -> HashMap<u32, SourceGeometry> {
+    let mut geometry = cached.clone();
+    for clip in selected_monitor_transform_clips(timeline) {
+        let source = timeline
+            .tracks()
+            .iter()
+            .find(|track| track.id == clip.track)
+            .and_then(|track| track.property_row(&clip.source, clip.source_instance))
+            .map_or(&clip.source, |row| &row.source);
+        if let Some(current) = tight_generator_source_geometry(
+            source,
+            f64::from(timeline.playhead()),
+            plugins,
+            project.active_settings().canvas_size,
+            width,
+            height,
+        ) {
+            geometry.insert(clip.id, current);
+        }
+    }
+    geometry
 }
 
 fn clip_source_geometry(
@@ -2499,12 +3732,12 @@ fn monitor_clip_at(
 fn draw_snap_guides(
     ctx: &mut kama_ui::BuildCtx,
     preview: Rect,
-    x_lock: Option<(f32, usize)>,
-    y_lock: Option<(f32, usize)>,
+    x_lock: Option<f32>,
+    y_lock: Option<f32>,
 ) {
     let guide = Color::rgb8(0x42, 0xd9, 0xff);
     let shadow = Color::rgba8(0x00, 0x00, 0x00, 0xb0);
-    if let Some((x, feature)) = x_lock {
+    if let Some(x) = x_lock {
         for (index, (width, color)) in [(3.0, shadow), (1.0, guide)].into_iter().enumerate() {
             kama_ui::ui!(ctx, {
                 Rect(
@@ -2515,9 +3748,8 @@ fn draw_snap_guides(
                 }
             });
         }
-        draw_snap_badge(ctx, [x + 5.0, preview.y + 5.0], "X", feature);
     }
-    if let Some((y, feature)) = y_lock {
+    if let Some(y) = y_lock {
         for (index, (height, color)) in [(3.0, shadow), (1.0, guide)].into_iter().enumerate() {
             kama_ui::ui!(ctx, {
                 Rect(
@@ -2528,31 +3760,7 @@ fn draw_snap_guides(
                 }
             });
         }
-        draw_snap_badge(ctx, [preview.x + 5.0, y + 5.0], "Y", feature);
     }
-}
-
-fn draw_snap_badge(
-    ctx: &mut kama_ui::BuildCtx,
-    point: [f32; 2],
-    axis: &'static str,
-    feature: usize,
-) {
-    let feature = match (axis, feature) {
-        ("X", 0) => "left",
-        ("X" | "Y", 1) => "center",
-        ("X", 2) => "right",
-        ("Y", 0) => "top",
-        ("Y", 2) => "bottom",
-        _ => "edge",
-    };
-    kama_ui::ui!(ctx, {
-        Rect(("monitor-snap-badge", axis), Rect::new(point[0], point[1], 58.0, 17.0)) {
-            fill: Color::rgba8(0x09, 0x22, 0x2a, 0xe8); border: 1; border_color: Color::rgb8(0x42, 0xd9, 0xff);
-            border_radius: 3.0; font_size: 8.0; text_color: Color::WHITE; text_centered;
-            text: format!("{feature} → {axis}");
-        }
-    });
 }
 
 #[derive(Clone, Copy)]
@@ -2846,6 +4054,7 @@ fn selected_plugin_handles(edit: MonitorEditContext<'_, '_>) -> Option<PluginHan
     let time = f64::from(edit.timeline.playhead());
 
     let (definition, parameters, clip, owner) = match selection {
+        GraphMonitorSelection::Inactive => return None,
         GraphMonitorSelection::Local { node } => {
             let instance = edit.timeline.selected_pipeline()?;
             let effect = instance
@@ -3251,6 +4460,18 @@ fn generator_point_overlay(
     size: [f32; 2],
     time: f64,
 ) -> Option<MonitorSourceOverlay> {
+    if definition.key == "builtin.polygon" {
+        let crate::project::HostValue::Vec2Array(points) =
+            parameters.get(&plugin_parameter_hash(input))?
+        else {
+            return None;
+        };
+        let lines = (0..points.len())
+            .zip((0..points.len()).cycle().skip(1))
+            .map(<[usize; 2]>::from)
+            .collect();
+        return Some((points.clone(), lines));
+    }
     let module = definition.module.as_ref()?;
     let entry = definition.monitor_entry.as_deref()?;
     let overlay = edit
@@ -3377,10 +4598,26 @@ impl PenEditSetup {
             .collect()
     }
 
-    fn drag(&self, index: usize, snap: SnapSession) -> PenToolDrag {
+    fn drag(&self, index: usize, point: [f32; 2], snap: SnapSession) -> PenToolDrag {
+        let anchor = self
+            .points
+            .get(index)
+            .map_or(point, |anchor| self.source_to_screen(*anchor));
         PenToolDrag {
             target: self.target.clone(),
             index,
+            control: None,
+            start: point,
+            moved: false,
+            grab_offset: [anchor[0] - point[0], anchor[1] - point[1]],
+            initial_anchor: self.points.get(index).copied().unwrap_or([0.0; 2]),
+            initial_points: self
+                .points
+                .get(index)
+                .map(|&anchor| vec![(index, anchor)])
+                .unwrap_or_default(),
+            opposite_length: None,
+            symmetric: false,
             preview: self.preview,
             render_size: self.render_size,
             source_geometry: self.source_geometry,
@@ -3407,7 +4644,32 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
     } = view;
     let timeline_time = timeline.playhead();
     if let Some(selection) = graph_selection {
-        let (pipeline, node, follows_clip) = shared_graph_selection(selection)?;
+        let (graph_node, target) = if let GraphMonitorSelection::Local { node } = selection {
+            let graph_node = timeline
+                .selected_pipeline()?
+                .local_nodes
+                .iter()
+                .find(|candidate| candidate.id == node)?;
+            (
+                graph_node,
+                PenEditTarget::Local {
+                    node,
+                    input: String::new(),
+                },
+            )
+        } else {
+            let (pipeline, node, follows_clip) = shared_graph_selection(selection)?;
+            (
+                project.pipeline(pipeline)?.node(node)?,
+                PenEditTarget::Graph {
+                    pipeline,
+                    node,
+                    input: String::new(),
+                    time: f64::from(timeline_time),
+                    follows_clip,
+                },
+            )
+        };
         let GraphGeneratorPenInput {
             input,
             time,
@@ -3416,12 +4678,15 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
             colors_input,
             midpoints_input,
         } = graph_generator_pen_input(project, selection, timeline, plugins)?;
-        let clip = graph_selection_clip(timeline, selection).cloned();
+        let clip = if matches!(selection, GraphMonitorSelection::Local { .. }) {
+            None
+        } else {
+            graph_selection_clip(timeline, selection).cloned()
+        };
         let geometry = clip.as_ref().map_or_else(
             || SourceGeometry::canvas(render_width, render_height),
             |clip| clip_source_geometry(source_geometry, clip.id, render_width, render_height),
         );
-        let graph_node = project.pipeline(pipeline)?.node(node)?;
         let definition = plugins.generator(&graph_node.node_type)?;
         let parameters = graph_node
             .inputs
@@ -3449,12 +4714,21 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
             time,
         )?;
         return Some(PenEditSetup {
-            target: PenEditTarget::Graph {
-                pipeline,
-                node,
-                input,
-                time,
-                follows_clip: follows_clip && clip.is_some(),
+            target: match target {
+                PenEditTarget::Local { node, .. } => PenEditTarget::Local { node, input },
+                PenEditTarget::Graph {
+                    pipeline,
+                    node,
+                    follows_clip,
+                    ..
+                } => PenEditTarget::Graph {
+                    pipeline,
+                    node,
+                    input,
+                    time,
+                    follows_clip: follows_clip && clip.is_some(),
+                },
+                PenEditTarget::Clip { .. } => return None,
             },
             points,
             pen_tool,
@@ -3546,16 +4820,326 @@ fn pen_edit_setup(edit: MonitorEditContext<'_, '_>) -> Option<PenEditSetup> {
     })
 }
 
+fn pen_setup_is_path(setup: &PenEditSetup, project: &Project, timeline: &TimelineState) -> bool {
+    host_shape_type(setup.target.host_value(project, timeline, "shape_type"))
+        .is_none_or(|shape_type| shape_type == 0)
+}
+
 fn selected_generator_pen_handles(
     edit: MonitorEditContext<'_, '_>,
 ) -> Option<(Vec<PenPointHandle>, Vec<[usize; 2]>)> {
-    pen_edit_setup(edit).map(|setup| (setup.handles(), setup.lines))
+    let setup = pen_edit_setup(edit)?;
+    if !pen_setup_is_path(&setup, edit.project, edit.timeline) {
+        return None;
+    }
+    let lines = if has_curve_controls(&setup, edit.project, edit.timeline) {
+        Vec::new()
+    } else {
+        setup.lines.clone()
+    };
+    Some((setup.handles(), lines))
+}
+
+fn pen_control(
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+    input: &str,
+    index: usize,
+) -> [f32; 2] {
+    match setup.target.host_value(project, timeline, input) {
+        Some(crate::project::HostValue::Vec2Array(values)) => {
+            values.get(index).copied().unwrap_or([0.0; 2])
+        }
+        _ => [0.0; 2],
+    }
+}
+
+fn smooth_opposite_length(offset: [f32; 2], opposite: [f32; 2]) -> Option<f32> {
+    let length_squared = distance_sq(offset, [0.0; 2]);
+    let opposite_squared = distance_sq(opposite, [0.0; 2]);
+    let cross = offset[0].mul_add(opposite[1], -offset[1] * opposite[0]);
+    let dot = offset[0].mul_add(opposite[0], offset[1] * opposite[1]);
+    (length_squared > 0.000_001
+        && opposite_squared > 0.000_001
+        && dot < 0.0
+        && cross * cross <= length_squared * opposite_squared * 0.000_001)
+        .then(|| opposite_squared.sqrt())
+}
+
+fn pen_setup_supports_curves(
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+) -> bool {
+    pen_setup_is_path(setup, project, timeline)
+        && ["controls_in", "controls_out"].into_iter().all(|input| {
+            matches!(
+                setup.target.host_value(project, timeline, input),
+                Some(crate::project::HostValue::Vec2Array(_))
+            )
+        })
+}
+
+fn set_pen_control(
+    target: &PenEditTarget,
+    project: &mut Project,
+    timeline: &mut TimelineState,
+    input: &str,
+    index: usize,
+    point_count: usize,
+    offset: [f32; 2],
+) {
+    let mut controls = match target.host_value(project, timeline, input) {
+        Some(crate::project::HostValue::Vec2Array(values)) => values,
+        _ => Vec::new(),
+    };
+    controls.resize(point_count, [0.0; 2]);
+    if let Some(control) = controls.get_mut(index) {
+        *control = offset;
+        target.set_host_value(
+            project,
+            timeline,
+            input,
+            crate::project::HostValue::Vec2Array(controls),
+        );
+    }
+}
+
+fn point_type_controls(
+    setup: &PenEditSetup,
+    index: usize,
+    kind: PenPointType,
+    project: &Project,
+    timeline: &TimelineState,
+) -> ([f32; 2], [f32; 2]) {
+    let Some(&anchor) = setup.points.get(index) else {
+        return ([0.0; 2], [0.0; 2]);
+    };
+    let previous = setup
+        .lines
+        .iter()
+        .find(|line| line[1] == index)
+        .and_then(|line| setup.points.get(line[0]))
+        .copied()
+        .unwrap_or(anchor);
+    let next = setup
+        .lines
+        .iter()
+        .find(|line| line[0] == index)
+        .and_then(|line| setup.points.get(line[1]))
+        .copied()
+        .unwrap_or(anchor);
+    let incoming = pen_control(setup, project, timeline, "controls_in", index);
+    let outgoing = pen_control(setup, project, timeline, "controls_out", index);
+    let default_incoming = [
+        (previous[0] - anchor[0]) / 3.0,
+        (previous[1] - anchor[1]) / 3.0,
+    ];
+    let default_outgoing = [(next[0] - anchor[0]) / 3.0, (next[1] - anchor[1]) / 3.0];
+    let incoming = if distance_sq(incoming, [0.0; 2]) > 0.000_001 {
+        incoming
+    } else {
+        default_incoming
+    };
+    let outgoing = if distance_sq(outgoing, [0.0; 2]) > 0.000_001 {
+        outgoing
+    } else {
+        default_outgoing
+    };
+    let tangent = [next[0] - previous[0], next[1] - previous[1]];
+    let tangent = if distance_sq(tangent, [0.0; 2]) > 0.000_001 {
+        tangent
+    } else {
+        [1.0, 0.0]
+    };
+    let tangent_length = tangent[0].hypot(tangent[1]);
+    let direction = tangent.map(|component| component / tangent_length);
+    let incoming_length = incoming[0].hypot(incoming[1]).max(1.0);
+    let outgoing_length = outgoing[0].hypot(outgoing[1]).max(1.0);
+    match kind {
+        PenPointType::Corner => ([0.0; 2], [0.0; 2]),
+        PenPointType::Incoming => (
+            if distance_sq(incoming, [0.0; 2]) > 0.000_001 {
+                incoming
+            } else {
+                direction.map(|component| -component * 32.0)
+            },
+            [0.0; 2],
+        ),
+        PenPointType::Outgoing => (
+            [0.0; 2],
+            if distance_sq(outgoing, [0.0; 2]) > 0.000_001 {
+                outgoing
+            } else {
+                direction.map(|component| component * 32.0)
+            },
+        ),
+        PenPointType::Smooth => (
+            direction.map(|component| -component * incoming_length),
+            direction.map(|component| component * outgoing_length),
+        ),
+    }
+}
+
+fn has_curve_controls(setup: &PenEditSetup, project: &Project, timeline: &TimelineState) -> bool {
+    ["controls_in", "controls_out"].into_iter().any(|input| {
+        match setup.target.host_value(project, timeline, input) {
+            Some(crate::project::HostValue::Vec2Array(values)) => values
+                .iter()
+                .any(|offset| distance_sq(*offset, [0.0; 2]) > 0.000_001),
+            _ => false,
+        }
+    })
+}
+
+fn pen_segment(
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+    start: usize,
+    end: usize,
+) -> Option<[[f32; 2]; 4]> {
+    let a = *setup.points.get(start)?;
+    let b = *setup.points.get(end)?;
+    let outgoing = pen_control(setup, project, timeline, "controls_out", start);
+    let incoming = pen_control(setup, project, timeline, "controls_in", end);
+    Some([
+        a,
+        [a[0] + outgoing[0], a[1] + outgoing[1]],
+        [b[0] + incoming[0], b[1] + incoming[1]],
+        b,
+    ])
+}
+
+fn lerp_point(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
+    [
+        (b[0] - a[0]).mul_add(t, a[0]),
+        (b[1] - a[1]).mul_add(t, a[1]),
+    ]
+}
+
+fn cubic_point([start, outgoing, incoming, end]: [[f32; 2]; 4], t: f32) -> [f32; 2] {
+    lerp_point(
+        lerp_point(
+            lerp_point(start, outgoing, t),
+            lerp_point(outgoing, incoming, t),
+            t,
+        ),
+        lerp_point(
+            lerp_point(outgoing, incoming, t),
+            lerp_point(incoming, end, t),
+            t,
+        ),
+        t,
+    )
+}
+
+fn nearest_pen_segment(
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+    point: [f32; 2],
+) -> Option<(usize, usize, f32)> {
+    let mut nearest = None;
+    let mut distance = f32::INFINITY;
+    for &[start, end] in &setup.lines {
+        let Some(curve) = pen_segment(setup, project, timeline, start, end) else {
+            continue;
+        };
+        let mut previous = setup.source_to_screen(curve[0]);
+        for step in 1..=32 {
+            let t = step as f32 / 32.0;
+            let next = setup.source_to_screen(cubic_point(curve, t));
+            let projected = project_point_to_segment(point, previous, next);
+            let candidate = distance_sq(point, projected);
+            if candidate < distance {
+                let fraction = if distance_sq(previous, next) > 0.000_001 {
+                    (distance_sq(previous, projected) / distance_sq(previous, next)).sqrt()
+                } else {
+                    0.0
+                };
+                nearest = Some((
+                    start,
+                    end,
+                    ((step as f32 - 1.0 + fraction) / 32.0).clamp(0.001, 0.999),
+                ));
+                distance = candidate;
+            }
+            previous = next;
+        }
+    }
+    nearest
+}
+
+fn draw_curve_handles(
+    ctx: &mut kama_ui::BuildCtx,
+    setup: &PenEditSetup,
+    selected: &BTreeSet<usize>,
+    project: &Project,
+    timeline: &TimelineState,
+) {
+    if !pen_setup_is_path(setup, project, timeline) || !has_curve_controls(setup, project, timeline)
+    {
+        return;
+    }
+    let accent = Color::rgb8(0x42, 0xd9, 0xff);
+    for (segment, &[start, end]) in setup.lines.iter().enumerate() {
+        let Some(curve) = pen_segment(setup, project, timeline, start, end) else {
+            continue;
+        };
+        let mut previous = setup.source_to_screen(curve[0]);
+        for step in 1..=32 {
+            let next = setup.source_to_screen(cubic_point(curve, step as f32 / 32.0));
+            draw_gizmo_line(
+                ctx,
+                16_000_usize
+                    .saturating_add(segment.saturating_mul(32))
+                    .saturating_add(step),
+                previous,
+                next,
+                1.25,
+                accent,
+            );
+            previous = next;
+        }
+    }
+    for &index in selected {
+        let Some(anchor) = setup.points.get(index) else {
+            continue;
+        };
+        for (control_index, input) in ["controls_in", "controls_out"].into_iter().enumerate() {
+            let offset = pen_control(setup, project, timeline, input, index);
+            if distance_sq(offset, [0.0; 2]) <= 0.000_001 {
+                continue;
+            }
+            let point = setup.source_to_screen([anchor[0] + offset[0], anchor[1] + offset[1]]);
+            draw_gizmo_line(
+                ctx,
+                30_000_usize
+                    .saturating_add(index.saturating_mul(2))
+                    .saturating_add(control_index),
+                setup.source_to_screen(*anchor),
+                point,
+                1.0,
+                accent,
+            );
+            kama_ui::ui!(ctx, {
+                Rect(("monitor-curve-control", index, control_index), Rect::new(point[0] - 4.0, point[1] - 4.0, 8.0, 8.0)) {
+                    fill: Color::WHITE; border: 2; border_color: accent; border_radius: 4.0; interactive;
+                }
+            });
+        }
+    }
 }
 
 fn selected_gradient_midpoint_handles(
     edit: MonitorEditContext<'_, '_>,
 ) -> Option<Vec<GradientMidpointHandle>> {
     let setup = pen_edit_setup(edit)?;
+    if !pen_setup_is_path(&setup, edit.project, edit.timeline) {
+        return None;
+    }
     let input = setup.midpoints_input.as_deref()?;
     if setup.points.len() < 2 {
         return None;
@@ -3630,15 +5214,19 @@ fn handle_selected_generator_pen_press(
     modifiers: ModifiersState,
     view: MonitorEditView<'_>,
     pen_tool: bool,
+    insert_point: bool,
     project: &mut Project,
     timeline: &mut TimelineState,
     snap: SnapSession,
     drag: &mut Option<PenToolDrag>,
-    selected: &mut Option<usize>,
+    selected: &mut BTreeSet<usize>,
 ) -> bool {
     let Some(mut setup) = pen_edit_setup(view.context(project, timeline)) else {
         return false;
     };
+    if !pen_setup_is_path(&setup, project, timeline) {
+        return false;
+    }
     let handles = setup.handles();
 
     if let Some(handle) = handles
@@ -3646,7 +5234,32 @@ fn handle_selected_generator_pen_press(
         .find(|handle| distance_sq(point, handle.point) <= 10.0 * 10.0)
         .copied()
     {
-        *selected = Some(handle.index);
+        if modifiers.shift_key() && !modifiers.alt_key() && selected.remove(&handle.index) {
+            *drag = None;
+            return true;
+        }
+        if !modifiers.shift_key() && !selected.contains(&handle.index) {
+            selected.clear();
+        }
+        selected.insert(handle.index);
+        if modifiers.alt_key() && pen_setup_supports_curves(&setup, project, timeline) {
+            for input in ["controls_in", "controls_out"] {
+                set_pen_control(
+                    &setup.target,
+                    project,
+                    timeline,
+                    input,
+                    handle.index,
+                    setup.points.len(),
+                    [0.0; 2],
+                );
+            }
+            let mut conversion = setup.drag(handle.index, point, snap);
+            conversion.control = Some("controls_out");
+            conversion.symmetric = true;
+            *drag = Some(conversion);
+            return true;
+        }
         let can_remove = if setup.closed {
             setup.points.len() > 3
         } else {
@@ -3661,6 +5274,20 @@ fn handle_selected_generator_pen_press(
                 pen_gradient_midpoints(&setup.target, input, project, timeline, old_point_count)
             });
             setup.points.remove(handle.index);
+            for input in ["controls_in", "controls_out"] {
+                if let Some(crate::project::HostValue::Vec2Array(mut controls)) =
+                    setup.target.host_value(project, timeline, input)
+                    && controls.len() == old_point_count
+                {
+                    controls.remove(handle.index);
+                    setup.target.set_host_value(
+                        project,
+                        timeline,
+                        input,
+                        crate::project::HostValue::Vec2Array(controls),
+                    );
+                }
+            }
             setup.target.set_points(project, timeline, setup.points);
             if let (Some(colors), Some(input)) =
                 (gradient_colors.as_mut(), setup.colors_input.as_deref())
@@ -3684,24 +5311,99 @@ fn handle_selected_generator_pen_press(
                 );
             }
             *drag = None;
-            *selected = None;
+            selected.clear();
             return true;
         }
-        *drag = Some(setup.drag(handle.index, snap));
+        let mut next_drag = setup.drag(handle.index, point, snap);
+        next_drag.initial_points = selected
+            .iter()
+            .filter_map(|&index| setup.points.get(index).map(|&point| (index, point)))
+            .collect();
+        *drag = Some(next_drag);
         return true;
     }
 
     if !pen_tool || !setup.pen_tool {
         return false;
     }
+    if !insert_point {
+        if !modifiers.shift_key() {
+            selected.clear();
+        }
+        return true;
+    }
     let gradient_stops = setup.has_gradient_stops();
+    let nearest_segment = (!gradient_stops)
+        .then(|| nearest_pen_segment(&setup, project, timeline, point))
+        .flatten();
+    let split_segment = nearest_segment.filter(|&(start, end, t)| {
+        pen_segment(&setup, project, timeline, start, end).is_some_and(|curve| {
+            distance_sq(point, setup.source_to_screen(cubic_point(curve, t))) <= 8.0 * 8.0
+        })
+    });
     let (index, projected_unselected) = if gradient_stops {
-        gradient_pen_insert_target(*selected, &handles, point)
+        gradient_pen_insert_target(selected.first().copied(), &handles, point)
     } else {
-        (pen_insert_index(*selected, setup.points.len()), None)
+        (
+            nearest_segment.map_or_else(
+                || pen_insert_index(None, setup.points.len()),
+                |(start, _, _)| start.saturating_add(1),
+            ),
+            None,
+        )
     };
 
     let old_point_count = setup.points.len();
+    let mut controls_in = setup
+        .target
+        .host_value(project, timeline, "controls_in")
+        .and_then(|value| match value {
+            crate::project::HostValue::Vec2Array(values) if values.len() == old_point_count => {
+                Some(values)
+            }
+            _ => None,
+        });
+    let mut controls_out = setup
+        .target
+        .host_value(project, timeline, "controls_out")
+        .and_then(|value| match value {
+            crate::project::HostValue::Vec2Array(values) if values.len() == old_point_count => {
+                Some(values)
+            }
+            _ => None,
+        });
+    let (inserted_in, inserted_out) = if let Some((start, end, t)) = split_segment
+        && let Some(curve) = pen_segment(&setup, project, timeline, start, end)
+        && (distance_sq(curve[0], curve[1]) > 0.000_001
+            || distance_sq(curve[2], curve[3]) > 0.000_001)
+        && let (Some(incoming), Some(outgoing)) = (controls_in.as_mut(), controls_out.as_mut())
+    {
+        let [p0, p1, p2, p3] = curve;
+        let left = lerp_point(p0, p1, t);
+        let middle = lerp_point(p1, p2, t);
+        let right = lerp_point(p2, p3, t);
+        let incoming_control = lerp_point(left, middle, t);
+        let outgoing_control = lerp_point(middle, right, t);
+        let split = lerp_point(incoming_control, outgoing_control, t);
+        if let Some(control) = outgoing.get_mut(start) {
+            *control = [left[0] - p0[0], left[1] - p0[1]];
+        }
+        if let Some(control) = incoming.get_mut(end) {
+            *control = [right[0] - p3[0], right[1] - p3[1]];
+        }
+        (
+            [
+                incoming_control[0] - split[0],
+                incoming_control[1] - split[1],
+            ],
+            [
+                outgoing_control[0] - split[0],
+                outgoing_control[1] - split[1],
+            ],
+        )
+    } else {
+        ([0.0; 2], [0.0; 2])
+    };
     let mut gradient_colors = setup
         .colors_input
         .as_deref()
@@ -3732,11 +5434,39 @@ fn handle_selected_generator_pen_press(
                 .insert(index, setup.screen_to_source(projected));
         }
     } else {
-        setup.points.insert(index, setup.screen_to_source(point));
+        let inserted = split_segment
+            .and_then(|(start, end, t)| {
+                pen_segment(&setup, project, timeline, start, end)
+                    .map(|curve| cubic_point(curve, t))
+            })
+            .unwrap_or_else(|| setup.screen_to_source(point));
+        setup.points.insert(index, inserted);
     }
     setup
         .target
         .set_points(project, timeline, setup.points.clone());
+    if let Some(values) = controls_in.as_mut() {
+        values.insert(index, inserted_in);
+    }
+    if let Some(values) = controls_out.as_mut() {
+        values.insert(index, inserted_out);
+    }
+    if let Some(values) = controls_in {
+        setup.target.set_host_value(
+            project,
+            timeline,
+            "controls_in",
+            crate::project::HostValue::Vec2Array(values),
+        );
+    }
+    if let Some(values) = controls_out {
+        setup.target.set_host_value(
+            project,
+            timeline,
+            "controls_out",
+            crate::project::HostValue::Vec2Array(values),
+        );
+    }
     if let (Some(colors), Some(input)) = (gradient_colors.as_mut(), setup.colors_input.as_deref()) {
         let color = inserted_color(colors, index);
         colors.insert(index, color);
@@ -3750,8 +5480,9 @@ fn handle_selected_generator_pen_press(
         set_pen_gradient_midpoints(&setup.target, input, project, timeline, midpoints.clone());
     }
 
-    let next_drag = setup.drag(index, snap);
-    *selected = Some(index);
+    let next_drag = setup.drag(index, point, snap);
+    selected.clear();
+    selected.insert(index);
     *drag = Some(next_drag);
     true
 }
@@ -3763,7 +5494,7 @@ const fn shared_graph_selection(selection: GraphMonitorSelection) -> Option<(u64
             node,
             follows_clip,
         } => Some((pipeline, node, follows_clip)),
-        GraphMonitorSelection::Local { .. } => None,
+        GraphMonitorSelection::Local { .. } | GraphMonitorSelection::Inactive => None,
     }
 }
 
@@ -3815,13 +5546,25 @@ fn graph_generator_pen_input(
     timeline: &TimelineState,
     plugins: &PluginRegistry,
 ) -> Option<GraphGeneratorPenInput> {
-    let (pipeline, node_id, _) = shared_graph_selection(selection)?;
-    let node = project.pipeline(pipeline)?.node(node_id)?;
+    let node = if let GraphMonitorSelection::Local { node } = selection {
+        timeline
+            .selected_pipeline()?
+            .local_nodes
+            .iter()
+            .find(|candidate| candidate.id == node)?
+    } else {
+        let (pipeline, node_id, _) = shared_graph_selection(selection)?;
+        project.pipeline(pipeline)?.node(node_id)?
+    };
     let definition = plugins.generator(&node.node_type)?;
     let input = definition.inputs.iter().find(|input| {
         input.ty == InputType::Vec2Array && input.monitor_handle == Some(MonitorHandleMode::Points)
     })?;
-    let time = f64::from(timeline.playhead());
+    let time = if matches!(selection, GraphMonitorSelection::Local { .. }) {
+        timeline.selected_keyframe_time()
+    } else {
+        f64::from(timeline.playhead())
+    };
     Some(GraphGeneratorPenInput {
         input: input.id.clone(),
         time,
@@ -4018,11 +5761,103 @@ fn draw_gradient_midpoint_handles(
     }
 }
 
+fn primitive_corners(
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+) -> Option<(u32, [[f32; 2]; 4])> {
+    let get_vec2 = |name| match setup.target.host_value(project, timeline, name) {
+        Some(crate::project::HostValue::Gpu(GpuValue::Vec2(value))) => Some(value),
+        _ => None,
+    };
+    let origin = get_vec2("shape_origin")?;
+    let shape_type = host_shape_type(setup.target.host_value(project, timeline, "shape_type"))?;
+    let [width, height] = match shape_type {
+        1 => get_vec2("size")?,
+        2 => get_vec2("radius")?.map(|radius| radius * 2.0),
+        _ => return None,
+    };
+    Some((
+        shape_type,
+        [
+            origin,
+            [origin[0] + width, origin[1]],
+            [origin[0] + width, origin[1] + height],
+            [origin[0], origin[1] + height],
+        ],
+    ))
+}
+
+fn draw_primitive_outline(
+    ctx: &mut kama_ui::BuildCtx,
+    setup: &PenEditSetup,
+    project: &Project,
+    timeline: &TimelineState,
+) {
+    let get_vec2 = |name| match setup.target.host_value(project, timeline, name) {
+        Some(crate::project::HostValue::Gpu(GpuValue::Vec2(value))) => Some(value),
+        _ => None,
+    };
+    let Some(origin) = get_vec2("shape_origin") else {
+        return;
+    };
+    let shape_type = host_shape_type(setup.target.host_value(project, timeline, "shape_type"));
+    let points: Vec<_> = match shape_type {
+        Some(1) => {
+            let Some([width, height]) = get_vec2("size") else {
+                return;
+            };
+            vec![
+                origin,
+                [origin[0] + width, origin[1]],
+                [origin[0] + width, origin[1] + height],
+                [origin[0], origin[1] + height],
+            ]
+        }
+        Some(2) => {
+            let Some([rx, ry]) = get_vec2("radius") else {
+                return;
+            };
+            (0..64)
+                .map(|index| {
+                    let angle = index as f32 * std::f32::consts::TAU / 64.0;
+                    [
+                        rx.mul_add(angle.cos(), origin[0] + rx),
+                        ry.mul_add(angle.sin(), origin[1] + ry),
+                    ]
+                })
+                .collect()
+        }
+        _ => return,
+    };
+    for (index, (a, b)) in points.iter().zip(points.iter().cycle().skip(1)).enumerate() {
+        draw_gizmo_line(
+            ctx,
+            15_000_usize.saturating_add(index),
+            setup.source_to_screen(*a),
+            setup.source_to_screen(*b),
+            1.25,
+            Color::rgb8(0x42, 0xd9, 0xff),
+        );
+    }
+    if let Some((_, corners)) = primitive_corners(setup, project, timeline) {
+        let handles: Vec<_> = corners
+            .into_iter()
+            .enumerate()
+            .map(|(index, corner)| PenPointHandle {
+                index,
+                point: setup.source_to_screen(corner),
+            })
+            .collect();
+        draw_pen_tool_handles(ctx, &handles, &[], &BTreeSet::new());
+    }
+}
+
 fn draw_pen_tool_handles(
     ctx: &mut kama_ui::BuildCtx,
     handles: &[PenPointHandle],
     lines: &[[usize; 2]],
-    selected: Option<usize>,
+    selected: &BTreeSet<usize>,
 ) {
     draw_monitor_handle_set(
         ctx,
@@ -4035,7 +5870,7 @@ fn draw_pen_tool_handles(
             10.0,
             5.0,
         ),
-        selected,
+        |index| selected.contains(&index),
         |handle| (handle.index, handle.point),
     );
 }
@@ -4052,7 +5887,7 @@ fn draw_plugin_handles(ctx: &mut kama_ui::BuildCtx, handles: &PluginHandleSet) {
             11.0,
             5.5,
         ),
-        None,
+        |_| false,
         |handle| (handle.point.index, handle.point.point),
     );
 }
@@ -4069,7 +5904,7 @@ fn draw_generator_vec2_handles(ctx: &mut kama_ui::BuildCtx, handles: &GeneratorV
             10.0,
             2.0,
         ),
-        None,
+        |_| false,
         |handle| (handle.index, handle.point),
     );
 }
@@ -4079,7 +5914,7 @@ fn draw_monitor_handle_set<T>(
     handles: &[T],
     lines: &[[usize; 2]],
     style: (&'static str, usize, Color, f32, f32),
-    selected: Option<usize>,
+    selected: impl Fn(usize) -> bool,
     point: impl Fn(&T) -> (usize, [f32; 2]),
 ) {
     let (key, line_id, accent, size, radius) = style;
@@ -4096,7 +5931,7 @@ fn draw_monitor_handle_set<T>(
     }
     for handle in handles {
         let (index, point) = point(handle);
-        let selected = selected == Some(index);
+        let selected = selected(index);
         let size = size + if selected { 2.0 } else { 0.0 };
         kama_ui::ui!(ctx, {
             Rect((key, index), Rect::new(f32::mul_add(size, -0.5, point[0]), f32::mul_add(size, -0.5, point[1]), size, size)) {
@@ -4288,7 +6123,7 @@ mod snap_tests {
         assert_eq!(layout.combo, Rect::new(27.0, 211.0, 172.0, 28.0));
         assert_eq!(layout.frame_snap, Rect::new(205.0, 211.0, 28.0, 28.0));
         assert_eq!(layout.clip_snap, Rect::new(237.0, 211.0, 28.0, 28.0));
-        assert_eq!(layout.capture[2], Rect::new(403.0, 211.0, 28.0, 28.0));
+        assert_eq!(layout.capture[2], Rect::new(543.0, 211.0, 28.0, 28.0));
     }
 
     #[test]

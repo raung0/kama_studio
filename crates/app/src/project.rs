@@ -1521,12 +1521,15 @@ impl Project {
         let next_id = id.checked_add(1)?;
         let value = match kind {
             ValueNodeKind::Vec2 => GpuValue::Vec2([0.0, 0.0]),
+            ValueNodeKind::Vec3 => GpuValue::Vec3([0.0; 3]),
+            ValueNodeKind::Vec4 => GpuValue::Vec4([0.0; 4]),
             ValueNodeKind::Color => GpuValue::Color([1.0, 1.0, 1.0, 1.0]),
             _ => GpuValue::F32(0.0),
         };
         let inputs: BTreeMap<String, Binding> = kind
             .input_names()
             .iter()
+            .filter(|_| !kind.is_constant())
             .map(|name| {
                 let default = match (kind, *name) {
                     (
@@ -1626,15 +1629,24 @@ impl Project {
         input: &str,
         value: GpuValue,
     ) -> bool {
-        let Some(binding) = self
+        let Some(node) = self
             .pipeline_mut(pipeline)
             .and_then(|pipeline| pipeline.value_node_mut(node))
-            .and_then(|node| node.inputs.get_mut(input))
         else {
             return false;
         };
-        binding.set_value(0.0, value);
-        true
+        if let Some(binding) = node.inputs.get_mut(input) {
+            binding.set_value(0.0, value);
+            return true;
+        }
+        if let Some(index) = node.component_input_index(input)
+            && let Some(value) = value.numeric(None)
+            && let Some(next) = node.value.with_numeric(Some(index), value as f32)
+        {
+            node.value = next;
+            return true;
+        }
+        false
     }
 
     pub fn set_value_node_input_component(
@@ -1646,21 +1658,17 @@ impl Project {
         value: f32,
         linked: bool,
     ) -> bool {
-        let Some(binding) = self
-            .pipeline_mut(pipeline)
-            .and_then(|pipeline| pipeline.value_node_mut(node))
-            .and_then(|node| node.inputs.get_mut(input))
+        let Some(current) = self
+            .pipeline(pipeline)
+            .and_then(|pipeline| pipeline.value_node(node))
+            .and_then(|node| node.input_value(input, 0.0))
         else {
-            return false;
-        };
-        let Some(current) = binding.evaluate(0.0) else {
             return false;
         };
         let Some(next) = current.with_component(component, value, linked) else {
             return false;
         };
-        binding.set_value(0.0, next);
-        true
+        self.set_value_node_input_value(pipeline, node, input, next)
     }
 
     fn edit_pipeline_node_input(
@@ -1747,7 +1755,19 @@ impl Project {
         node: NodeId,
         input: &str,
         time: f64,
+        initial: Option<GpuValue>,
     ) -> bool {
+        if let Some(binding) = self
+            .pipeline_mut(pipeline)
+            .and_then(|pipeline| pipeline.node_mut(node))
+            .and_then(|node| node.inputs.get_mut(input))
+            && matches!(binding, Binding::Connection(_))
+        {
+            let Some(value) = initial else {
+                return false;
+            };
+            *binding = Binding::Constant(value);
+        }
         self.edit_pipeline_node_input(pipeline, node, input, |binding| {
             binding.toggle_keyframe(time);
             true
@@ -1761,11 +1781,11 @@ impl Project {
         input: &str,
         time: f64,
     ) -> Option<HostValue> {
-        self.pipeline(pipeline)?
-            .node(node)?
-            .host_inputs
-            .get(input)?
-            .evaluate(time)
+        let node = self.pipeline(pipeline)?.node(node)?;
+        node.host_inputs
+            .get(input)
+            .and_then(|binding| binding.evaluate(time))
+            .or_else(|| node.inputs.get(input)?.evaluate(time).map(HostValue::Gpu))
     }
 
     pub fn set_pipeline_node_host_value(
@@ -1776,6 +1796,9 @@ impl Project {
         time: f64,
         value: HostValue,
     ) -> bool {
+        if let HostValue::Gpu(value) = &value {
+            return self.set_pipeline_node_value_at(pipeline, node, input, time, *value);
+        }
         let Some(binding) = self
             .pipeline_mut(pipeline)
             .and_then(|pipeline| pipeline.node_mut(node))
@@ -1830,17 +1853,12 @@ impl Project {
         true
     }
 
-    pub fn remove_value_node(&mut self, pipeline: PipelineId, node: NodeId) -> bool {
-        let Some(pipeline) = self.pipeline_mut(pipeline) else {
-            return false;
-        };
-        let Some(index) = pipeline
+    pub fn remove_value_node(&mut self, pipeline_id: PipelineId, node: NodeId) -> Option<GpuValue> {
+        let pipeline = self.pipeline_mut(pipeline_id)?;
+        let index = pipeline
             .value_nodes
             .iter()
-            .position(|candidate| candidate.id == node)
-        else {
-            return false;
-        };
+            .position(|candidate| candidate.id == node)?;
         let fallback = evaluate_value_node(
             &pipeline.value_nodes,
             node,
@@ -1851,10 +1869,7 @@ impl Project {
                 frame_rate: 60.0,
             },
         )
-        .or_else(|| pipeline.value_nodes.get(index).map(|value| value.value));
-        let Some(fallback) = fallback else {
-            return false;
-        };
+        .or_else(|| pipeline.value_nodes.get(index).map(|value| value.value))?;
         let fallback = fallback.zeroed();
         let _removed = pipeline.value_nodes.remove(index);
         for effect in &mut pipeline.nodes {
@@ -1872,7 +1887,12 @@ impl Project {
             }
         }
         pipeline.revision = pipeline.revision.saturating_add(1);
-        true
+        for composition in &mut self.compositions {
+            composition
+                .timeline
+                .disconnect_value_node_references(pipeline_id, node, fallback);
+        }
+        Some(fallback)
     }
 
     pub fn connect_pipeline_value(
@@ -1910,9 +1930,18 @@ impl Project {
             return false;
         }
         let binding = if targets_value_node {
-            pipeline
-                .value_node_mut(node)
-                .and_then(|target| target.inputs.get_mut(input))
+            pipeline.value_node_mut(node).and_then(|target| {
+                if target.kind.input_names().contains(&input) {
+                    Some(
+                        target
+                            .inputs
+                            .entry(input.to_owned())
+                            .or_insert(Binding::Constant(GpuValue::F32(0.0))),
+                    )
+                } else {
+                    None
+                }
+            })
         } else {
             pipeline
                 .node_mut(node)
@@ -1921,11 +1950,144 @@ impl Project {
         let Some(binding) = binding else {
             return false;
         };
+        if binding.has_keyframes() {
+            return false;
+        }
         *binding = Binding::Connection(SocketRef {
             node: source,
             output: "value".into(),
         });
         pipeline.revision = pipeline.revision.saturating_add(1);
+        true
+    }
+
+    pub fn insert_pipeline_value_on_wire(
+        &mut self,
+        pipeline_id: PipelineId,
+        node: NodeId,
+        source: NodeId,
+        destination: (NodeId, &str, bool),
+        instance: Option<&mut PipelineInstance>,
+        replacement: &mut Option<Binding>,
+    ) -> bool {
+        let (destination, input, local) = destination;
+        if source == node || (!local && destination == node) {
+            return false;
+        }
+        let Some(pipeline) = self.pipeline_mut(pipeline_id) else {
+            return false;
+        };
+        let mut candidate = pipeline.clone();
+        let mut local_nodes = instance
+            .as_deref()
+            .map(|instance| instance.local_nodes.clone());
+        if candidate.value_node(source).is_none() {
+            return false;
+        }
+        let Some(inserted) = candidate.value_node(node) else {
+            return false;
+        };
+        let Some(inserted_input) = inserted.kind.input_names().iter().copied().find(|name| {
+            inserted
+                .inputs
+                .get(*name)
+                .is_none_or(|binding| !binding.has_keyframes())
+        }) else {
+            return false;
+        };
+        let previous = inserted
+            .inputs
+            .get(inserted_input)
+            .cloned()
+            .unwrap_or_else(|| {
+                Binding::Constant(
+                    inserted
+                        .input_value(inserted_input, 0.0)
+                        .unwrap_or(GpuValue::F32(0.0)),
+                )
+            });
+        let destination_binding = if local {
+            local_nodes
+                .as_ref()
+                .and_then(|nodes| nodes.iter().find(|other| other.id == destination))
+                .and_then(|other| other.inputs.get(input))
+        } else if let Some(other) = candidate.value_node(destination) {
+            other.inputs.get(input)
+        } else {
+            candidate
+                .node(destination)
+                .and_then(|other| other.inputs.get(input))
+        };
+        if !matches!(destination_binding, Some(Binding::Connection(socket)) if socket.node == source)
+        {
+            return false;
+        }
+        for other in &mut candidate.value_nodes {
+            for binding in other.inputs.values_mut() {
+                if matches!(binding, Binding::Connection(socket) if socket.node == node) {
+                    *binding = previous.clone();
+                }
+            }
+        }
+        for other in candidate
+            .nodes
+            .iter_mut()
+            .chain(local_nodes.iter_mut().flatten())
+        {
+            for binding in other.inputs.values_mut() {
+                if matches!(binding, Binding::Connection(socket) if socket.node == node) {
+                    *binding = previous.clone();
+                }
+            }
+        }
+        let Some(inserted) = candidate.value_node_mut(node) else {
+            return false;
+        };
+        inserted.inputs.insert(
+            inserted_input.into(),
+            Binding::Connection(SocketRef {
+                node: source,
+                output: "value".into(),
+            }),
+        );
+        let destination_binding = if local {
+            local_nodes
+                .as_mut()
+                .and_then(|nodes| nodes.iter_mut().find(|other| other.id == destination))
+                .and_then(|other| other.inputs.get_mut(input))
+        } else if candidate.value_node(destination).is_some() {
+            candidate
+                .value_node_mut(destination)
+                .and_then(|other| other.inputs.get_mut(input))
+        } else {
+            candidate
+                .node_mut(destination)
+                .and_then(|other| other.inputs.get_mut(input))
+        };
+        let Some(binding) = destination_binding else {
+            return false;
+        };
+        *binding = Binding::Connection(SocketRef {
+            node,
+            output: "value".into(),
+        });
+        let index = ValueGraphIndex::new(&candidate.value_nodes);
+        if candidate.value_nodes.iter().any(|other| other.inputs.values().any(|binding| {
+            matches!(binding, Binding::Connection(socket) if socket.node == other.id || index.depends_on(socket.node, other.id))
+        })) {
+            return false;
+        }
+        candidate.revision = candidate.revision.saturating_add(1);
+        *pipeline = candidate;
+        if let Some((instance, nodes)) = instance.zip(local_nodes) {
+            instance.local_nodes = nodes;
+        }
+        for composition in &mut self.compositions {
+            composition
+                .timeline
+                .replace_value_node_references(pipeline_id, node, &previous);
+        }
+        *replacement = Some(previous);
         true
     }
 
@@ -1942,6 +2104,15 @@ impl Project {
             .value_nodes
             .iter()
             .any(|candidate| candidate.id == node);
+        if let Some(target) = pipeline.value_node_mut(node)
+            && target.component_input_index(input).is_some()
+        {
+            let changed = target.inputs.remove(input).is_some();
+            if changed {
+                pipeline.revision = pipeline.revision.saturating_add(1);
+            }
+            return changed;
+        }
         let source = if target_is_value {
             pipeline
                 .value_nodes
@@ -2216,6 +2387,21 @@ impl Project {
                 node,
                 output: output.into(),
             });
+            let previous = candidate
+                .node(node)
+                .and_then(|inserted| inserted.image_inputs.get(&inserted_input))
+                .cloned()
+                .unwrap_or(ImageBinding::Disconnected);
+            for other in &mut candidate.nodes {
+                for binding in other.image_inputs.values_mut() {
+                    if matches!(binding, ImageBinding::Node(socket) if socket.node == node) {
+                        *binding = previous.clone();
+                    }
+                }
+            }
+            if matches!(&candidate.output, ImageBinding::Node(socket) if socket.node == node) {
+                candidate.output = previous;
+            }
             let Some(inserted) = candidate.node_mut(node) else {
                 return false;
             };
@@ -2418,6 +2604,17 @@ fn media_asset_from_path(id: MediaId, path: &Path) -> Result<MediaAsset> {
                 None,
                 None,
                 None,
+                false,
+                Vec::new(),
+            )
+        } else if matches!(extension.as_str(), "svg" | "svgz") {
+            let [width, height] = crate::runtime::vector::dimensions_from_file(&path)?;
+            (
+                MediaKind::Image { width, height },
+                None,
+                None,
+                Some(width),
+                Some(height),
                 false,
                 Vec::new(),
             )
@@ -2642,7 +2839,11 @@ const fn image_binding_has_source(binding: &ImageBinding, source: Option<NodeId>
     }
 }
 
-fn validate_image_graph(nodes: &[EffectNode], output: &ImageBinding, label: &str) -> Result<()> {
+pub fn validate_image_graph(
+    nodes: &[EffectNode],
+    output: &ImageBinding,
+    label: &str,
+) -> Result<()> {
     let graph = ImageGraphIndex::new(nodes);
     let validate_binding = |binding: &ImageBinding, context: &str| -> Result<()> {
         if let ImageBinding::Node(socket) = binding {

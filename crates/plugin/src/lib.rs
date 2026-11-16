@@ -11,7 +11,99 @@ mod host {
         pub fn render_origin(component: i32) -> f32;
         pub fn render_tight_bounds() -> i32;
         pub fn render_text_rgba32f(output_ptr: i32, width: i32, height: i32) -> i32;
+        pub fn visual_input_kind(index: i32) -> i32;
+        pub fn visual_input_len(index: i32) -> i32;
+        pub fn visual_input_width(index: i32) -> i32;
+        pub fn visual_input_height(index: i32) -> i32;
+        pub fn visual_input_copy(index: i32, ptr: i32, capacity: i32) -> i32;
+        pub fn visual_output_svg(ptr: i32, len: i32) -> i32;
+        pub fn visual_output_color_matrix(input: i32, ptr: i32) -> i32;
+        pub fn visual_output_blur(input: i32, radius: f32) -> i32;
     }
+}
+
+pub enum VisualInput {
+    Raster {
+        width: u32,
+        height: u32,
+        pixels: Vec<f32>,
+    },
+    Vector(String),
+    Scene {
+        width: u32,
+        height: u32,
+    },
+}
+
+#[must_use]
+pub fn visual_input(index: u32) -> Option<VisualInput> {
+    let index = i32::try_from(index).ok()?;
+    match unsafe { host::visual_input_kind(index) } {
+        1 => {
+            let width = u32::try_from(unsafe { host::visual_input_width(index) }).ok()?;
+            let height = u32::try_from(unsafe { host::visual_input_height(index) }).ok()?;
+            let len = usize::try_from(unsafe { host::visual_input_len(index) }).ok()?;
+            if len % 4 != 0 {
+                return None;
+            }
+            let mut bytes = vec![0; len];
+            let ptr = i32::try_from(bytes.as_mut_ptr() as usize).ok()?;
+            let status = unsafe { host::visual_input_copy(index, ptr, i32::try_from(len).ok()?) };
+            if status < 0 {
+                return None;
+            }
+            let pixels = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| f32::from_le_bytes(*v))
+                .collect();
+            Some(VisualInput::Raster {
+                width,
+                height,
+                pixels,
+            })
+        }
+        2 => {
+            let len = usize::try_from(unsafe { host::visual_input_len(index) }).ok()?;
+            let mut bytes = vec![0; len];
+            let ptr = i32::try_from(bytes.as_mut_ptr() as usize).ok()?;
+            let status = unsafe { host::visual_input_copy(index, ptr, i32::try_from(len).ok()?) };
+            if status < 0 {
+                return None;
+            }
+            String::from_utf8(bytes).ok().map(VisualInput::Vector)
+        }
+        3 => Some(VisualInput::Scene {
+            width: u32::try_from(unsafe { host::visual_input_width(index) }).ok()?,
+            height: u32::try_from(unsafe { host::visual_input_height(index) }).ok()?,
+        }),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn output_vector(svg: &str) -> bool {
+    let Ok(len) = i32::try_from(svg.len()) else {
+        return false;
+    };
+    i32::try_from(svg.as_ptr() as usize)
+        .is_ok_and(|ptr| unsafe { host::visual_output_svg(ptr, len) == 0 })
+}
+
+#[must_use]
+/// Uses linear-light, straight-alpha channels. The first four vectors are matrix rows;
+/// the fifth contains RGBA offsets. Input indices refer to opaque scene inputs.
+pub fn output_color_matrix(input: u32, rows: [[f32; 4]; 5]) -> bool {
+    let (Ok(input), Ok(ptr)) = (i32::try_from(input), i32::try_from(rows.as_ptr() as usize)) else {
+        return false;
+    };
+    unsafe { host::visual_output_color_matrix(input, ptr) == 0 }
+}
+
+#[must_use]
+pub fn output_blur(input: u32, radius: f32) -> bool {
+    i32::try_from(input).is_ok_and(|input| unsafe { host::visual_output_blur(input, radius) == 0 })
 }
 
 pub fn get_parameter<T: Parameter>(name: &str, fallback: T) -> T {

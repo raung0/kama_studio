@@ -1011,6 +1011,25 @@ pub const fn default_interpolation(value: GpuValue) -> Interpolation {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualPortType {
+    #[default]
+    Raster,
+    Vector,
+    Image,
+}
+
+impl VisualPortType {
+    #[must_use]
+    pub const fn accepts(self, source: Self) -> bool {
+        match self {
+            Self::Raster | Self::Image => true,
+            Self::Vector => matches!(source, Self::Vector),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NodeExecution {
     PointwiseGpu,
@@ -1211,8 +1230,10 @@ macro_rules! value_node_kinds {
 
 value_node_kinds! {
     Float => ("Float", "Constant value", &[], true, false, ValueNodeOp::Constant),
-    Vec2 => ("Vector 2", "Constant value", &[], true, false, ValueNodeOp::Constant),
-    Color => ("Color", "Constant value", &[], true, false, ValueNodeOp::Constant),
+    Vec2 => ("Vector 2", "Construct a vector from optional components", &["X", "Y"], true, false, ValueNodeOp::Constant),
+    Vec3 => ("Vector 3", "Construct a vector from optional components", &["X", "Y", "Z"], true, false, ValueNodeOp::Constant),
+    Vec4 => ("Vector 4", "Construct a vector from optional components", &["X", "Y", "Z", "W"], true, false, ValueNodeOp::Constant),
+    Color => ("Color", "Construct a color from optional components", &["R", "G", "B", "A"], true, false, ValueNodeOp::Constant),
     Timestamp => ("Timestamp", "Composition timeline time in seconds", &[], false, true, ValueNodeOp::Runtime(RuntimeValue::TimelineTime)),
     LocalTimestamp => ("Local Timestamp", "Current clip/effect local time in seconds", &[], false, true, ValueNodeOp::Runtime(RuntimeValue::LocalTime)),
     FrameCount => ("Frame Count", "Current composition frame number", &[], false, true, ValueNodeOp::Runtime(RuntimeValue::FrameCount)),
@@ -1249,6 +1270,31 @@ pub struct ValueNode {
     pub value: GpuValue,
     pub inputs: BTreeMap<String, Binding>,
     pub ui_position: Option<[f32; 2]>,
+}
+
+impl ValueNode {
+    #[must_use]
+    pub fn component_input_index(&self, name: &str) -> Option<usize> {
+        self.kind
+            .is_constant()
+            .then(|| {
+                self.kind
+                    .input_names()
+                    .iter()
+                    .position(|candidate| *candidate == name)
+            })
+            .flatten()
+    }
+
+    #[must_use]
+    pub fn input_value(&self, name: &str, time: f64) -> Option<GpuValue> {
+        if let Some(binding) = self.inputs.get(name) {
+            return binding.evaluate(time);
+        }
+        self.value
+            .numeric(Some(self.component_input_index(name)?))
+            .map(|value| GpuValue::F32(value as f32))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1411,7 +1457,23 @@ fn evaluate_value_node_in(
                 .map_or(GpuValue::F32(0.0), |name| input(name, cache, visiting))
         };
         let value = match node.kind.operation() {
-            ValueNodeOp::Constant => node.value,
+            ValueNodeOp::Constant => {
+                let mut value = node.value;
+                for (index, name) in names.iter().enumerate() {
+                    if let Some(component) = node
+                        .inputs
+                        .get(*name)
+                        .and_then(|binding| {
+                            resolve_binding(binding, nodes, context, cache, visiting)
+                        })
+                        .and_then(|value| value.numeric(None).or_else(|| value.numeric(Some(0))))
+                        .and_then(|component| value.with_numeric(Some(index), component as f32))
+                    {
+                        value = component;
+                    }
+                }
+                value
+            }
             ValueNodeOp::Runtime(source) => GpuValue::F32(match source {
                 RuntimeValue::TimelineTime => context.timeline_time as f32,
                 RuntimeValue::LocalTime => context.local_time as f32,

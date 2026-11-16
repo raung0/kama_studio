@@ -423,13 +423,14 @@ pub(super) fn transform_vec2_row_hit(
     y: f32,
     point: [f32; 2],
     timeline: &mut TimelineState,
+    project: &Project,
     input: &str,
 ) -> bool {
     if !row_hit(rect, y).contains(point) {
         return false;
     }
     if keyframe_rect(rect, y).contains(point) {
-        timeline.toggle_transform_keyframe(input);
+        timeline.toggle_transform_keyframe(project, input);
     }
     true
 }

@@ -1541,6 +1541,16 @@ fn build_command_palette_dialog(
                         continue;
                     }
                     let active = index == selected;
+                    let foreground = if entry.enabled {
+                        theme::popup_text()
+                    } else {
+                        theme::popup_dim()
+                    };
+                    let muted = if entry.enabled {
+                        theme::popup_muted()
+                    } else {
+                        theme::popup_dim()
+                    };
                     let inner = kama_ui::layout::inset(row, 5.0);
                     let parts = kama_ui::layout::row_array(
                         inner,
@@ -1564,18 +1574,18 @@ fn build_command_palette_dialog(
                         Icon {
                             id: @format("palette-entry-icon {}", index);
                             icon!: icons.get(entry.icon);
-                            color!: if active { theme::popup_text() } else { theme::popup_muted() };
+                            color!: if !entry.enabled { theme::popup_dim() } else if active { theme::popup_text() } else { theme::popup_muted() };
                             texture_mode: ui::TEXTURE_MODE_CONTAIN;
                             bounds: (parts[0].x, parts[0].y, parts[0].width, parts[0].height);
                         }
                         Rect(("palette-entry-label", index), parts[1]) {
                             font_size: 10.5;
-                            text_color: theme::popup_text();
+                            text_color: foreground;
                             text: entry.label.clone();
                         }
                         Rect(("palette-entry-detail", index), parts[2]) {
                             font_size: 9.5;
-                            text_color: theme::popup_muted();
+                            text_color: muted;
                             text: entry.detail.clone();
                         }
                     });
@@ -1946,10 +1956,10 @@ pub fn value_node_menu_path(kind: ValueNodeKind) -> Vec<String> {
     use ValueNodeKind::{
         Abs, Add, Ceil, Clamp, Color, Cos, Divide, Float, Floor, Fract, FrameCount, FrameRate,
         Lerp, LocalFrame, LocalTimestamp, Max, Min, Modulo, Multiply, Negate, Pi, Power, Round,
-        Sin, Sqrt, Subtract, Tan, Tau, Timestamp, Vec2,
+        Sin, Sqrt, Subtract, Tan, Tau, Timestamp, Vec2, Vec3, Vec4,
     };
     match kind {
-        Float | Vec2 | Color => vec!["General".into(), "Input".into()],
+        Float | Vec2 | Vec3 | Vec4 | Color => vec!["General".into(), "Input".into()],
         Timestamp | LocalTimestamp | FrameCount | LocalFrame | FrameRate => {
             vec!["General".into(), "Time".into()]
         }
@@ -1986,7 +1996,12 @@ pub fn organize_add_menu_entries(
                         .collect::<Vec<_>>()
                         .join(" ");
                     let candidate = format!("{} {} {}", entry.breadcrumb(), aliases, entry.detail);
-                    fuzzy_score(query, &candidate).map(|score| (score, entry))
+                    fuzzy_score(query, &candidate).map(|score| {
+                        (
+                            score.saturating_add(fuzzy_score(query, &entry.label).unwrap_or(0)),
+                            entry,
+                        )
+                    })
                 })
                 .collect::<Vec<_>>();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
@@ -2015,6 +2030,7 @@ pub fn organize_add_menu_entries(
                     path: state.path.clone(),
                     aliases: Vec::new(),
                     icon: AppIcon::Plus,
+                    enabled: true,
                     target: PaletteTarget::Submenu(next.clone()),
                 });
             } else {
@@ -2041,6 +2057,7 @@ pub fn palette_add(
         path,
         aliases: Vec::new(),
         icon,
+        enabled: true,
         target: PaletteTarget::Command(EditorCommand::Action(action)),
     }
 }
@@ -2188,6 +2205,7 @@ pub fn palette_entries(
         path: Vec::new(),
         aliases: Vec::new(),
         icon,
+        enabled: true,
         target: PaletteTarget::Command(EditorCommand::Action(action)),
     };
     let raw_query = state.query.text().trim();
@@ -2208,6 +2226,10 @@ pub fn palette_entries(
                         path: Vec::new(),
                         aliases: Vec::new(),
                         icon: definition.icon.unwrap_or(AppIcon::Plus),
+                        enabled: match &definition.command {
+                            EditorCommand::ConvertToPath => state.can_convert_to_path,
+                            _ => true,
+                        },
                         target: PaletteTarget::Command(definition.command.clone()),
                     }),
             );
@@ -2492,7 +2514,12 @@ pub fn palette_entries(
         .into_iter()
         .filter_map(|entry| {
             let candidate = format!("{} {}", entry.label, entry.detail);
-            fuzzy_score(filter_query, &candidate).map(|score| (score, entry))
+            fuzzy_score(filter_query, &candidate).map(|score| {
+                (
+                    score.saturating_add(fuzzy_score(filter_query, &entry.label).unwrap_or(0)),
+                    entry,
+                )
+            })
         })
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));

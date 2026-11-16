@@ -470,10 +470,14 @@ mod tests {
                 id: "image".into(),
                 name: "Image".into(),
                 required: true,
+                ty: crate::effects::VisualPortType::Raster,
             }],
             dynamic_image_inputs: None,
             inputs: Vec::new(),
             monitor: None,
+            visual: None,
+            scene: None,
+            output_type: crate::effects::VisualPortType::Raster,
         };
         let source = namespace_effect(&effect, "plugin_test_tint_n7").unwrap();
         assert!(source.contains("plugin_test_tint_n7_effect"));

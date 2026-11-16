@@ -271,8 +271,8 @@ impl EditorApp {
 
     pub(super) fn import_media_dialog(&mut self) {
         let mut extensions = [
-            "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "tga", "mp4", "mov", "mkv",
-            "webm", "avi", "m4v", "wav", "mp3", "flac", "aac", "ogg", "m4a", "wasm",
+            "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "tga", "svg", "svgz", "mp4",
+            "mov", "mkv", "webm", "avi", "m4v", "wav", "mp3", "flac", "aac", "ogg", "m4a", "wasm",
         ]
         .into_iter()
         .map(str::to_string)

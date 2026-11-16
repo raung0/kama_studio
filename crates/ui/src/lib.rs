@@ -653,6 +653,27 @@ impl BuildCtx {
         result
     }
 
+    pub fn with_enabled<R>(&mut self, enabled: bool, build: impl FnOnce(&mut Self) -> R) -> R {
+        fn disable(block: &mut Block) {
+            block.interactive = false;
+            block.on_click = None;
+            block.on_mouse_enter = None;
+            block.cursor = CursorShape::Passthrough;
+            for child in &mut block.children {
+                disable(child);
+            }
+        }
+        let start = self.blocks.len();
+        let result = build(self);
+        if !enabled {
+            for block in self.blocks.iter_mut().skip(start) {
+                block.opacity *= 0.45;
+                disable(block);
+            }
+        }
+        result
+    }
+
     pub fn rect<K: Hash>(&mut self, key: K, rect: Rect) -> BlockBuilder<'_> {
         self.new()
             .id(key)

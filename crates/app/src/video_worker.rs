@@ -30,7 +30,15 @@ fn deadline_after(duration: Duration) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
+const fn default_vector_preview() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "transport carries independently controlled playback and preview settings"
+)]
 struct Snapshot {
     project: Project,
     worker_state: WorkerProjectState,
@@ -42,6 +50,8 @@ struct Snapshot {
     scrubbing: bool,
     preview_size: [u32; 2],
     render_scale: f32,
+    #[serde(default = "default_vector_preview")]
+    vector_preview: bool,
     render_cache: Option<RenderCachePreview>,
     captured_frame: Option<cpu_surface::CpuCaptureDescriptor>,
     cpu_slots: Vec<cpu_surface::CpuSurfaceDescriptor>,
@@ -49,6 +59,10 @@ struct Snapshot {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "transport carries independently controlled playback and preview settings"
+)]
 struct FrameTransport {
     seek_revision: u64,
     playhead: f32,
@@ -56,6 +70,8 @@ struct FrameTransport {
     scrubbing: bool,
     preview_size: [u32; 2],
     render_scale: f32,
+    #[serde(default = "default_vector_preview")]
+    vector_preview: bool,
     render_cache: Option<RenderCachePreview>,
     captured_frame: Option<cpu_surface::CpuCaptureDescriptor>,
     cpu_slots: Vec<cpu_surface::CpuSurfaceDescriptor>,
@@ -70,6 +86,7 @@ impl FrameTransport {
         snapshot.scrubbing = self.scrubbing;
         snapshot.preview_size = self.preview_size;
         snapshot.render_scale = self.render_scale;
+        snapshot.vector_preview = self.vector_preview;
         snapshot.render_cache = self.render_cache;
         snapshot.captured_frame = self.captured_frame;
         snapshot.cpu_slots = self.cpu_slots;
@@ -659,6 +676,7 @@ fn write_requests(stdin: impl Write, requests: mpsc::Receiver<Request>) -> Resul
                         scrubbing: snapshot.scrubbing,
                         preview_size: snapshot.preview_size,
                         render_scale: snapshot.render_scale,
+                        vector_preview: snapshot.vector_preview,
                         render_cache: snapshot.render_cache,
                         captured_frame: snapshot.captured_frame,
                         cpu_slots: snapshot.cpu_slots,
@@ -1312,6 +1330,7 @@ impl VideoPlayback {
         revision: u64,
         preview_size: [u32; 2],
         render_scale: f32,
+        vector_preview: bool,
         render_cache: Option<&RenderCachePreview>,
         captured_frame: Option<([u32; 2], &[u8])>,
         live_editing: bool,
@@ -1341,6 +1360,7 @@ impl VideoPlayback {
         timeline.is_playing().hash(&mut content_hasher);
         timeline.is_scrubbing().hash(&mut content_hasher);
         render_scale.to_bits().hash(&mut content_hasher);
+        vector_preview.hash(&mut content_hasher);
         if let Some(cache) = render_cache {
             cache.path.hash(&mut content_hasher);
             cache.generation.hash(&mut content_hasher);
@@ -1412,6 +1432,7 @@ impl VideoPlayback {
                 scrubbing: timeline.is_scrubbing(),
                 preview_size,
                 render_scale,
+                vector_preview,
                 render_cache: render_cache.cloned(),
                 captured_frame,
                 cpu_slots: Vec::new(),
@@ -2018,6 +2039,7 @@ pub fn run_video_worker() -> Result<()> {
                     snapshot.render_cache.as_ref(),
                     [width.max(1), height.max(1)],
                     snapshot.render_scale,
+                    snapshot.vector_preview,
                     snapshot.scrubbing,
                     captured_frame
                         .as_ref()
@@ -2240,6 +2262,7 @@ mod tests {
             scrubbing: false,
             preview_size: [640, 360],
             render_scale: 0.5,
+            vector_preview: true,
             render_cache: None,
             captured_frame: None,
             cpu_slots: Vec::new(),
@@ -2415,6 +2438,7 @@ mod tests {
                 scrubbing: false,
                 preview_size,
                 render_scale: 1.0,
+                vector_preview: true,
                 render_cache: None,
                 captured_frame: None,
                 cpu_slots,
@@ -2626,6 +2650,7 @@ mod tests {
                 scrubbing: timeline.is_scrubbing(),
                 preview_size: frame_size,
                 render_scale: 1.0,
+                vector_preview: true,
                 render_cache: None,
                 captured_frame: None,
                 cpu_slots: Vec::new(),
@@ -2784,6 +2809,7 @@ mod tests {
                 scrubbing: true,
                 preview_size: frame_size,
                 render_scale: 1.0,
+                vector_preview: true,
                 render_cache: None,
                 captured_frame: None,
                 cpu_slots: Vec::new(),
@@ -2993,6 +3019,7 @@ mod tests {
             scrubbing: true,
             preview_size: [1280, 720],
             render_scale: 1.0,
+            vector_preview: true,
             render_cache: None,
             captured_frame: None,
             cpu_slots: Vec::new(),
@@ -3104,6 +3131,7 @@ mod tests {
                     scrubbing: false,
                     preview_size: [4, 4],
                     render_scale: 1.0,
+                    vector_preview: true,
                     render_cache: None,
                     captured_frame: None,
                     cpu_slots: Vec::new(),
@@ -3209,6 +3237,7 @@ mod tests {
                     scrubbing: false,
                     preview_size: [8, 4],
                     render_scale: 1.0,
+                    vector_preview: true,
                     render_cache: None,
                     captured_frame: None,
                     cpu_slots: Vec::new(),
@@ -3252,6 +3281,7 @@ mod tests {
                     scrubbing: false,
                     preview_size: [8, 4],
                     render_scale: 1.0,
+                    vector_preview: true,
                     render_cache: None,
                     captured_frame: None,
                     cpu_slots: Vec::new(),

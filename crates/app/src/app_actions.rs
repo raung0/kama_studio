@@ -102,12 +102,17 @@ impl EditorApp {
     }
 
     pub(super) fn handle_timeline_action(&mut self, action: TimelineAction) {
+        if matches!(action, TimelineAction::SelectGraphSource) {
+            self.pipeline_graph.select_source();
+            return;
+        }
         self.set_history_gesture_label(action.history_label());
         self.command_queue.push(EditorCommand::timeline(action));
     }
 
     pub(super) fn execute_timeline_action(&mut self, action: TimelineAction) {
         match action {
+            TimelineAction::SelectGraphSource => self.pipeline_graph.select_source(),
             TimelineAction::InsertVideoClip { track, time } => {
                 self.palette.pending_open = Some((
                     PaletteKind::VideoClip { track, time },
@@ -548,8 +553,8 @@ impl EditorApp {
                         "Media",
                         &[
                             "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "tga",
-                            "mp4", "mov", "mkv", "webm", "avi", "m4v", "wav", "mp3", "flac", "aac",
-                            "ogg", "m4a", "wasm",
+                            "svg", "svgz", "mp4", "mov", "mkv", "webm", "avi", "m4v", "wav", "mp3",
+                            "flac", "aac", "ogg", "m4a", "wasm",
                         ],
                     )
                     .pick_file()
@@ -896,11 +901,18 @@ impl EditorApp {
                 }),
                 false,
             ),
-            GraphNodeTarget::Value(node) => (
-                self.graph_pipeline()
-                    .is_some_and(|pipeline| self.editor.project.remove_value_node(pipeline, node)),
-                false,
-            ),
+            GraphNodeTarget::Value(node) => {
+                let Some(pipeline) = self.graph_pipeline() else {
+                    return (false, false);
+                };
+                let Some(fallback) = self.editor.project.remove_value_node(pipeline, node) else {
+                    return (false, false);
+                };
+                self.editor
+                    .timeline
+                    .disconnect_value_node_references(pipeline, node, fallback);
+                (true, false)
+            }
             GraphNodeTarget::Input | GraphNodeTarget::Output => (false, false),
         }
     }
@@ -1069,7 +1081,10 @@ impl EditorApp {
                     debug_assert!(false, "node-bound image wires must name their input socket");
                 }
                 panels::GraphWire::Value {
-                    destination, input, ..
+                    destination,
+                    input,
+                    local: false,
+                    ..
                 } => {
                     if let Some(pipeline) = self.graph_pipeline() {
                         graph_changed = self.editor.project.disconnect_pipeline_value(
@@ -1078,6 +1093,37 @@ impl EditorApp {
                             &input,
                         );
                     }
+                }
+                panels::GraphWire::Value {
+                    destination,
+                    input,
+                    local: true,
+                    ..
+                } => {
+                    let fallback = self
+                        .editor
+                        .timeline
+                        .selected_pipeline()
+                        .and_then(|instance| {
+                            instance
+                                .local_nodes
+                                .iter()
+                                .find(|node| node.id == destination)
+                        })
+                        .and_then(|node| self.plugins.effect(&node.node_type))
+                        .and_then(|definition| {
+                            definition
+                                .inputs
+                                .iter()
+                                .find(|candidate| candidate.id == input)
+                        })
+                        .and_then(|definition| definition.ty.default_gpu(&definition.default).ok())
+                        .unwrap_or(effects::GpuValue::F32(0.0));
+                    local_changed = self.editor.timeline.set_selected_local_node_binding(
+                        destination,
+                        &input,
+                        effects::Binding::Constant(fallback),
+                    );
                 }
             },
             PipelineGraphAction::MoveNode { target, position } => {
@@ -1135,12 +1181,38 @@ impl EditorApp {
                 node,
                 input,
                 source,
+                local,
             } => {
                 if let Some(pipeline) = self.graph_pipeline() {
-                    graph_changed = self
-                        .editor
-                        .project
-                        .connect_pipeline_value(pipeline, node, &input, source);
+                    if local {
+                        if self
+                            .editor
+                            .project
+                            .pipeline(pipeline)
+                            .and_then(|pipeline| pipeline.value_node(source))
+                            .is_some()
+                        {
+                            local_changed = self.editor.timeline.set_selected_local_node_binding(
+                                node,
+                                &input,
+                                effects::Binding::Connection(effects::SocketRef {
+                                    node: source,
+                                    output: "value".into(),
+                                }),
+                            );
+                        }
+                    } else if self.pipeline_graph.is_pinned()
+                        || !self.editor.timeline.pipeline_input_has_keyframes(
+                            &self.editor.project,
+                            node,
+                            &input,
+                        )
+                    {
+                        graph_changed = self
+                            .editor
+                            .project
+                            .connect_pipeline_value(pipeline, node, &input, source);
+                    }
                 }
             }
             PipelineGraphAction::SetValueComponent {
@@ -1352,11 +1424,18 @@ impl EditorApp {
             }
             PipelineGraphAction::InsertNodeOnWire {
                 node,
+                local,
                 source,
                 destination,
                 destination_input,
             } => {
-                if let Some(pipeline) = self.graph_pipeline() {
+                if local {
+                    local_changed = self.editor.timeline.insert_selected_local_node_on_wire(
+                        node,
+                        source,
+                        destination,
+                    );
+                } else if let Some(pipeline) = self.graph_pipeline() {
                     graph_changed = self.editor.project.insert_pipeline_node_on_wire(
                         pipeline,
                         node,
@@ -1365,6 +1444,42 @@ impl EditorApp {
                         destination_input.as_deref(),
                     );
                 }
+            }
+            PipelineGraphAction::InsertValueNodeOnWire {
+                node,
+                source,
+                destination,
+                input,
+                local,
+            } => {
+                if self.pipeline_graph.is_pinned() {
+                    if let Some(pipeline) = self.graph_pipeline() {
+                        let mut replacement = None;
+                        graph_changed = self.editor.project.insert_pipeline_value_on_wire(
+                            pipeline,
+                            node,
+                            source,
+                            (destination, &input, local),
+                            None,
+                            &mut replacement,
+                        );
+                        if let Some(replacement) = replacement {
+                            self.editor.timeline.replace_value_node_references(
+                                pipeline,
+                                node,
+                                &replacement,
+                            );
+                        }
+                    }
+                } else {
+                    graph_changed = self.editor.timeline.insert_selected_value_node_on_wire(
+                        &mut self.editor.project,
+                        node,
+                        source,
+                        (destination, &input, local),
+                    );
+                }
+                local_changed = graph_changed && local;
             }
         }
         if graph_changed {

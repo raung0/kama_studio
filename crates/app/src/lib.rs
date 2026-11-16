@@ -341,6 +341,7 @@ default_state! {
     struct PaletteState {
         kind: Option<PaletteKind>,
         pending_open: Option<(PaletteKind, Option<Rect>)>,
+        can_convert_to_path: bool,
         query: TextEdit = TextEdit::single_line(""),
         selected: usize,
         scroll: ScrollState,
@@ -601,6 +602,7 @@ struct PaletteEntry {
     aliases: Vec<Vec<String>>,
     icon: AppIcon,
     target: PaletteTarget,
+    enabled: bool,
 }
 
 impl PaletteEntry {
@@ -1642,7 +1644,7 @@ impl EditorApp {
             self.editor.project.active_composition,
             self.editor.project.active_settings().frame_rate,
         );
-        let render_cache_preview = (!render_editing)
+        let render_cache_preview = (!render_editing && !self.monitor.vector_preview())
             .then(|| {
                 self.render_panel.cached_preview(
                     self.editor.timeline.playhead(),
@@ -1652,6 +1654,16 @@ impl EditorApp {
             })
             .flatten();
         let preview_size = self.monitor.preview_render_size(&self.editor.project);
+        self.monitor.sync_point_selection(
+            &self.editor.timeline,
+            self.pipeline_graph.monitor_selection(&self.editor.timeline),
+        );
+        self.palette.can_convert_to_path = self.can_convert_selection_to_path();
+        #[cfg(target_os = "macos")]
+        {
+            let enabled = self.can_convert_selection_to_path();
+            self.native_menu.set_convert_to_path_enabled(enabled);
+        }
         let render_scale = self.monitor.preview_render_scale(&self.editor.project);
         let captured_preview = self.monitor.captured_preview();
         let video_failed = self.video.sync(
@@ -1661,6 +1673,7 @@ impl EditorApp {
             render_edit_revision,
             preview_size,
             render_scale,
+            self.monitor.vector_preview(),
             render_cache_preview.as_ref(),
             captured_preview,
             render_editing,
@@ -2107,6 +2120,8 @@ impl EditorApp {
             .min((width - 132.0).max(0.0));
         let restart_audio_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let restart_video_clicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(not(target_os = "macos"))]
+        let can_convert_to_path = self.can_convert_selection_to_path();
         let mut ctx = self.gui.begin(&mut self.renderer, self.input);
         ui::ui!(ctx, {
             Block {
@@ -2257,6 +2272,7 @@ impl EditorApp {
             cursor,
             &self.command_registry,
             &icons,
+            can_convert_to_path,
         );
 
         let drag_overlay = match drag.as_ref() {
@@ -3295,6 +3311,9 @@ impl EditorApp {
         if !matches!(hovered_panel, Some((_, PanelKind::Media))) {
             self.media.close_context_menu();
         }
+        if !matches!(hovered_panel, Some((_, PanelKind::Monitor))) {
+            self.monitor.dismiss_point_menu();
+        }
         match hovered_panel {
             Some((_, PanelKind::Timeline)) => {
                 if self.editor.timeline.pointer_pressed(
@@ -3409,6 +3428,7 @@ impl EditorApp {
             }
             Some((stack, PanelKind::Monitor)) => {
                 if let Some(content) = self.panel_content(stack) {
+                    let selected_clip = self.editor.timeline.selected_clip().map(|clip| clip.id);
                     let graph_selection =
                         self.pipeline_graph.monitor_selection(&self.editor.timeline);
                     if self.monitor.pointer_pressed(
@@ -3423,6 +3443,10 @@ impl EditorApp {
                             source_geometry: self.video.preview_output().source_geometry,
                         },
                     ) {
+                        if selected_clip != self.editor.timeline.selected_clip().map(|clip| clip.id)
+                        {
+                            self.pipeline_graph.select_source();
+                        }
                         if let Some(action) = self.monitor.take_action() {
                             self.handle_monitor_action(action);
                         }
@@ -4221,6 +4245,11 @@ impl EditorApp {
         }
 
         if self.focused_kind() == Some(PanelKind::Monitor) {
+            if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                && self.monitor.dismiss_point_menu()
+            {
+                return;
+            }
             if let Some(content) = self.focused_content(PanelKind::Monitor) {
                 let direction = match event.logical_key {
                     Key::Named(NamedKey::ArrowUp) => Some(-1),
@@ -4254,6 +4283,7 @@ impl EditorApp {
             ) && let Some(content) = self.focused_content(PanelKind::Monitor)
             {
                 let graph_selection = self.pipeline_graph.monitor_selection(&self.editor.timeline);
+                let before = self.editor.capture();
                 if self.monitor.delete_selected_pen_point(
                     content,
                     &mut self.editor.project,
@@ -4262,6 +4292,7 @@ impl EditorApp {
                     graph_selection,
                     self.video.preview_output().source_geometry,
                 ) {
+                    self.editor.record_after("Delete Point", &before, false);
                     self.video.invalidate();
                     return;
                 }
@@ -5447,6 +5478,7 @@ impl EditorApp {
         let target = entries
             .into_iter()
             .nth(self.palette.selected)
+            .filter(|entry| entry.enabled)
             .map(|entry| entry.target);
         match target {
             Some(PaletteTarget::Command(command)) => {
@@ -5495,6 +5527,19 @@ impl EditorApp {
                 }
             }
             EditorCommand::TogglePenTool => self.monitor.toggle_pen_tool(),
+            EditorCommand::ConvertToPath => {
+                if self.can_convert_selection_to_path() {
+                    let before = self.editor.capture();
+                    let selection = self.pipeline_graph.monitor_selection(&self.editor.timeline);
+                    self.monitor.convert_selection_to_path(
+                        &mut self.editor.project,
+                        &mut self.editor.timeline,
+                        &self.plugins,
+                        selection,
+                    );
+                    self.editor.record_after("Convert to Path", &before, false);
+                }
+            }
             EditorCommand::OpenSettings => self.open_modal(Modal::Settings(Box::new(
                 SettingsDialog::new(&self.plugin_paths),
             ))),
@@ -5508,6 +5553,15 @@ impl EditorApp {
             }
             EditorCommand::Exit => self.request_exit(),
         }
+    }
+
+    fn can_convert_selection_to_path(&self) -> bool {
+        MonitorState::can_convert_selection_to_path(
+            &self.editor.project,
+            &self.editor.timeline,
+            &self.plugins,
+            self.pipeline_graph.monitor_selection(&self.editor.timeline),
+        )
     }
 
     fn execute_edit_command(&mut self, command: EditCommand) {
@@ -6586,6 +6640,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 editor_app.modifiers = modifiers.state();
+                if editor_app.monitor.has_modifier_sensitive_drag() {
+                    editor_app.pointer_moved();
+                    editor_app.window.request_redraw();
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 editor_app.handle_key(&event);
@@ -6945,7 +7003,32 @@ impl ApplicationHandler<AppEvent> for App {
                         if !matches!(hovered_panel, Some((_, PanelKind::Inspector))) {
                             editor_app.inspector.close_context_menu();
                         }
+                        if !matches!(hovered_panel, Some((_, PanelKind::Monitor))) {
+                            editor_app.monitor.dismiss_point_menu();
+                        }
                         match hovered_panel {
+                            Some((stack, PanelKind::Monitor)) => {
+                                if let Some(content) = editor_app.panel_content(stack) {
+                                    let graph_selection = editor_app
+                                        .pipeline_graph
+                                        .monitor_selection(&editor_app.editor.timeline);
+                                    editor_app.monitor.pointer_right_pressed(
+                                        content,
+                                        editor_app.cursor,
+                                        MonitorPointerContext {
+                                            modifiers: editor_app.modifiers,
+                                            project: &mut editor_app.editor.project,
+                                            timeline: &mut editor_app.editor.timeline,
+                                            plugins: &editor_app.plugins,
+                                            graph_selection,
+                                            source_geometry: editor_app
+                                                .video
+                                                .preview_output()
+                                                .source_geometry,
+                                        },
+                                    );
+                                }
+                            }
                             Some((_, PanelKind::Timeline)) => {
                                 editor_app.editor.timeline.pointer_pressed(
                                     &editor_app.snapshot,

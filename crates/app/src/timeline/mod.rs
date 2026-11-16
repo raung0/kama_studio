@@ -1043,6 +1043,7 @@ pub enum SpeedDurationMode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum TimelineAction {
+    SelectGraphSource,
     InsertVideoClip {
         track: u32,
         time: f32,
@@ -1110,6 +1111,7 @@ pub enum TimelineAction {
 impl TimelineAction {
     pub(crate) const fn history_label(self) -> &'static str {
         match self {
+            Self::SelectGraphSource => "Select source node",
             Self::InsertVideoClip { .. } => "Insert video clip",
             Self::InsertEffectClip { .. } => "Insert effect clip",
             Self::CopySelection => "Copy selection",
@@ -2004,6 +2006,40 @@ impl TimelineDocument {
                     .iter()
                     .any(|clip| clip.track == track.id && row.matches(clip))
             });
+        }
+    }
+
+    pub(crate) fn disconnect_value_node_references(
+        &mut self,
+        pipeline: u64,
+        node: u64,
+        fallback: GpuValue,
+    ) {
+        self.replace_value_node_references(pipeline, node, &Binding::Constant(fallback));
+    }
+
+    pub(crate) fn replace_value_node_references(
+        &mut self,
+        pipeline: u64,
+        node: u64,
+        replacement: &Binding,
+    ) {
+        let instances = self.clips.iter_mut().map(|clip| &mut clip.pipeline).chain(
+            self.tracks.iter_mut().flat_map(|track| {
+                track
+                    .pipeline
+                    .iter_mut()
+                    .chain(track.property_rows.iter_mut().map(|row| &mut row.pipeline))
+            }),
+        );
+        for instance in instances.filter(|instance| instance.pipeline == Some(pipeline)) {
+            for local in &mut instance.local_nodes {
+                for binding in local.inputs.values_mut() {
+                    if matches!(binding, Binding::Connection(socket) if socket.node == node) {
+                        *binding = replacement.clone();
+                    }
+                }
+            }
         }
     }
 
@@ -3507,6 +3543,33 @@ impl TimelineState {
         self.insert_generator_clip_at(track, time, &definition.name, generator, visual_pipeline)
     }
 
+    pub(crate) fn insert_drawn_polygon(
+        &mut self,
+        definition: &GeneratorDefinition,
+        visual_pipeline: PipelineInstance,
+    ) -> bool {
+        let Ok(mut generator) = definition.instantiate() else {
+            return false;
+        };
+        if let GeneratorSource::Plugin { parameters, .. } = &mut generator {
+            parameters.insert(
+                "points".into(),
+                HostBinding::Constant(HostValue::Vec2Array(Vec::new())),
+            );
+        }
+        let index = self.add_track(TrackKind::Video, None);
+        let Some(track) = self.tracks.get(index).map(|track| track.id) else {
+            return false;
+        };
+        self.insert_generator_clip_at(
+            track,
+            self.playhead,
+            &definition.name,
+            generator,
+            visual_pipeline,
+        )
+    }
+
     pub fn insert_wasm_clip_at(
         &mut self,
         track: u32,
@@ -3719,6 +3782,26 @@ impl TimelineState {
 
     pub fn clear_pipeline_references(&mut self, pipeline: u64) {
         self.document.clear_pipeline_references(pipeline);
+    }
+
+    pub(crate) fn disconnect_value_node_references(
+        &mut self,
+        pipeline: u64,
+        node: u64,
+        fallback: GpuValue,
+    ) {
+        self.document
+            .disconnect_value_node_references(pipeline, node, fallback);
+    }
+
+    pub(crate) fn replace_value_node_references(
+        &mut self,
+        pipeline: u64,
+        node: u64,
+        replacement: &Binding,
+    ) {
+        self.document
+            .replace_value_node_references(pipeline, node, replacement);
     }
 
     pub(crate) fn remap_pipeline_selector_overrides(&mut self, remaps: &[PipelineSelectorRemap]) {
@@ -4145,8 +4228,50 @@ impl TimelineState {
         }
     }
 
-    pub fn toggle_pipeline_keyframe(&mut self, project: &mut Project, node: u64, input: &str) {
+    fn connected_keyframe_value(
+        &self,
+        project: &Project,
+        binding: &Binding,
+        ty: crate::plugin::InputType,
+    ) -> Option<GpuValue> {
+        let Binding::Connection(socket) = binding else {
+            return None;
+        };
+        let pipeline = project.pipeline(self.selected_pipeline()?.pipeline?)?;
+        let time = self.selected_keyframe_time();
+        let frame_rate = project.active_settings().frame_rate;
+        crate::effects::evaluate_value_node(
+            &pipeline.value_nodes,
+            socket.node,
+            crate::effects::ValueEvalContext {
+                timeline_time: time,
+                local_time: self
+                    .selected_clip()
+                    .map_or(time, |clip| clip.local_time(self.playhead())),
+                frame_index: ((time * frame_rate).floor().max(0.0) as i64).unsigned_abs(),
+                frame_rate,
+            },
+        )
+        .map(|value| ty.convert_gpu(value))
+    }
+
+    pub fn toggle_pipeline_keyframe(
+        &mut self,
+        project: &mut Project,
+        node: u64,
+        input: &str,
+        ty: crate::plugin::InputType,
+    ) {
+        let initial = self
+            .selected_pipeline_binding(project, node, input)
+            .and_then(|(binding, _)| self.connected_keyframe_value(project, binding, ty));
         if let Some((binding, time)) = self.selected_pipeline_override_binding_mut(node, input) {
+            if matches!(binding, Binding::Connection(_)) {
+                let Some(value) = initial else {
+                    return;
+                };
+                *binding = Binding::Constant(value);
+            }
             binding.toggle_keyframe(time);
             return;
         }
@@ -4154,7 +4279,7 @@ impl TimelineState {
             return;
         };
         let time = self.selected_keyframe_time();
-        project.toggle_pipeline_node_keyframe(pipeline, node, input, time);
+        project.toggle_pipeline_node_keyframe(pipeline, node, input, time, initial);
     }
 
     pub fn set_pipeline_host_input_value(
@@ -4209,6 +4334,48 @@ impl TimelineState {
         self.edit.track_mut(id)?.pipeline.as_mut()
     }
 
+    pub fn insert_selected_value_node_on_wire(
+        &mut self,
+        project: &mut Project,
+        node: u64,
+        source: u64,
+        destination: (u64, &str, bool),
+    ) -> bool {
+        if !destination.2
+            && self.pipeline_input_has_keyframes(project, destination.0, destination.1)
+        {
+            return false;
+        }
+        let Some(instance) = self.selected_pipeline_mut() else {
+            return false;
+        };
+        let Some(pipeline) = instance.pipeline else {
+            return false;
+        };
+        let mut replacement = None;
+        if !project.insert_pipeline_value_on_wire(
+            pipeline,
+            node,
+            source,
+            destination,
+            Some(instance),
+            &mut replacement,
+        ) {
+            return false;
+        }
+        let selected_nodes = self
+            .selected_pipeline()
+            .map(|instance| instance.local_nodes.clone());
+        if let Some(replacement) = replacement {
+            self.document
+                .replace_value_node_references(pipeline, node, &replacement);
+        }
+        if let (Some(instance), Some(nodes)) = (self.selected_pipeline_mut(), selected_nodes) {
+            instance.local_nodes = nodes;
+        }
+        true
+    }
+
     pub fn connect_selected_local_image(&mut self, node: u64, source: Option<u64>) -> bool {
         let Some(instance) = self.selected_pipeline() else {
             return false;
@@ -4251,6 +4418,107 @@ impl TimelineState {
                 })
             }),
         );
+        true
+    }
+
+    pub fn insert_selected_local_node_on_wire(
+        &mut self,
+        node: u64,
+        source: Option<u64>,
+        destination: Option<u64>,
+    ) -> bool {
+        if source == Some(node) || destination == Some(node) {
+            return false;
+        }
+        let Some(instance) = self.selected_pipeline_mut() else {
+            return false;
+        };
+        let mut candidate = instance.clone();
+        let Some(input) = candidate
+            .local_nodes
+            .iter()
+            .find(|other| other.id == node)
+            .and_then(EffectNode::stack_image_input_name)
+            .map(str::to_owned)
+        else {
+            return false;
+        };
+        let source_binding = source.map_or(ImageBinding::PipelineInput, |node| {
+            ImageBinding::Node(SocketRef {
+                node,
+                output: "image".into(),
+            })
+        });
+        let destination_input = if let Some(destination) = destination {
+            let Some((name, binding)) = candidate
+                .local_nodes
+                .iter()
+                .find(|other| other.id == destination)
+                .and_then(EffectNode::stack_image_input)
+            else {
+                return false;
+            };
+            if *binding != source_binding {
+                return false;
+            }
+            Some(name.to_owned())
+        } else {
+            if candidate.local_output != source_binding {
+                return false;
+            }
+            None
+        };
+        let previous = candidate
+            .local_nodes
+            .iter()
+            .find(|other| other.id == node)
+            .and_then(|other| other.image_inputs.get(&input))
+            .cloned()
+            .unwrap_or(ImageBinding::Disconnected);
+        for other in &mut candidate.local_nodes {
+            for binding in other.image_inputs.values_mut() {
+                if matches!(binding, ImageBinding::Node(socket) if socket.node == node) {
+                    *binding = previous.clone();
+                }
+            }
+        }
+        if matches!(&candidate.local_output, ImageBinding::Node(socket) if socket.node == node) {
+            candidate.local_output = previous;
+        }
+        let Some(inserted) = candidate
+            .local_nodes
+            .iter_mut()
+            .find(|other| other.id == node)
+        else {
+            return false;
+        };
+        inserted.image_inputs.insert(input, source_binding);
+        let node_binding = ImageBinding::Node(SocketRef {
+            node,
+            output: "image".into(),
+        });
+        if let Some((destination, input)) = destination.zip(destination_input) {
+            let Some(other) = candidate
+                .local_nodes
+                .iter_mut()
+                .find(|other| other.id == destination)
+            else {
+                return false;
+            };
+            other.image_inputs.insert(input, node_binding);
+        } else {
+            candidate.local_output = node_binding;
+        }
+        if crate::project::validate_image_graph(
+            &candidate.local_nodes,
+            &candidate.local_output,
+            "local pipeline",
+        )
+        .is_err()
+        {
+            return false;
+        }
+        *instance = candidate;
         true
     }
 
@@ -4423,9 +4691,29 @@ impl TimelineState {
         true
     }
 
+    pub fn set_selected_local_node_binding(
+        &mut self,
+        node: u64,
+        input: &str,
+        next: Binding,
+    ) -> bool {
+        let Some((binding, _)) = self.selected_local_binding_mut(node, input) else {
+            return false;
+        };
+        if matches!(next, Binding::Connection(_)) && binding.has_keyframes() {
+            return false;
+        }
+        *binding = next;
+        true
+    }
+
     pub fn selected_local_node_host_value(&self, node: u64, input: &str) -> Option<HostValue> {
-        let (binding, time) = self.selected_local_host_binding(node, input)?;
-        binding.evaluate(time)
+        let node = self.selected_local_node(node)?;
+        let time = self.selected_keyframe_time();
+        node.host_inputs
+            .get(input)
+            .and_then(|binding| binding.evaluate(time))
+            .or_else(|| node.inputs.get(input)?.evaluate(time).map(HostValue::Gpu))
     }
 
     pub fn selected_local_node_host_has_keyframe(&self, node: u64, input: &str) -> bool {
@@ -4444,6 +4732,9 @@ impl TimelineState {
         input: &str,
         value: HostValue,
     ) -> bool {
+        if let HostValue::Gpu(value) = &value {
+            return self.set_selected_local_node_value(node, input, *value);
+        }
         let Some((binding, time)) = self.selected_local_host_binding_mut(node, input) else {
             return false;
         };
@@ -4493,8 +4784,22 @@ impl TimelineState {
         }
     }
 
-    pub fn toggle_transform_keyframe(&mut self, input: &str) {
+    pub fn toggle_transform_keyframe(&mut self, project: &Project, input: &str) {
+        let ty = if input == "rotation" {
+            crate::plugin::InputType::Angle
+        } else {
+            crate::plugin::InputType::Vec2
+        };
+        let initial = self
+            .transform_binding(input)
+            .and_then(|(binding, _)| self.connected_keyframe_value(project, binding, ty));
         if let Some((binding, time)) = self.transform_binding_mut(input) {
+            if matches!(binding, Binding::Connection(_)) {
+                let Some(value) = initial else {
+                    return;
+                };
+                *binding = Binding::Constant(value);
+            }
             binding.toggle_keyframe(time);
         }
     }
@@ -5752,7 +6057,8 @@ impl TimelineState {
         snapshot: &LayoutSnapshot,
     ) -> bool {
         match action {
-            TimelineAction::InsertVideoClip { .. }
+            TimelineAction::SelectGraphSource
+            | TimelineAction::InsertVideoClip { .. }
             | TimelineAction::InsertEffectClip { .. }
             | TimelineAction::SpeedDuration
             | TimelineAction::ReplaceSelectedClips
