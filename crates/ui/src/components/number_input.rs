@@ -13,6 +13,7 @@ use crate::{BuildCtx, Rect};
 use super::{SpinInput, Style, TextEdit};
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(360);
+const DRAG_THRESHOLD: f32 = 3.0;
 
 pub struct NumberInput {
     value: f64,
@@ -22,6 +23,7 @@ pub struct NumberInput {
     precision: usize,
     drag: Option<(f32, f64)>,
     drag_start: Option<f64>,
+    pending_drag_delta: Option<f32>,
     last_click: Option<Instant>,
     edit: TextEdit,
     editing: bool,
@@ -39,6 +41,7 @@ impl NumberInput {
             precision: 2,
             drag: None,
             drag_start: None,
+            pending_drag_delta: None,
             last_click: None,
             edit: TextEdit::single_line(format!("{value:.2}")),
             editing: false,
@@ -148,6 +151,7 @@ impl NumberInput {
         if double {
             self.drag = None;
             self.drag_start = None;
+            self.pending_drag_delta = None;
             self.editing = true;
             self.edit_start = Some(self.value);
             self.edit.reset(format!(
@@ -160,6 +164,7 @@ impl NumberInput {
         } else {
             self.drag = Some((point[1], self.value));
             self.drag_start = Some(self.value);
+            self.pending_drag_delta = Some(0.0);
         }
         None
     }
@@ -170,6 +175,15 @@ impl NumberInput {
             return None;
         }
         let (start_y, start_value) = self.drag?;
+        if self.pending_drag_delta.is_some() {
+            if (point[1] - start_y).abs() < DRAG_THRESHOLD {
+                return None;
+            }
+            self.pending_drag_delta = None;
+            self.last_click = None;
+            self.drag = Some((point[1], self.value));
+            return None;
+        }
         let next = f64::from(start_y - point[1])
             .mul_add(self.units_per_pixel, start_value)
             .clamp(self.minimum, self.maximum);
@@ -182,6 +196,14 @@ impl NumberInput {
 
     pub fn pointer_dragged(&mut self, delta_y: f32) -> Option<f64> {
         if self.editing || self.drag.is_none() {
+            return None;
+        }
+        if let Some(pending) = &mut self.pending_drag_delta {
+            *pending += delta_y;
+            if pending.abs() >= DRAG_THRESHOLD {
+                self.pending_drag_delta = None;
+                self.last_click = None;
+            }
             return None;
         }
         let next = f64::from(delta_y)
@@ -202,11 +224,13 @@ impl NumberInput {
     pub const fn pointer_released(&mut self) -> bool {
         let dragged = self.drag.take().is_some();
         self.drag_start = None;
+        self.pending_drag_delta = None;
         dragged || (self.editing && self.edit.pointer_released())
     }
 
     pub fn cancel_drag(&mut self) -> Option<f64> {
         self.drag.take()?;
+        self.pending_drag_delta = None;
         let value = self.drag_start.take()?;
         self.value = value;
         Some(value)
@@ -268,6 +292,7 @@ impl NumberInput {
         if !focused {
             self.drag = None;
             self.drag_start = None;
+            self.pending_drag_delta = None;
             self.editing = false;
             self.edit_start = None;
             self.edit.set_focused(false);
