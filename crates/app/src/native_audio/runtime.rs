@@ -872,9 +872,10 @@ fn parent(window: &Window) -> Result<(ParentWindow, *mut std::ffi::c_void)> {
             ParentWindow::win32(handle.hwnd.get() as usize),
             handle.hwnd.get() as *mut _,
         ),
-        RawWindowHandle::Xlib(handle) => {
-            (ParentWindow::x11(handle.window), handle.window as *mut _)
-        }
+        RawWindowHandle::Xlib(handle) => (
+            ParentWindow::x11(u64::from(handle.window)),
+            handle.window as *mut _,
+        ),
         RawWindowHandle::Xcb(handle) => (
             ParentWindow::x11(u64::from(handle.window.get())),
             handle.window.get() as usize as *mut _,
