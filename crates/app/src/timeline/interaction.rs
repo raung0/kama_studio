@@ -59,11 +59,19 @@ impl TimelineState {
         if button == MouseButton::Middle {
             self.context_menu = None;
             if layout.ruler.contains(point) {
-                self.drag = Some(Drag::RulerPan {
+                let time = self.time_at(layout, point[0]);
+                let mut anchor = self.snap_time_with_options(layout, time, &[], self.playhead_snap);
+                if self.frame_snap {
+                    anchor = (anchor * self.frame_rate).round() / self.frame_rate;
+                }
+                self.drag = Some(Drag::LoopRange {
                     start: point,
-                    scroll_time: self.scroll_time,
-                    time: self.time_at(layout, point[0]),
-                    panned: false,
+                    time,
+                    anchor: anchor.max(0.0),
+                    dragged: false,
+                    button,
+                    handle: false,
+                    offset: 0.0,
                 });
                 return true;
             }
@@ -329,7 +337,46 @@ impl TimelineState {
             return true;
         }
         if layout.ruler.contains(point) {
+            if let Some((start, end)) = self.loop_range {
+                let start_distance = (self.time_x(layout, start) - point[0]).abs();
+                let end_distance = (self.time_x(layout, end) - point[0]).abs();
+                if start_distance.min(end_distance) <= 5.0 {
+                    let (moving, anchor) = if start_distance <= end_distance {
+                        (start, end)
+                    } else {
+                        (end, start)
+                    };
+                    let time = self.time_at(layout, point[0]);
+                    self.drag = Some(Drag::LoopRange {
+                        start: point,
+                        time,
+                        anchor,
+                        dragged: false,
+                        button,
+                        handle: true,
+                        offset: moving - time,
+                    });
+                    return true;
+                }
+            }
             if self.begin_mark_drag(layout, point, modifiers.shift_key(), modifiers.alt_key()) {
+                return true;
+            }
+            if modifiers.shift_key() && !modifiers.alt_key() {
+                let time = self.time_at(layout, point[0]);
+                let mut anchor = self.snap_time_with_options(layout, time, &[], self.playhead_snap);
+                if self.frame_snap {
+                    anchor = (anchor * self.frame_rate).round() / self.frame_rate;
+                }
+                self.drag = Some(Drag::LoopRange {
+                    start: point,
+                    time,
+                    anchor: anchor.max(0.0),
+                    dragged: false,
+                    button,
+                    handle: false,
+                    offset: 0.0,
+                });
                 return true;
             }
             self.set_dragged_playhead(layout, self.time_at(layout, point[0]));
@@ -520,21 +567,26 @@ impl TimelineState {
             return false;
         };
         match &mut drag {
-            Drag::RulerPan {
+            Drag::LoopRange {
                 start,
-                scroll_time,
-                panned,
+                anchor,
+                dragged,
+                offset,
                 ..
             } => {
                 if (point[0] - start[0]).abs().max((point[1] - start[1]).abs())
                     >= CLIP_DRAG_THRESHOLD_PX
                 {
-                    *panned = true;
+                    *dragged = true;
                 }
-                if *panned {
-                    self.scroll_time = (*scroll_time
-                        - f64::from(point[0] - start[0]) / f64::from(self.pixels_per_second))
-                    .max(0.0);
+                if *dragged {
+                    let raw = (self.time_at(layout, point[0]) + *offset).max(0.0);
+                    let mut end = self.snap_time_with_options(layout, raw, &[], self.playhead_snap);
+                    if self.frame_snap {
+                        end = (end * self.frame_rate).round() / self.frame_rate;
+                    }
+                    end = end.max(0.0);
+                    self.loop_range = Some((anchor.min(end), anchor.max(end)));
                 }
             }
             Drag::Marks {
@@ -825,10 +877,8 @@ impl TimelineState {
         }
         let relevant = matches!(
             (&self.drag, button),
-            (
-                Some(Drag::Pan { .. } | Drag::RulerPan { .. }),
-                MouseButton::Middle
-            ) | (Some(Drag::BoxSelect { .. }), MouseButton::Right)
+            (Some(Drag::Pan { .. }), MouseButton::Middle)
+                | (Some(Drag::BoxSelect { .. }), MouseButton::Right)
                 | (
                     Some(
                         Drag::Clips { .. }
@@ -842,24 +892,40 @@ impl TimelineState {
                     ),
                     MouseButton::Left
                 )
-        );
+        ) || matches!(&self.drag, Some(Drag::LoopRange { button: pressed, .. }) if *pressed == button);
         if !relevant {
             return false;
         }
+        if matches!(self.drag, Some(Drag::LoopRange { .. })) {
+            self.pointer_moved(snapshot, point, modifiers, project);
+        }
         match self.drag.take() {
-            Some(Drag::RulerPan {
+            Some(Drag::LoopRange {
                 start,
                 time,
-                panned: false,
+                dragged: false,
+                button,
+                handle,
                 ..
             }) if (point[0] - start[0]).abs().max((point[1] - start[1]).abs())
                 < CLIP_DRAG_THRESHOLD_PX =>
             {
-                if let Some(layout) = self.focused_layout(snapshot) {
-                    self.open_mark_popup(
-                        [start[0] - layout.rect.x, start[1] - layout.rect.y],
-                        time,
-                    );
+                if !handle && let Some(layout) = self.focused_layout(snapshot) {
+                    if button == MouseButton::Middle {
+                        self.open_mark_popup(
+                            [start[0] - layout.rect.x, start[1] - layout.rect.y],
+                            time,
+                        );
+                    } else {
+                        self.set_dragged_playhead(layout, time);
+                    }
+                }
+            }
+            Some(Drag::LoopRange { dragged: true, .. }) => {
+                if self.loop_range.is_some_and(|(start, end)| {
+                    (end - start) * self.pixels_per_second < CLIP_DRAG_THRESHOLD_PX
+                }) {
+                    self.loop_range = None;
                 }
             }
             Some(Drag::BoxSelect {

@@ -520,6 +520,23 @@ impl TimelineState {
                 border_color: theme::timeline_line();
             }
         });
+        if let Some((start, end)) = self.loop_range {
+            let x0 = self.time_x(layout, start).max(rect.x);
+            let x1 = self.time_x(layout, end).min(rect.right());
+            if x1 > x0 {
+                let background = if index.is_multiple_of(2) {
+                    theme::timeline_bg()
+                } else {
+                    theme::timeline_bg_alt()
+                };
+                ui::ui!(ctx, {
+                    Rect(("timeline-loop-track", stack.0, track.id),
+                        Rect::new(x0, rect.y + 1.0, x1 - x0, (rect.height - 2.0).max(1.0))) {
+                        fill: background.mix(theme::timeline_muted(), 0.16);
+                    }
+                });
+            }
+        }
         for (range_index, range) in self.render_cache_ranges.iter().enumerate() {
             let x0 = self.time_x(layout, range.start).max(rect.x);
             let x1 = self.time_x(layout, range.end).min(rect.right());
@@ -714,6 +731,18 @@ impl TimelineState {
                 fill: theme::timeline_header(); border: 1; border_color: theme::timeline_line();
             }
         });
+        if let Some((start, end)) = self.loop_range {
+            let x0 = self.time_x(layout, start).max(layout.ruler.x);
+            let x1 = self.time_x(layout, end).min(layout.ruler.right());
+            if x1 > x0 {
+                ui::ui!(ctx, {
+                    Rect(("timeline-loop-ruler", stack.0),
+                        Rect::new(x0, 1.0, x1 - x0, (RULER_H - 2.0).max(1.0))) {
+                        fill: theme::timeline_header().mix(theme::timeline_muted(), 0.2);
+                    }
+                });
+            }
+        }
         for (range_index, range) in self.render_cache_ranges.iter().enumerate() {
             let x0 = self.time_x(layout, range.start).max(layout.ruler.x);
             let x1 = self.time_x(layout, range.end).min(layout.ruler.right());
@@ -729,6 +758,19 @@ impl TimelineState {
                     fill: fill;
                 }
             });
+        }
+        if let Some((start, end)) = self.loop_range {
+            for (edge, time) in [("start", start), ("end", end)] {
+                let x = self.time_x(layout, time);
+                if x >= layout.ruler.x && x <= layout.ruler.right() {
+                    ui::ui!(ctx, {
+                        Rect(("timeline-loop-handle", stack.0, edge),
+                            Rect::new(x - 2.0, 1.0, 4.0, RULER_H - 2.0)) {
+                            fill: theme::timeline_muted();
+                        }
+                    });
+                }
+            }
         }
         if let Some((start, end)) = self.render_output_range {
             for (edge, time) in [("start", start), ("end", end)] {

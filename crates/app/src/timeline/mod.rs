@@ -1476,11 +1476,14 @@ enum Drag {
         collapse: Option<u32>,
         toggle: Option<u32>,
     },
-    RulerPan {
+    LoopRange {
         start: [f32; 2],
-        scroll_time: f64,
         time: f32,
-        panned: bool,
+        anchor: f32,
+        dragged: bool,
+        button: MouseButton,
+        handle: bool,
+        offset: f32,
     },
     Clips {
         marks: Vec<(u32, f32)>,
@@ -1714,6 +1717,7 @@ pub struct TimelineState {
     power_duplicate: Option<PowerDuplicateState>,
     render_cache_ranges: Vec<RenderCacheRange>,
     render_output_range: Option<(f32, f32)>,
+    loop_range: Option<(f32, f32)>,
     expanded_keyframe_tracks: HashSet<u32>,
 
     expanded_keyframe_lanes: HashSet<KeyframeLaneGroup>,
@@ -2275,6 +2279,7 @@ impl TimelineState {
             power_duplicate: None,
             render_cache_ranges: Vec::new(),
             render_output_range: None,
+            loop_range: None,
             expanded_keyframe_tracks: HashSet::new(),
             expanded_keyframe_lanes: HashSet::new(),
             hidden_keyframe_components: HashMap::new(),
@@ -2373,6 +2378,7 @@ impl TimelineState {
         let grid_snap = self.grid_snap;
         let clip_snap = self.clip_snap;
         let playhead_snap = self.playhead_snap;
+        let loop_range = self.loop_range;
         let follow_playhead = self.follow_playhead;
         let cursor = self.cursor;
         self.load_document(document);
@@ -2391,6 +2397,7 @@ impl TimelineState {
         self.grid_snap = grid_snap;
         self.clip_snap = clip_snap;
         self.playhead_snap = playhead_snap;
+        self.loop_range = loop_range;
         self.follow_playhead = follow_playhead;
         self.cursor = cursor;
         self.selected = selected
@@ -3013,7 +3020,7 @@ impl TimelineState {
         }
         match self.drag.as_ref()? {
             Drag::Marks { .. } => Some("Move marks"),
-            Drag::RulerPan { .. } => None,
+            Drag::LoopRange { .. } => None,
             Drag::ClipEdge {
                 rate_stretch: true, ..
             } => Some("Rate stretch clip"),
@@ -5415,8 +5422,17 @@ impl TimelineState {
         }
 
         if self.playing && self.playback_ready && !self.is_scrubbing() {
+            let previous = self.playhead;
             self.playhead += elapsed;
-            if let Some(end) = self.end_time
+            if let Some((start, end)) = self.loop_range
+                && end > start
+                && previous < end
+                && self.playhead >= end
+                && self.end_time.is_none_or(|timeline_end| end <= timeline_end)
+            {
+                self.playhead = start + (self.playhead - end) % (end - start);
+                self.seek_revision = self.seek_revision.wrapping_add(1);
+            } else if let Some(end) = self.end_time
                 && self.playhead >= end
             {
                 match self.end_behavior {
