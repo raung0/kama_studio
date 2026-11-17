@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:affinity="https://www.affinity.studio/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1,0,0,1,-240,-49)">
+        <g id="vst3" transform="matrix(1,0,0,1,48,-70)">
+            <rect x="192" y="119" width="20" height="20" style="fill:none;"/>
+            <g transform="matrix(1,0,0,1,-48,70)">
+                <path d="M249,67L246,67L244,65L246,63L249,63L249,64L248,64L248,66L249,66L249,67Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,-48,70)">
+                <path d="M251,66L250,66L250,64L251,64L251,63L254,63L256,65L254,67L251,67L251,66Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1.161024,0,0,1.161024,-88.051979,62.338542)">
+                <text x="246px" y="60px" style="font-family:'Silom';font-size:11.484px;fill:white;">3</text>
+            </g>
+        </g>
+    </g>
+</svg>

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 20 20" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:affinity="https://www.affinity.studio/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:1.5;">
+    <g transform="matrix(1,0,0,1,-216,-49)">
+        <g id="audio_mixer" transform="matrix(1,0,0,1,24,-70)">
+            <rect x="192" y="119" width="20" height="20" style="fill:none;"/>
+            <g transform="matrix(1,0,0,1,-26,70)">
+                <path d="M222.5,54C223.88,54 225,55.12 225,56.5C225,57.88 223.88,59 222.5,59C221.12,59 220,57.88 220,56.5C220,55.12 221.12,54 222.5,54ZM222.5,55C221.672,55 221,55.672 221,56.5C221,57.328 221.672,58 222.5,58C223.328,58 224,57.328 224,56.5C224,55.672 223.328,55 222.5,55Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,-20.5,75)">
+                <path d="M222.5,54C223.88,54 225,55.12 225,56.5C225,57.88 223.88,59 222.5,59C221.12,59 220,57.88 220,56.5C220,55.12 221.12,54 222.5,54ZM222.5,55C221.672,55 221,55.672 221,56.5C221,57.328 221.672,58 222.5,58C223.328,58 224,57.328 224,56.5C224,55.672 223.328,55 222.5,55Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.5,51.214286,127.5)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:3.47px;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.5,56.714286,120.5)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:3.47px;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.142857,56.714286,133.571429)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:4.3px;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.142857,51.214286,121.571429)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:4.3px;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,-15,70)">
+                <path d="M222.5,54C223.88,54 225,55.12 225,56.5C225,57.88 223.88,59 222.5,59C221.12,59 220,57.88 220,56.5C220,55.12 221.12,54 222.5,54ZM222.5,55C221.672,55 221,55.672 221,56.5C221,57.328 221.672,58 222.5,58C223.328,58 224,57.328 224,56.5C224,55.672 223.328,55 222.5,55Z" style="fill:white;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.5,62.214286,127.5)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:3.47px;"/>
+            </g>
+            <g transform="matrix(0.642857,0,0,0.142857,62.214286,121.571429)">
+                <path d="M226,3L226,17" style="fill:none;stroke:white;stroke-width:4.3px;"/>
+            </g>
+        </g>
+    </g>
+</svg>
