@@ -73,14 +73,33 @@ macro_rules! delegate_source_metadata {
 struct OffsetAudioSource<S> {
     inner: S,
     offset: Duration,
+    exhausted: bool,
+}
+
+fn is_audio_eof(error: &rodio::source::SeekError) -> bool {
+    matches!(error,
+        rodio::source::SeekError::SymphoniaDecoder(rodio::decoder::symphonia::SeekError::Demuxer(error))
+            if matches!(error.as_ref(), symphonia_core::errors::Error::IoError(error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof))
 }
 
 impl<S: Source> OffsetAudioSource<S> {
     fn new(mut inner: S, offset: Duration) -> Result<Self, rodio::source::SeekError> {
-        if !offset.is_zero() {
-            inner.try_seek(offset)?;
+        let mut exhausted = inner
+            .total_duration()
+            .is_some_and(|duration| offset >= duration);
+        if !exhausted && !offset.is_zero() {
+            match inner.try_seek(offset) {
+                Ok(()) => {}
+                Err(error) if is_audio_eof(&error) => exhausted = true,
+                Err(error) => return Err(error),
+            }
         }
-        Ok(Self { inner, offset })
+        Ok(Self {
+            inner,
+            offset,
+            exhausted,
+        })
     }
 }
 
@@ -88,13 +107,22 @@ impl<S: Source> Iterator for OffsetAudioSource<S> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        if self.exhausted {
+            return None;
+        }
+        let sample = self.inner.next();
+        self.exhausted = sample.is_none();
+        sample
     }
 }
 
 impl<S: Source> Source for OffsetAudioSource<S> {
     fn current_span_len(&self) -> Option<usize> {
-        self.inner.current_span_len()
+        if self.exhausted {
+            Some(0)
+        } else {
+            self.inner.current_span_len()
+        }
     }
     fn channels(&self) -> ChannelCount {
         self.inner.channels()
@@ -109,7 +137,25 @@ impl<S: Source> Source for OffsetAudioSource<S> {
     }
     fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
         let absolute = self.offset.checked_add(pos).unwrap_or(Duration::MAX);
-        self.inner.try_seek(absolute)
+        if self
+            .inner
+            .total_duration()
+            .is_some_and(|duration| absolute >= duration)
+        {
+            self.exhausted = true;
+            return Ok(());
+        }
+        match self.inner.try_seek(absolute) {
+            Ok(()) => {
+                self.exhausted = false;
+                Ok(())
+            }
+            Err(error) if is_audio_eof(&error) => {
+                self.exhausted = true;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -793,7 +839,7 @@ impl AudioEngine {
                     || (voice.speed - desired.speed).abs() > f32::EPSILON
                     || AUDIO_DRIFT_TOLERANCE.mul_add(desired.speed.max(0.01), desired.source_time)
                         < voice.source_anchor
-                    || voice.player.empty()
+                    || (voice.player.empty() && desired.source_time < voice.last_source_time)
             });
             if replace && let Some(voice) = self.voices.remove(&clip) {
                 voice.player.stop();
@@ -843,6 +889,11 @@ impl AudioEngine {
                 },
                 desired.pan,
             );
+            if voice.player.empty() {
+                voice.last_source_time = desired.source_time;
+                voice.meter.publish([0.0; 2]);
+                continue;
+            }
             let player_time =
                 (desired.source_time - voice.source_anchor).max(0.0) / desired.speed.max(0.01);
             let actual = voice.player.get_pos().as_secs_f32();
@@ -890,10 +941,9 @@ impl AudioEngine {
         self.readiness.sources_consuming = desired_voice_count == 0
             || (playing
                 && self.voices.len() == desired_voice_count
-                && self
-                    .voices
-                    .values()
-                    .all(|voice| voice.player.get_pos() >= Duration::from_millis(5)));
+                && self.voices.values().all(|voice| {
+                    voice.player.empty() || voice.player.get_pos() >= Duration::from_millis(5)
+                }));
     }
 
     pub const fn clock_lead(&self) -> f32 {
