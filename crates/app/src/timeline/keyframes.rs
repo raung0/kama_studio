@@ -10,6 +10,150 @@ use super::{
 };
 
 impl TimelineState {
+    pub(super) fn copy_keyframes(&mut self) {
+        let mut copied = Vec::new();
+        for selected in self.selected_keyframes.clone() {
+            if let Some(editor) = self.keyframe_editor_mut(&selected.lane.target)
+                && let Some(key) = editor
+                    .scalar_keys(selected.lane.component)
+                    .into_iter()
+                    .find(|key| (key.time - selected.time).abs() <= 1.0 / 24_000.0)
+            {
+                copied.push((selected.lane, key));
+            }
+        }
+        if !copied.is_empty() {
+            self.keyframe_clipboard = copied;
+        }
+    }
+
+    pub(super) fn paste_keyframes(&mut self) {
+        let mut copied = self.keyframe_clipboard.clone();
+        let Some(origin) = copied
+            .iter()
+            .map(|(_, key)| key.time)
+            .min_by(f64::total_cmp)
+        else {
+            return;
+        };
+        if let Some(destination) = self.selected_keyframes.first().map(|key| key.lane.clone())
+            && let Some((source, _)) = copied.first()
+            && copied.iter().all(|(lane, _)| lane.target == source.target)
+            && destination.target != source.target
+        {
+            if destination.target.property != source.target.property {
+                return;
+            }
+            for (lane, _) in &mut copied {
+                lane.target = destination.target.clone();
+                lane.group = destination.group.clone();
+            }
+        }
+        if copied.iter().any(|(lane, _)| {
+            self.keyframe_editor_mut(&lane.target)
+                .is_none_or(|editor| lane.component >= editor.scalar_count())
+        }) {
+            return;
+        }
+        let offset = f64::from(self.playhead) - origin;
+        self.selected_keyframes.clear();
+        for (lane, mut key) in copied {
+            key.time += offset;
+            let time = key.time;
+            if self
+                .keyframe_editor_mut(&lane.target)
+                .is_some_and(|editor| editor.insert_scalar_key(lane.component, key))
+            {
+                self.selected_keyframes
+                    .push(SelectedKeyframe { lane, time });
+            }
+        }
+    }
+
+    pub(super) fn select_keyframe_hits(
+        &mut self,
+        layout: TimelineLayout,
+        point: [f32; 2],
+        additive: bool,
+    ) -> bool {
+        let hits = self.keyframes_at(layout, point);
+        let Some((first, first_time)) = hits.first() else {
+            return false;
+        };
+        let first_time = *first_time;
+        let collapsed = !self.keyframe_property_graph_is_settled(first);
+        let hits = if collapsed {
+            hits.into_iter()
+                .filter(|(_, time)| (time - first_time).abs() <= 1.0 / 24_000.0)
+                .collect()
+        } else {
+            hits.into_iter().take(1).collect::<Vec<_>>()
+        };
+        let all_selected = hits
+            .iter()
+            .all(|(lane, time)| self.keyframe_is_selected(lane, *time));
+        if !additive && !all_selected {
+            self.selected_keyframes.clear();
+        }
+        self.selected.clear();
+        self.primary_selected = None;
+        self.edit.selected_marks.clear();
+        self.selected_track = None;
+        for (lane, time) in hits {
+            if additive && all_selected {
+                self.select_keyframe(lane, time, true);
+            } else if !self.keyframe_is_selected(&lane, time) {
+                self.selected_keyframes
+                    .push(SelectedKeyframe { lane, time });
+            }
+        }
+        true
+    }
+
+    pub(super) fn select_all_keyframes(&mut self) {
+        let groups = self
+            .selected_keyframes
+            .iter()
+            .map(|key| key.lane.group.clone())
+            .collect::<HashSet<_>>();
+        self.selected_keyframes = (0..self.tracks.len())
+            .flat_map(|index| self.build_keyframe_lanes_for_track(index))
+            .filter(|lane| {
+                groups.contains(&lane.id.group) && self.keyframe_component_is_visible(&lane.id)
+            })
+            .flat_map(|lane| {
+                lane.points.into_iter().map(move |key| SelectedKeyframe {
+                    lane: lane.id.clone(),
+                    time: key.time,
+                })
+            })
+            .collect();
+    }
+
+    pub(super) fn nudge_keyframes(&mut self, frames: i32) {
+        let selected = self.selected_keyframes.clone();
+        let delta = f64::from(frames) / f64::from(self.frame_rate.max(1.0));
+        let mut points = Vec::new();
+        for selected in &selected {
+            if let Some(editor) = self.keyframe_editor_mut(&selected.lane.target)
+                && let Some(key) = editor
+                    .scalar_keys(selected.lane.component)
+                    .into_iter()
+                    .find(|key| (key.time - selected.time).abs() <= 1.0 / 24_000.0)
+            {
+                points.push(KeyframeDragPoint {
+                    lane: selected.lane.clone(),
+                    origin_time: key.time,
+                    current_time: key.time,
+                    origin_value: key.value,
+                    value_per_pixel: 0.0,
+                    vertical: false,
+                });
+            }
+        }
+        self.move_keyframes_horizontal(&mut points, delta);
+    }
+
     fn source_row_mut(&mut self, track: u32, row: usize) -> Option<&mut LayerPropertyRow> {
         self.edit.track_mut(track)?.property_rows.get_mut(row)
     }
@@ -663,14 +807,6 @@ impl TimelineState {
             }
         }
         hits
-    }
-
-    pub(super) fn keyframe_at(
-        &self,
-        layout: TimelineLayout,
-        point: [f32; 2],
-    ) -> Option<(KeyframeLaneId, f64)> {
-        self.keyframes_at(layout, point).into_iter().next()
     }
 
     pub(super) fn keyframe_easing_at(

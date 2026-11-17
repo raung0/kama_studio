@@ -1237,6 +1237,7 @@ struct RenameState {
 trait ScalarKeyframeBinding {
     fn scalar_count(&self) -> usize;
     fn scalar_keys(&self, component: usize) -> Vec<crate::effects::ScalarKeyframe>;
+    fn insert_scalar_key(&mut self, component: usize, key: crate::effects::ScalarKeyframe) -> bool;
     fn edit_scalar_key(
         &mut self,
         component: usize,
@@ -1256,6 +1257,10 @@ trait ScalarKeyframeBinding {
 }
 
 impl ScalarKeyframeBinding for Binding {
+    fn insert_scalar_key(&mut self, component: usize, key: crate::effects::ScalarKeyframe) -> bool {
+        Self::insert_scalar_key(self, component, key)
+    }
+
     fn scalar_count(&self) -> usize {
         self.evaluate(0.0).map_or(0, GpuValue::component_count)
     }
@@ -1291,6 +1296,10 @@ impl ScalarKeyframeBinding for Binding {
 }
 
 impl ScalarKeyframeBinding for HostBinding {
+    fn insert_scalar_key(&mut self, component: usize, key: crate::effects::ScalarKeyframe) -> bool {
+        Self::insert_scalar_key(self, component, key)
+    }
+
     fn scalar_count(&self) -> usize {
         Self::scalar_count(self)
     }
@@ -1414,12 +1423,19 @@ enum TimelineHoverTarget {
     Clip(u32),
 }
 
-#[derive(Debug)]
 struct KeyframeValueEditor {
     stack: StackId,
     point: [f32; 2],
-    value: String,
-    replace_on_input: bool,
+    value: std::cell::RefCell<ui::components::TextEdit>,
+}
+
+impl std::fmt::Debug for KeyframeValueEditor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeyframeValueEditor")
+            .field("value", &self.value.borrow().text())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1532,6 +1548,7 @@ enum Drag {
     Keyframe {
         points: Vec<KeyframeDragPoint>,
         start: [f32; 2],
+        moved: bool,
     },
     KeyframeEase(KeyframeEaseDrag),
     Track {
@@ -1709,6 +1726,7 @@ pub struct TimelineState {
     mixer_exact: Option<MixerExactEditor>,
     keyframe_value_editor: Option<KeyframeValueEditor>,
     selected_keyframes: Vec<SelectedKeyframe>,
+    keyframe_clipboard: Vec<(KeyframeLaneId, crate::effects::ScalarKeyframe)>,
     last_track_click: Option<(u32, Instant)>,
     track_offsets: HashMap<u32, f32>,
     cursor: [f32; 2],
@@ -2271,6 +2289,7 @@ impl TimelineState {
             mixer_exact: None,
             keyframe_value_editor: None,
             selected_keyframes: Vec::new(),
+            keyframe_clipboard: Vec::new(),
             last_track_click: None,
             track_offsets: HashMap::new(),
             cursor: [0.0, 0.0],
@@ -2357,6 +2376,13 @@ impl TimelineState {
     }
 
     pub fn load_history_document(&mut self, document: TimelineDocument) {
+        let expanded_tracks = std::mem::take(&mut self.expanded_keyframe_tracks);
+        let expanded_lanes = std::mem::take(&mut self.expanded_keyframe_lanes);
+        let hidden_components = std::mem::take(&mut self.hidden_keyframe_components);
+        let track_expansion = std::mem::take(&mut self.keyframe_track_expansion);
+        let lane_expansion = std::mem::take(&mut self.keyframe_lane_expansion);
+        let selected_keyframes = std::mem::take(&mut self.selected_keyframes);
+        let keyframe_clipboard = std::mem::take(&mut self.keyframe_clipboard);
         let selected_marks = self.edit.selected_marks.clone();
         let mark_clipboard = std::mem::take(&mut self.edit.mark_clipboard);
         let focused_stack = self.focused_stack;
@@ -2382,6 +2408,28 @@ impl TimelineState {
         let follow_playhead = self.follow_playhead;
         let cursor = self.cursor;
         self.load_document(document);
+        self.expanded_keyframe_tracks = expanded_tracks;
+        self.expanded_keyframe_lanes = expanded_lanes;
+        self.hidden_keyframe_components = hidden_components;
+        self.keyframe_track_expansion = track_expansion;
+        self.keyframe_lane_expansion = lane_expansion;
+        self.keyframe_clipboard = keyframe_clipboard;
+        self.selected_keyframes = selected_keyframes
+            .into_iter()
+            .filter(|selected| {
+                (0..self.tracks.len()).any(|index| {
+                    self.build_keyframe_lanes_for_track(index)
+                        .iter()
+                        .any(|lane| {
+                            lane.id == selected.lane
+                                && lane
+                                    .points
+                                    .iter()
+                                    .any(|key| (key.time - selected.time).abs() <= 1.0 / 24_000.0)
+                        })
+                })
+            })
+            .collect();
         self.focused_stack = focused_stack;
         self.playhead = playhead;
         self.playing = playing;
@@ -2995,9 +3043,22 @@ impl TimelineState {
         self.pending_action.take()
     }
 
+    pub(crate) const fn is_keyframe_dragging(&self) -> bool {
+        matches!(
+            self.drag,
+            Some(Drag::Keyframe { .. } | Drag::KeyframeEase(_))
+        )
+    }
+
     pub(crate) fn keyboard_history_label(&self) -> Option<&'static str> {
         if self.mark_popup.is_some() {
             return Some("Add mark");
+        }
+        if self.keyframe_value_editor.is_some() {
+            return Some("Edit keyframe value");
+        }
+        if !self.selected_keyframes.is_empty() {
+            return Some("Edit keyframes");
         }
         if let Some(editor) = &self.mixer_exact {
             return Some(match editor.parameter {
@@ -5339,6 +5400,9 @@ impl TimelineState {
 
         let dt = elapsed.min(0.05);
         self.mark_picker.get_mut().tick(dt);
+        if let Some(editor) = &mut self.keyframe_value_editor {
+            editor.value.get_mut().tick(dt);
+        }
         if self.mark_animation.finished(now) {
             self.mark_popup = None;
         }
@@ -5486,6 +5550,10 @@ impl TimelineState {
     pub fn is_animating(&self) -> bool {
         (self.mark_popup.is_some() && self.mark_animation.is_animating())
             || self.mark_picker.borrow().is_animating()
+            || self
+                .keyframe_value_editor
+                .as_ref()
+                .is_some_and(|editor| editor.value.borrow().is_animating())
             || !self.track_offsets.is_empty()
             || self.mixer_knobs.values().any(Knob::is_animating)
             || self.keyframe_track_expansion.iter().any(|(track, amount)| {
@@ -6024,11 +6092,16 @@ impl TimelineState {
         Rect::new(popup.right() - 58.0, popup.bottom() - 30.0, 48.0, 22.0)
     }
 
+    fn keyframe_value_field_rect(layout: TimelineLayout, editor: &KeyframeValueEditor) -> Rect {
+        let popup = Self::keyframe_value_editor_rect(layout, editor);
+        Rect::new(popup.x + 10.0, popup.y + 28.0, popup.width - 20.0, 24.0)
+    }
+
     fn commit_keyframe_value_editor(&mut self) {
         let Some(editor) = self.keyframe_value_editor.take() else {
             return;
         };
-        if let Ok(value) = editor.value.trim().parse::<f32>()
+        if let Ok(value) = editor.value.borrow().text().trim().parse::<f32>()
             && value.is_finite()
         {
             self.set_selected_keyframe_value(value);
@@ -6173,6 +6246,10 @@ impl TimelineState {
     }
 
     pub(crate) fn copy_selection(&mut self) {
+        if !self.selected_keyframes.is_empty() {
+            self.copy_keyframes();
+            return;
+        }
         let marks = self
             .marks
             .iter()
@@ -6213,12 +6290,18 @@ impl TimelineState {
                 .then_with(|| left.clip.id.cmp(&right.clip.id))
         });
         if !clips.is_empty() || !marks.is_empty() {
+            self.keyframe_clipboard.clear();
             self.clipboard = clips;
             self.edit.mark_clipboard = marks;
         }
     }
 
     pub(crate) fn cut_selection(&mut self) {
+        if !self.selected_keyframes.is_empty() {
+            self.copy_keyframes();
+            self.delete_selected_keyframes();
+            return;
+        }
         if !self.has_selection() {
             return;
         }
@@ -6227,6 +6310,10 @@ impl TimelineState {
     }
 
     pub(crate) fn paste(&mut self) {
+        if !self.keyframe_clipboard.is_empty() {
+            self.paste_keyframes();
+            return;
+        }
         let Some(origin) = self
             .clipboard
             .iter()
@@ -6307,6 +6394,10 @@ impl TimelineState {
     }
 
     pub(crate) fn delete_selection(&mut self) {
+        if !self.selected_keyframes.is_empty() {
+            self.delete_selected_keyframes();
+            return;
+        }
         self.delete_selected();
     }
 
@@ -7020,34 +7111,66 @@ impl TimelineState {
         delta_y: Option<f32>,
         apply_frame_snap: bool,
     ) {
-        if delta_time >= 0.0 {
-            points.sort_by(|a, b| b.current_time.total_cmp(&a.current_time));
-        } else {
-            points.sort_by(|a, b| a.current_time.total_cmp(&b.current_time));
+        let Some(anchor) = points.first().map(|key| key.origin_time) else {
+            return;
+        };
+        let earliest = points
+            .iter()
+            .map(|key| key.origin_time)
+            .fold(anchor, f64::min);
+        let mut delta = delta_time;
+        if apply_frame_snap && self.frame_snap {
+            let rate = f64::from(self.frame_rate.max(1.0));
+            delta = ((anchor + delta) * rate).round() / rate - anchor;
         }
-        for key in points.iter_mut() {
-            let mut next_time = (key.origin_time + delta_time).max(0.0);
-            if apply_frame_snap && self.frame_snap {
-                next_time =
-                    (next_time * f64::from(self.frame_rate)).round() / f64::from(self.frame_rate);
+        delta = delta.max(-earliest);
+        let mut moved = Vec::with_capacity(points.len());
+        for point in points.iter() {
+            let Some(editor) = self.keyframe_editor_mut(&point.lane.target) else {
+                return;
+            };
+            let keys = editor.scalar_keys(point.lane.component);
+            let Some(mut key) = keys
+                .iter()
+                .find(|key| (key.time - point.current_time).abs() <= 1.0 / 24_000.0)
+                .cloned()
+            else {
+                return;
+            };
+            key.time = point.origin_time + delta;
+            if keys.iter().any(|other| {
+                (other.time - key.time).abs() <= 1.0 / 24_000.0
+                    && !points.iter().any(|selected| {
+                        selected.lane == point.lane
+                            && (selected.current_time - other.time).abs() <= 1.0 / 24_000.0
+                    })
+            }) {
+                return;
             }
-            let next_value = delta_y
-                .filter(|_| key.vertical)
-                .map(|delta_y| f32::mul_add(delta_y, -key.value_per_pixel, key.origin_value));
-            if self.edit_keyframe_lane_key(
-                &key.lane,
-                key.current_time,
-                Some(next_time),
-                next_value,
-                None,
-            ) {
+            if let Some(delta_y) = delta_y.filter(|_| point.vertical) {
+                key.value = f32::mul_add(delta_y, -point.value_per_pixel, point.origin_value);
+            }
+            if !key.time.is_finite() || !key.value.is_finite() {
+                return;
+            }
+            moved.push(key);
+        }
+        for point in points.iter() {
+            self.remove_keyframe_lane_key(&point.lane, point.current_time);
+        }
+        for (point, key) in points.iter_mut().zip(moved) {
+            let time = key.time;
+            if self
+                .keyframe_editor_mut(&point.lane.target)
+                .is_some_and(|editor| editor.insert_scalar_key(point.lane.component, key))
+            {
                 if let Some(selected) = self.selected_keyframes.iter_mut().find(|selected| {
-                    selected.lane == key.lane
-                        && (selected.time - key.current_time).abs() <= 1.0 / 24_000.0
+                    selected.lane == point.lane
+                        && (selected.time - point.current_time).abs() <= 1.0 / 24_000.0
                 }) {
-                    selected.time = next_time;
+                    selected.time = time;
                 }
-                key.current_time = next_time;
+                point.current_time = time;
             }
         }
     }
@@ -7561,6 +7684,24 @@ fn context_specs(kind: ContextKind) -> Vec<ContextSpec> {
             ),
         ],
         ContextKind::Keyframe => vec![
+            (
+                "Copy",
+                Some(KeyBinding::primary('c')),
+                Some(AppIcon::Copy),
+                CopySelection,
+            ),
+            (
+                "Cut",
+                Some(KeyBinding::primary('x')),
+                Some(AppIcon::Cut),
+                CutSelection,
+            ),
+            (
+                "Paste",
+                Some(KeyBinding::primary('v')),
+                Some(AppIcon::Paste),
+                Paste,
+            ),
             (
                 "Edit value…",
                 None,

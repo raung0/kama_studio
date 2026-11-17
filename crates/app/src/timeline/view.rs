@@ -1586,11 +1586,11 @@ impl TimelineState {
             return;
         };
         let popup = Self::keyframe_value_editor_rect(layout, editor);
-        let field = Rect::new(popup.x + 10.0, popup.y + 28.0, popup.width - 20.0, 24.0);
+        let field = Self::keyframe_value_field_rect(layout, editor);
         let set = Self::keyframe_value_set_rect(layout, editor);
         ui::ui!(ctx, {
             Rect(("keyframe-value-editor", stack.0), popup) {
-                overlay;
+                top_overlay;
                 backdrop_blur: 22.0;
                 backdrop_tint: theme::popup_tint();
                 fill: theme::floating_bg();
@@ -1599,24 +1599,13 @@ impl TimelineState {
                 border_radius: RADIUS_MD;
             }
             Rect(("keyframe-value-title", stack.0), Rect::new(popup.x + 10.0, popup.y + 6.0, popup.width - 20.0, 18.0)) {
-                overlay;
+                top_overlay;
                 font_size: 9.5;
                 text_color: theme::popup_muted();
                 text: i18n::text("timeline-edit-keyframe-value");
             }
-            Rect(("keyframe-value-field", stack.0), field) {
-                overlay;
-                fill: theme::timeline_bg();
-                border: 1;
-                border_color: theme::accent();
-                border_radius: RADIUS_SM;
-                padding: 6.0;
-                font_size: 10.5;
-                text_color: theme::timeline_text();
-                text: format!("{}│", editor.value);
-            }
             Rect(("keyframe-value-set", stack.0), set) {
-                overlay;
+                top_overlay;
                 fill: theme::accent();
                 border_radius: RADIUS_SM;
                 font_size: 9.5;
@@ -1625,6 +1614,13 @@ impl TimelineState {
                 text: i18n::text("timeline-set");
             }
         });
+        editor.value.borrow_mut().build_popup(
+            ctx,
+            format!("keyframe-value-field-{}", stack.0),
+            field,
+            widgets::component_style(),
+            1.0,
+        );
     }
 }
 

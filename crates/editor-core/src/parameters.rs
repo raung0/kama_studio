@@ -449,6 +449,34 @@ impl HostBinding {
         }
     }
 
+    pub fn insert_scalar_key(&mut self, channel: usize, key: ScalarKeyframe) -> bool {
+        if let Self::Gpu(binding) = self {
+            return binding.insert_scalar_key(channel, key);
+        }
+        if !key.time.is_finite() || key.time < 0.0 || !key.value.is_finite() {
+            return false;
+        }
+        if let Self::Constant(base) = self {
+            *self = Self::Components(HostComponentKeyframes {
+                tracks: vec![
+                    ScalarKeyframeTrack::default();
+                    HostComponentKeyframes::scalar_count(base)
+                ],
+                base: base.clone(),
+            });
+        }
+        let Some(channels) = self.ensure_components() else {
+            return false;
+        };
+        let Some(track) = channels.tracks.get_mut(channel) else {
+            return false;
+        };
+        track.remove_key(key.time);
+        let index = track.insertion_index(key.time);
+        track.keys.insert(index, key);
+        true
+    }
+
     pub fn edit_scalar_key(
         &mut self,
         channel: usize,

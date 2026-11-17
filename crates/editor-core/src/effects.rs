@@ -661,7 +661,15 @@ impl Binding {
             for (component, channel) in tracks.iter_mut().enumerate().take(count) {
                 let component_arg = (count > 1).then_some(component);
                 if let Some(value) = key.value.numeric(component_arg) {
-                    channel.set_key(key.time, value as f32, key.interpolation);
+                    channel.keys.push(ScalarKeyframe {
+                        time: key.time,
+                        value: value as f32,
+                        interpolation: key.interpolation,
+                        ease_in: key.ease_in,
+                        ease_out: key.ease_out,
+                        custom_ease_in: key.custom_ease_in,
+                        custom_ease_out: key.custom_ease_out,
+                    });
                 }
             }
         }
@@ -875,6 +883,28 @@ impl Binding {
                 .unwrap_or_default(),
             _ => Vec::new(),
         }
+    }
+
+    pub fn insert_scalar_key(&mut self, component: usize, key: ScalarKeyframe) -> bool {
+        if !key.time.is_finite() || key.time < 0.0 || !key.value.is_finite() {
+            return false;
+        }
+        if let Self::Constant(base) = self {
+            *self = Self::Components(ComponentKeyframes {
+                base: *base,
+                tracks: vec![ScalarKeyframeTrack::default(); base.component_count()],
+            });
+        }
+        let Some(channels) = self.ensure_components() else {
+            return false;
+        };
+        let Some(track) = channels.tracks.get_mut(component) else {
+            return false;
+        };
+        track.remove_key(key.time);
+        let index = track.insertion_index(key.time);
+        track.keys.insert(index, key);
+        true
     }
 
     pub fn edit_scalar_key(

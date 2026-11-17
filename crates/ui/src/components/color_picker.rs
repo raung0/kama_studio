@@ -128,7 +128,10 @@ impl ColorPicker {
             self.hue = hsv[0];
         }
         if !self.hex.is_focused() {
-            self.hex.reset(rgba_hex(self.linear));
+            let text = rgba_hex(self.linear);
+            if self.hex.text() != text {
+                self.hex.reset(text);
+            }
         }
         self.textures.signature = None;
     }
@@ -143,6 +146,7 @@ impl ColorPicker {
         self.drag = None;
         self.open_start = None;
         self.hex.set_focused(false);
+        self.hex.reset(rgba_hex(self.linear));
     }
 
     pub const fn set_popup_on_right(&mut self, enabled: bool) {
@@ -157,9 +161,14 @@ impl ColorPicker {
         self.t = self.t.max(0.05);
         self.drag = None;
         self.hex.set_focused(true);
+        self.hex.select_all();
     }
 
     pub fn tick(&mut self, dt: f32) {
+        if !self.open.is_open() && self.hex.is_focused() {
+            self.hex.set_focused(false);
+            self.hex.reset(rgba_hex(self.linear));
+        }
         ease(
             &mut self.t,
             f32::from(u8::from(self.open.is_open())),
@@ -281,6 +290,7 @@ impl ColorPicker {
                     self.mode = mode;
                     self.textures.signature = None;
                     self.hex.set_focused(false);
+                    self.hex.reset(rgba_hex(self.linear));
                     return true;
                 }
             }
@@ -365,6 +375,9 @@ impl ColorPicker {
         if response.changed {
             self.apply_hex();
         }
+        if !self.hex.is_focused() {
+            self.hex.reset(rgba_hex(self.linear));
+        }
         response.handled
     }
 
@@ -373,6 +386,17 @@ impl ColorPicker {
             return false;
         }
         let response = self.hex.handle_ime(event);
+        if response.changed {
+            self.apply_hex();
+        }
+        response.handled
+    }
+
+    pub fn handle_edit_command(&mut self, command: NamedKey) -> bool {
+        if !self.is_editing() {
+            return false;
+        }
+        let response = self.hex.handle_edit_command(command);
         if response.changed {
             self.apply_hex();
         }
@@ -511,19 +535,14 @@ impl ColorPicker {
                 border_color: style.border; border_radius: style.radius_sm; interactive; border_reveal;
                 fill_texture_opt: self.textures.alpha;
             }
-            Rect(@format("color-picker-hex {id}"), layout.hex) {
-                top_overlay; opacity: opacity;
-                fill: if self.hex.is_focused() { style.focused } else { style.control };
-                border: 1; border_color: if self.hex.is_focused() { style.accent } else { style.border };
-                border_radius: style.radius_sm; padding: 7.0; font_size: 10.5;
-                text_color: style.text; text: self.hex.text().to_string();
-            }
-            @if self.hex.is_focused() {
-                Rect(@format("color-picker-hex-caret {id}"), self.hex.caret_rect(layout.hex)) {
-                    top_overlay; opacity: opacity; fill: style.text;
-                }
-            }
         });
+        self.hex.build_popup(
+            ctx,
+            format!("color-picker-hex {id}"),
+            layout.hex,
+            style,
+            opacity,
+        );
         strip_handle(ctx, &id, layout.alpha, self.linear[3], "alpha", opacity);
     }
 

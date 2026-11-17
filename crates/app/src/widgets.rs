@@ -8,7 +8,7 @@ use kama_ui::dock::{Rect, StackId};
 use kama_ui::{Align, BlockId, Color, CursorShape, Renderer, ScrollState, Size};
 use winit::{
     event::{Ime, KeyEvent},
-    keyboard::ModifiersState,
+    keyboard::{ModifiersState, NamedKey},
 };
 
 use super::{
@@ -670,6 +670,10 @@ impl WidgetGallery {
         self.color.is_open()
     }
 
+    pub fn is_color_editing(&self) -> bool {
+        self.color.is_editing()
+    }
+
     pub fn close_color_picker(&mut self) {
         self.color.close();
     }
@@ -683,6 +687,10 @@ impl WidgetGallery {
             return true;
         }
         self.text.handle_key(event, modifiers).handled
+    }
+
+    pub fn handle_color_edit_command(&mut self, command: NamedKey) -> bool {
+        self.color.handle_edit_command(command)
     }
 
     pub fn handle_ime(&mut self, event: &Ime) -> bool {

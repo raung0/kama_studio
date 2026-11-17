@@ -339,6 +339,14 @@ impl TimelineState {
         true
     }
 
+    pub(super) fn mark_picker_caret(&self, layout: TimelineLayout) -> Option<Rect> {
+        let popup = self.mark_popup?;
+        let rect = Self::mark_popup_rect(layout, popup);
+        self.mark_picker
+            .borrow()
+            .caret_rect_in(Self::mark_picker_anchor(rect), layout.rect)
+    }
+
     pub(super) fn build_marks(
         &self,
         ctx: &mut ui::BuildCtx,

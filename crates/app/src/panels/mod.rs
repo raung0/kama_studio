@@ -4173,6 +4173,10 @@ impl InspectorState {
         self.controls.color_picker.is_open()
     }
 
+    pub fn is_color_editing(&self) -> bool {
+        self.controls.color_picker.is_editing()
+    }
+
     pub fn close_color_picker(&mut self) {
         self.controls.color_picker.close();
     }
@@ -4279,6 +4283,26 @@ impl InspectorState {
             project,
             timeline,
         )
+    }
+
+    pub fn handle_color_edit_command(
+        &mut self,
+        command: NamedKey,
+        project: &mut Project,
+        timeline: &mut TimelineState,
+    ) -> bool {
+        if !self.controls.color_picker.handle_edit_command(command) {
+            return false;
+        }
+        if let Some(target) = &self.controls.color_target {
+            apply_color_target(
+                target,
+                project,
+                timeline,
+                self.controls.color_picker.linear(),
+            );
+        }
+        true
     }
 
     pub fn handle_ime(

@@ -2545,6 +2545,21 @@ impl EditorApp {
             || self.widgets.is_color_open()
     }
 
+    fn color_text_editing(&self) -> bool {
+        match self.focused_kind() {
+            Some(PanelKind::Inspector) if self.media.selected_composition().is_some() => {
+                self.project_options.is_color_editing()
+            }
+            Some(PanelKind::Inspector) if self.media.selected().is_none() => {
+                self.inspector.is_color_editing()
+            }
+            Some(PanelKind::ProjectOptions) => self.project_options.is_color_editing(),
+            Some(PanelKind::Pipeline) => self.pipeline_graph.is_color_editing(),
+            Some(PanelKind::Widgets) => self.widgets.is_color_editing(),
+            _ => false,
+        }
+    }
+
     fn finish_color_edit_history(&mut self, cancel: bool) {
         let Some((before, label)) = self.editor.color_edit.take() else {
             return;
@@ -4222,6 +4237,16 @@ impl EditorApp {
             return;
         }
 
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && self.editor.timeline.is_keyframe_dragging()
+        {
+            if let Some((before, _)) = self.editor.history_gesture.take() {
+                self.editor.restore_snapshot(before, &self.plugins);
+                self.video.invalidate();
+            }
+            return;
+        }
+
         if self.number_editing() {
             self.begin_number_edit_history();
             let cancel = matches!(event.logical_key, Key::Named(NamedKey::Escape));
@@ -4229,6 +4254,12 @@ impl EditorApp {
             if !self.number_editing() {
                 self.finish_number_edit_history(cancel);
             }
+            return;
+        }
+
+        if self.color_text_editing() {
+            self.handle_key_inner(event);
+            self.video.invalidate();
             return;
         }
 
@@ -4310,8 +4341,12 @@ impl EditorApp {
                 event.logical_key,
                 Key::Named(NamedKey::Delete | NamedKey::Backspace)
             );
-        if !text_editing
-            && !graph_delete_key
+        let keyframe_shortcut = self.focused_kind() == Some(PanelKind::Timeline)
+            && self
+                .editor
+                .timeline
+                .overrides_keyframe_shortcut(event, self.modifiers);
+        if !(text_editing || graph_delete_key || keyframe_shortcut)
             && let Some(command) =
                 self.command_registry
                     .command_for_key(event, self.modifiers, command_scope)
@@ -4588,6 +4623,10 @@ impl EditorApp {
     }
 
     fn handle_ime(&mut self, event: &Ime) {
+        if self.color_text_editing() {
+            self.handle_ime_inner(event);
+            return;
+        }
         if self.number_editing() {
             self.begin_number_edit_history();
             self.handle_ime_inner(event);
@@ -4684,6 +4723,9 @@ impl EditorApp {
                     &mut self.editor.timeline,
                 );
             }
+            Some(PanelKind::Timeline) => {
+                self.editor.timeline.handle_ime(event);
+            }
             _ => {}
         }
     }
@@ -4768,6 +4810,7 @@ impl EditorApp {
             PanelKind::ProjectOptions => self.project_options.ime_area(rect),
             PanelKind::Render => self.render_panel.ime_area(rect),
             PanelKind::Pipeline => self.pipeline_graph.ime_area(rect),
+            PanelKind::Timeline => self.editor.timeline.ime_area(&self.snapshot),
             _ => None,
         }
     }
@@ -5564,7 +5607,74 @@ impl EditorApp {
         )
     }
 
+    fn handle_color_edit_command(&mut self, command: NamedKey) -> bool {
+        if let Some(Modal::Settings(dialog)) = &mut self.modal {
+            return dialog.handle_color_edit_command(command);
+        }
+        if self.modal.is_some() || self.palette.kind.is_some() {
+            return false;
+        }
+        let before = self
+            .editor
+            .color_edit
+            .is_none()
+            .then(|| self.editor.capture());
+        let handled = match self.focused_kind() {
+            Some(PanelKind::Inspector) => {
+                if let Some(composition) = self.media.selected_composition() {
+                    self.project_options.handle_color_edit_command(
+                        command,
+                        &mut self.editor.project,
+                        composition,
+                    )
+                } else if self.media.selected().is_none() {
+                    self.inspector.handle_color_edit_command(
+                        command,
+                        &mut self.editor.project,
+                        &mut self.editor.timeline,
+                    )
+                } else {
+                    false
+                }
+            }
+            Some(PanelKind::ProjectOptions) => {
+                let composition = self.editor.project.active_composition;
+                self.project_options.handle_color_edit_command(
+                    command,
+                    &mut self.editor.project,
+                    composition,
+                )
+            }
+            Some(PanelKind::Pipeline) => self.pipeline_graph.handle_color_edit_command(
+                command,
+                &mut self.editor.project,
+                &mut self.editor.timeline,
+            ),
+            Some(PanelKind::Timeline) => self.editor.timeline.handle_edit_command(command),
+            Some(PanelKind::Widgets) => self.widgets.handle_color_edit_command(command),
+            _ => false,
+        };
+        if handled {
+            if let Some(before) = before {
+                self.editor.record_after("Edit color", &before, false);
+            }
+            self.video.invalidate();
+        }
+        handled
+    }
+
     fn execute_edit_command(&mut self, command: EditCommand) {
+        let text_command = match command {
+            EditCommand::Undo => Some(NamedKey::Undo),
+            EditCommand::Redo => Some(NamedKey::Redo),
+            EditCommand::Timeline(TimelineAction::CopySelection) => Some(NamedKey::Copy),
+            EditCommand::Timeline(TimelineAction::CutSelection) => Some(NamedKey::Cut),
+            EditCommand::Timeline(TimelineAction::Paste) => Some(NamedKey::Paste),
+            _ => None,
+        };
+        if text_command.is_some_and(|command| self.handle_color_edit_command(command)) {
+            return;
+        }
         if matches!(
             command,
             EditCommand::Undo | EditCommand::Redo | EditCommand::RestoreHistory(_)

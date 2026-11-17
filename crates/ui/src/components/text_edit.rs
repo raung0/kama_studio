@@ -350,6 +350,26 @@ impl TextEdit {
         response
     }
 
+    pub fn handle_edit_command(&mut self, command: NamedKey) -> EditResponse {
+        if !self.focused {
+            return EditResponse::default();
+        }
+        self.clear_preedit();
+        let response = match command {
+            NamedKey::Copy => {
+                self.copy();
+                EditResponse::HANDLED
+            }
+            NamedKey::Cut => EditResponse::changed(self.cut()),
+            NamedKey::Paste => EditResponse::changed(self.paste()),
+            NamedKey::Undo => EditResponse::changed(self.undo()),
+            NamedKey::Redo => EditResponse::changed(self.redo()),
+            _ => EditResponse::default(),
+        };
+        self.refresh_caret_target();
+        response
+    }
+
     fn navigate(&mut self, key: NamedKey, modifiers: ModifiersState) -> bool {
         let command = modifiers.super_key() || modifiers.control_key();
         let motion = match key {
@@ -551,12 +571,13 @@ impl TextEdit {
         self.edit(|editor, _| editor.insert_string(&text, None))
     }
 
-    fn select_all(&mut self) {
+    pub fn select_all(&mut self) {
         let (start, end) = self
             .editor
             .with_buffer(|buffer| (Cursor::default(), end_cursor(buffer)));
         self.editor.set_selection(Selection::Normal(start));
         self.editor.set_cursor(end);
+        self.refresh_caret_target();
     }
 
     #[must_use]
@@ -577,6 +598,31 @@ impl TextEdit {
         placeholder: &str,
         style: Style,
     ) {
+        self.build_layer(ctx, id, rect, placeholder, style, None);
+    }
+
+    pub fn build_popup(
+        &mut self,
+        ctx: &mut BuildCtx,
+        id: impl Display,
+        rect: Rect,
+        style: Style,
+        opacity: f32,
+    ) {
+        self.build_layer(ctx, id, rect, "", style, Some(opacity));
+    }
+
+    fn build_layer(
+        &mut self,
+        ctx: &mut BuildCtx,
+        id: impl Display,
+        rect: Rect,
+        placeholder: &str,
+        style: Style,
+        popup_opacity: Option<f32>,
+    ) {
+        let popup = popup_opacity.is_some();
+        let opacity = popup_opacity.unwrap_or(1.0);
         self.set_scales(style.text_scale, style.ui_scale);
         self.sync_layout();
         let viewport_changed = self.set_viewport(rect);
@@ -603,6 +649,8 @@ impl TextEdit {
         crate::ui!(ctx, {
             Block {
                 id: @format("text-edit {}", id);
+                top_overlay_if: popup;
+                opacity: opacity;
                 bounds: (rect.x, rect.y, rect.width, rect.height);
                 fill: if self.focused { style.focused } else { style.control };
                 border: 1;

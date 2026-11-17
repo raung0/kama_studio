@@ -1,9 +1,9 @@
 use super::{
     Color, ColorPicker, ComboBox, CompositionId, FormatKey, Hash, IconId, Ime, KeyEvent,
-    MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, ModifiersState, NumberControls, NumberControlsExt,
-    NumberInput, PANEL_GAP, PANEL_HEADER_H, Project, ProjectBackground, ROW_H, Rect, Renderer,
-    Result, Size, ToggleButton, offset_rect, panel_title, project_row_hit, property_label,
-    property_row_frame, theme,
+    MAX_CANVAS_DIMENSION, MAX_FRAME_RATE, ModifiersState, NamedKey, NumberControls,
+    NumberControlsExt, NumberInput, PANEL_GAP, PANEL_HEADER_H, Project, ProjectBackground, ROW_H,
+    Rect, Renderer, Result, Size, ToggleButton, offset_rect, panel_title, project_row_hit,
+    property_label, property_row_frame, theme,
 };
 
 pub(super) fn project_background(
@@ -309,6 +309,10 @@ impl ProjectOptionsState {
 
     pub fn is_color_open(&self) -> bool {
         self.background_color.is_open()
+    }
+
+    pub fn is_color_editing(&self) -> bool {
+        self.background_color.is_editing()
     }
 
     pub fn close_color_picker(&mut self) {
@@ -649,6 +653,19 @@ impl ProjectOptionsState {
             project,
             composition,
         )
+    }
+
+    pub fn handle_color_edit_command(
+        &mut self,
+        command: NamedKey,
+        project: &mut Project,
+        composition: CompositionId,
+    ) -> bool {
+        if self.background_color.handle_edit_command(command) {
+            self.apply_background_color(project, composition);
+            return true;
+        }
+        false
     }
 
     pub fn handle_ime(

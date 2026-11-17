@@ -1405,6 +1405,18 @@ impl SettingsDialog {
         self.search.scroll_by(-delta[1])
     }
 
+    pub(crate) fn handle_color_edit_command(&mut self, command: NamedKey) -> bool {
+        if self.dark_accent.handle_edit_command(command) {
+            self.apply_accent(SettingEntry::DarkAccent);
+            return true;
+        }
+        if self.light_accent.handle_edit_command(command) {
+            self.apply_accent(SettingEntry::LightAccent);
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
         if event.state != ElementState::Pressed {
             return false;

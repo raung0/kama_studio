@@ -2400,6 +2400,10 @@ impl PipelineGraphState {
         self.controls.color_picker.is_open()
     }
 
+    pub fn is_color_editing(&self) -> bool {
+        self.controls.color_picker.is_editing()
+    }
+
     pub fn close_color_picker(&mut self) {
         self.controls.color_picker.close();
     }
@@ -4750,6 +4754,29 @@ impl PipelineGraphState {
         if let Some(key) = self.controls.numbers.editing_target() {
             if let Some(value) = self.controls.numbers.edit(&key, edit) {
                 self.apply_component_direct(&key.0, key.1, value as f32, project, timeline);
+            }
+            return true;
+        }
+        false
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality detects whether the color picker changed its stored value"
+    )]
+    pub fn handle_color_edit_command(
+        &mut self,
+        command: NamedKey,
+        project: &mut Project,
+        timeline: &mut TimelineState,
+    ) -> bool {
+        let before = self.controls.color_picker.linear();
+        if self.controls.color_picker.handle_edit_command(command) {
+            let color = self.controls.color_picker.linear();
+            if color != before
+                && let Some(target) = self.controls.color_target.clone()
+            {
+                self.apply_color_direct(&target, color, project, timeline);
             }
             return true;
         }

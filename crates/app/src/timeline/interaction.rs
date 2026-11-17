@@ -6,10 +6,53 @@ use super::{
     Project, RenameState, SNAP_PX, SelectedKeyframe, ShiftClipAdjustAxis, TRACK_HANDLE_W,
     TRACK_HEADER_PAD, TRACK_MIN, TimelineAction, TimelineHoverTarget, TimelineLayout,
     TimelineState, TimelineTool, TrackKind, clip_source_duration, format_keyframe_value,
-    intersects, keyframe_property_axis_range, keyframe_value_y, normalized_rect,
+    intersects, keyframe_property_axis_range, keyframe_value_y, normalized_rect, ui,
 };
 
 impl TimelineState {
+    pub(crate) fn ime_area(&self, snapshot: &LayoutSnapshot) -> Option<super::Rect> {
+        let layout = self.focused_layout(snapshot)?;
+        if let Some(editor) = &self.keyframe_value_editor {
+            return Some(
+                editor
+                    .value
+                    .borrow()
+                    .caret_rect(Self::keyframe_value_field_rect(layout, editor)),
+            );
+        }
+        self.mark_picker_caret(layout)
+    }
+
+    pub(crate) fn handle_ime(&mut self, event: &winit::event::Ime) -> bool {
+        if let Some(editor) = &mut self.keyframe_value_editor {
+            editor.value.get_mut().handle_ime(event);
+            return true;
+        }
+        self.mark_picker.get_mut().handle_ime(event)
+    }
+
+    pub(crate) fn handle_edit_command(&mut self, command: NamedKey) -> bool {
+        if let Some(editor) = &mut self.keyframe_value_editor {
+            return editor.value.get_mut().handle_edit_command(command).handled;
+        }
+        self.mark_picker.get_mut().handle_edit_command(command)
+    }
+
+    pub(crate) fn overrides_keyframe_shortcut(
+        &self,
+        event: &KeyEvent,
+        modifiers: ModifiersState,
+    ) -> bool {
+        !self.selected_keyframes.is_empty()
+            && !modifiers.control_key()
+            && !modifiers.super_key()
+            && !modifiers.alt_key()
+            && matches!(
+                event.logical_key,
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+            )
+    }
+
     pub fn pointer_pressed(
         &mut self,
         snapshot: &LayoutSnapshot,
@@ -40,6 +83,11 @@ impl TimelineState {
                     return true;
                 }
                 if Self::keyframe_value_editor_rect(layout, editor).contains(point) {
+                    editor.value.borrow_mut().pointer_pressed(
+                        Self::keyframe_value_field_rect(layout, editor),
+                        point,
+                        modifiers,
+                    );
                     return true;
                 }
                 self.keyframe_value_editor = None;
@@ -134,10 +182,7 @@ impl TimelineState {
                 return true;
             }
             if layout.body.contains(point) {
-                if let Some((lane, time)) = self.keyframe_at(layout, point) {
-                    if !self.keyframe_is_selected(&lane, time) {
-                        self.select_keyframe(lane, time, false);
-                    }
+                if self.select_keyframe_hits(layout, point, false) {
                     self.context_menu = Some(ContextMenu {
                         stack,
                         point: [point[0] - layout.rect.x, point[1] - layout.rect.y],
@@ -391,13 +436,13 @@ impl TimelineState {
             self.drag = Some(Drag::KeyframeEase(easing));
             return true;
         }
-        if let Some((lane, key_time)) = self.keyframe_at(layout, point) {
-            self.select_keyframe(lane, key_time, modifiers.shift_key());
+        if self.select_keyframe_hits(layout, point, modifiers.shift_key()) {
             let points = self.begin_keyframe_drag(layout, point);
             if !points.is_empty() {
                 self.drag = Some(Drag::Keyframe {
                     points,
                     start: point,
+                    moved: false,
                 });
             }
             return true;
@@ -420,7 +465,7 @@ impl TimelineState {
                     },
                 )
             };
-            if !modifiers.shift_key() && !self.selected.contains(&id) {
+            if !modifiers.shift_key() {
                 self.selected_keyframes.clear();
             }
             if self.tool == TimelineTool::Razor {
@@ -554,6 +599,11 @@ impl TimelineState {
             return true;
         }
         self.cursor = point;
+        if let Some(editor) = &mut self.keyframe_value_editor
+            && editor.value.get_mut().pointer_moved(point)
+        {
+            return true;
+        }
         if let Some(layout) = self.focused_layout(snapshot)
             && self.mark_popup_moved(layout, point)
         {
@@ -820,9 +870,14 @@ impl TimelineState {
                     *pixels_per_second,
                 );
             }
-            Drag::Keyframe { points, start } => {
+            Drag::Keyframe {
+                points,
+                start,
+                moved,
+            } => {
                 let mut dx = point[0] - start[0];
                 let mut dy = point[1] - start[1];
+                *moved |= dx.abs().max(dy.abs()) >= CLIP_DRAG_THRESHOLD_PX;
                 let can_move_vertically = points.iter().any(|key| key.vertical);
 
                 if can_move_vertically && dx.abs().max(dy.abs()) >= CLIP_DRAG_THRESHOLD_PX {
@@ -835,7 +890,9 @@ impl TimelineState {
 
                 let delta_time = f64::from(dx) / f64::from(self.pixels_per_second);
                 let delta_y = can_move_vertically.then_some(dy);
-                self.move_keyframes(points, delta_time, delta_y, true);
+                if *moved {
+                    self.move_keyframes(points, delta_time, delta_y, true);
+                }
             }
             Drag::KeyframeEase(easing) => {
                 self.update_keyframe_easing_drag(layout, easing, point);
@@ -863,6 +920,12 @@ impl TimelineState {
         modifiers: ModifiersState,
         project: &Project,
     ) -> bool {
+        if button == MouseButton::Left
+            && let Some(editor) = &mut self.keyframe_value_editor
+            && editor.value.get_mut().pointer_released()
+        {
+            return true;
+        }
         if button == MouseButton::Left && self.mark_picker.get_mut().pointer_released() {
             return true;
         }
@@ -1259,6 +1322,39 @@ impl TimelineState {
         if self.keyframe_value_editor.is_none()
             && self.mixer_exact.is_none()
             && self.rename.is_none()
+            && !self.selected_keyframes.is_empty()
+        {
+            let command = modifiers.control_key() || modifiers.super_key();
+            match &event.logical_key {
+                Key::Named(NamedKey::Delete | NamedKey::Backspace) if !command => {
+                    self.pending_action = Some(TimelineAction::DeleteSelection);
+                    return true;
+                }
+                Key::Character(text) if command && text.eq_ignore_ascii_case("a") => {
+                    self.select_all_keyframes();
+                    return true;
+                }
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+                    if !command && !modifiers.alt_key() =>
+                {
+                    let frames = match (
+                        matches!(event.logical_key, Key::Named(NamedKey::ArrowLeft)),
+                        modifiers.shift_key(),
+                    ) {
+                        (true, true) => -10,
+                        (true, false) => -1,
+                        (false, true) => 10,
+                        (false, false) => 1,
+                    };
+                    self.nudge_keyframes(frames);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if self.keyframe_value_editor.is_none()
+            && self.mixer_exact.is_none()
+            && self.rename.is_none()
             && let Some(layout) = self.focused_layout(snapshot)
         {
             match event.logical_key {
@@ -1275,27 +1371,9 @@ impl TimelineState {
             match &event.logical_key {
                 Key::Named(NamedKey::Escape) => self.keyframe_value_editor = None,
                 Key::Named(NamedKey::Enter) => self.commit_keyframe_value_editor(),
-                Key::Named(NamedKey::Backspace) => {
-                    if let Some(editor) = &mut self.keyframe_value_editor {
-                        if editor.replace_on_input {
-                            editor.value.clear();
-                            editor.replace_on_input = false;
-                        } else {
-                            editor.value.pop();
-                        }
-                    }
-                }
                 _ => {
-                    if let Some(text) = event.text.as_deref().filter(|text| {
-                        text.chars()
-                            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))
-                    }) && let Some(editor) = &mut self.keyframe_value_editor
-                    {
-                        if editor.replace_on_input {
-                            editor.value.clear();
-                            editor.replace_on_input = false;
-                        }
-                        editor.value.push_str(text);
+                    if let Some(editor) = &mut self.keyframe_value_editor {
+                        editor.value.get_mut().handle_key(event, modifiers);
                     }
                 }
             }
@@ -1424,11 +1502,14 @@ impl TimelineState {
                 if let (Some(stack), Some(value)) =
                     (self.focused_stack, self.selected_keyframe_value())
                 {
+                    let mut value_editor =
+                        ui::components::TextEdit::single_line(format_keyframe_value(value));
+                    value_editor.set_focused(true);
+                    value_editor.select_all();
                     self.keyframe_value_editor = Some(KeyframeValueEditor {
                         stack,
                         point,
-                        value: format_keyframe_value(value),
-                        replace_on_input: true,
+                        value: std::cell::RefCell::new(value_editor),
                     });
                 }
             }
