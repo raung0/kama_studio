@@ -13,7 +13,7 @@ static-ffmpeg = ["ffmpeg-next/static"]
 
 [dependencies]
 anyhow = "1"
-asset-importer = { version = "0.8", features = ["static-link"] }
+asset-importer = { version = "0.9", features = ["static-link"] }
 arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
 ctrlc = "3"
 rust-embed = { version = "8", features = ["debug-embed", "interpolate-folder-path"] }
@@ -30,9 +30,9 @@ serde_json = "1"
 self_update = { version = "0.44", default-features = false, features = ["reqwest", "rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 toml = "1.1.4"
 image = "0.25.10"
-resvg = "0.48.1"
+resvg = "0.50.0"
 half = "2"
-base64 = "0.22"
+base64 = "0.23.1"
 ffmpeg-next = { version = "9.0.0", default-features = false, features = ["codec", "filter", "format", "software-resampling", "software-scaling"] }
 flate2 = "1"
 crc32fast = "1"
@@ -41,7 +41,7 @@ naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out"] }
 nucleo-matcher = "0.3.1"
 open = "5"
 cosmic-text = "0.19"
-rfd = "0.17.2"
+rfd = "0.18.0"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
@@ -62,7 +62,7 @@ libc = "0.2"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 
 [build-dependencies]
-resvg = "0.48.1"
+resvg = "0.50.0"
 winresource = "0.1"
 cc = "1"
 
