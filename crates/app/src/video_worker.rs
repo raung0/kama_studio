@@ -23,6 +23,7 @@ use crate::{
 
 const PROTOCOL: u16 = 2;
 const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+const GPU_PREVIEW_SURFACE_COUNT: usize = 3;
 
 fn deadline_after(duration: Duration) -> Instant {
     Instant::now()
@@ -232,6 +233,17 @@ enum Response {
     },
 }
 
+struct ReadyFrame {
+    generation: u64,
+    revision: u64,
+    seek_revision: u64,
+    playhead: f32,
+    pending: bool,
+    channel: Option<String>,
+    texture: wgpu::Texture,
+    source_geometry: HashMap<u32, SourceGeometry>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoWorkerStatus {
     Starting,
@@ -344,7 +356,9 @@ impl Process {
         let (response_tx, response_rx) = mpsc::sync_channel(66);
         let metrics = Arc::new(Mutex::new(None));
         let diagnostics = Arc::new(Mutex::new(VecDeque::new()));
-        let releases = Arc::new(Mutex::new(VecDeque::with_capacity(3)));
+        let releases = Arc::new(Mutex::new(VecDeque::with_capacity(
+            GPU_PREVIEW_SURFACE_COUNT,
+        )));
         let diagnostics_output = Arc::clone(&diagnostics);
         let diagnostics_reader = thread::Builder::new()
             .name(format!("kama-video-stderr-{pid}"))
@@ -716,7 +730,7 @@ fn write_requests(stdin: impl Write, requests: mpsc::Receiver<Request>) -> Resul
 fn queue_release(releases: &Arc<Mutex<VecDeque<String>>>, channel: String) {
     if let Ok(mut releases) = releases.lock()
         && !releases.contains(&channel)
-        && releases.len() < 3
+        && releases.len() < GPU_PREVIEW_SURFACE_COUNT
     {
         releases.push_back(channel);
     }
@@ -960,7 +974,7 @@ fn import_responses(
                     Ok(texture) => {
                         if let Some(channel) = &channel {
                             imported.insert(channel.clone(), texture.clone());
-                            while imported.len() > 3 {
+                            while imported.len() > GPU_PREVIEW_SURFACE_COUNT {
                                 let evict = imported
                                     .keys()
                                     .find(|candidate| **candidate != *channel)
@@ -1034,6 +1048,9 @@ pub struct VideoPlayback {
     source_geometry: HashMap<u32, SourceGeometry>,
     startup_deadline: Instant,
     request_started: Option<Instant>,
+    frame_latency: Option<f32>,
+    presented_playhead: Option<f32>,
+    ready_frames: VecDeque<ReadyFrame>,
     live_edit_revision: u64,
     last_live_snapshot: Option<Instant>,
     waiting_for_video: bool,
@@ -1087,6 +1104,9 @@ impl VideoPlayback {
             source_geometry: HashMap::new(),
             startup_deadline: deadline_after(Duration::from_secs(15)),
             request_started: None,
+            frame_latency: None,
+            presented_playhead: None,
+            ready_frames: VecDeque::new(),
             live_edit_revision: 0,
             last_live_snapshot: None,
             waiting_for_video: false,
@@ -1144,6 +1164,30 @@ impl VideoPlayback {
         self.transport_started
     }
 
+    pub(crate) fn preview_playhead(&self, timeline: &TimelineState, frame_rate: f64) -> f32 {
+        if !self.transport_started
+            || self.transport_key
+                != Some((
+                    timeline.seek_revision(),
+                    timeline.is_playing(),
+                    timeline.is_scrubbing(),
+                ))
+            || !timeline.is_playing()
+            || timeline.is_scrubbing()
+        {
+            return timeline.playhead();
+        }
+        timeline
+            .preview_playhead_after(
+                self.frame_latency
+                    .unwrap_or_else(|| frame_rate.max(1.0).recip() as f32),
+            )
+            .max(
+                self.presented_playhead
+                    .unwrap_or_else(|| timeline.playhead()),
+            )
+    }
+
     #[cfg(test)]
     fn unavailable(plugin_paths: &str, status: VideoWorkerStatus) -> Self {
         Self {
@@ -1164,6 +1208,9 @@ impl VideoPlayback {
             source_geometry: HashMap::new(),
             startup_deadline: Instant::now(),
             request_started: None,
+            frame_latency: None,
+            presented_playhead: None,
+            ready_frames: VecDeque::new(),
             live_edit_revision: 0,
             last_live_snapshot: None,
             waiting_for_video: false,
@@ -1210,11 +1257,12 @@ impl VideoPlayback {
         self.last_pid
     }
 
-    pub const fn is_waiting_for_video(&self) -> bool {
+    pub fn is_waiting_for_video(&self) -> bool {
         self.process.is_some()
             && (self.waiting_for_video
                 || self.request_pending
                 || self.pending.is_some()
+                || !self.ready_frames.is_empty()
                 || matches!(
                     self.status,
                     VideoWorkerStatus::Starting | VideoWorkerStatus::Restarting
@@ -1270,6 +1318,8 @@ impl VideoPlayback {
         self.capture_identity = None;
         self.capture_epoch = self.capture_epoch.wrapping_add(1);
         self.request_pending = false;
+        self.frame_latency = None;
+        self.presented_playhead = None;
         self.invalidate_pending = false;
         self.deferred_releases.clear();
         self.registry_id = shared_surface::metal_registry_id(device).ok();
@@ -1300,6 +1350,7 @@ impl VideoPlayback {
             process.stop();
         }
         self.texture = None;
+        self.ready_frames.clear();
         self.channel = None;
         self.pending = None;
         self.retry_pending = false;
@@ -1332,7 +1383,7 @@ impl VideoPlayback {
         preview_size: [u32; 2],
         render_scale: f32,
         vector_preview: bool,
-        render_cache: Option<&RenderCachePreview>,
+        render_cache: impl FnOnce(f32) -> Option<RenderCachePreview>,
         captured_frame: Option<([u32; 2], &[u8])>,
         live_editing: bool,
     ) -> Result<bool> {
@@ -1344,12 +1395,27 @@ impl VideoPlayback {
         if self.transport_key != transport_key {
             self.transport_started = false;
             self.transport_key = transport_key;
+            self.frame_latency = None;
+            self.presented_playhead = None;
         }
         let previous_status = self.status;
         self.readiness_revision = Some(revision);
         self.readiness_editing = live_editing;
+        self.scrubbing = timeline.is_scrubbing();
+        self.poll(renderer);
+        let mut preview_playhead =
+            self.preview_playhead(timeline, project.active_settings().frame_rate);
+        if timeline.is_playing() && !timeline.is_scrubbing() {
+            let fps = project.active_settings().frame_rate.max(1.0);
+            let frame_time = (f64::from(preview_playhead) * fps).floor() / fps;
+            preview_playhead = frame_time as f32;
+            if f64::from(preview_playhead) < frame_time {
+                preview_playhead = preview_playhead.next_up();
+            }
+        }
+        let render_cache = render_cache(preview_playhead);
         let frame =
-            (f64::from(timeline.playhead()) * project.active_settings().frame_rate.max(1.0)) as i64;
+            (f64::from(preview_playhead) * project.active_settings().frame_rate.max(1.0)) as i64;
         let capture_identity =
             captured_frame.map(|(size, pixels)| (pixels.as_ptr() as usize, pixels.len(), size));
         if capture_identity != self.capture_identity {
@@ -1362,7 +1428,7 @@ impl VideoPlayback {
         timeline.is_scrubbing().hash(&mut content_hasher);
         render_scale.to_bits().hash(&mut content_hasher);
         vector_preview.hash(&mut content_hasher);
-        if let Some(cache) = render_cache {
+        if let Some(cache) = &render_cache {
             cache.path.hash(&mut content_hasher);
             cache.generation.hash(&mut content_hasher);
         }
@@ -1386,8 +1452,6 @@ impl VideoPlayback {
         );
         self.generation =
             advance_processing_generation(self.key, key, self.generation, timeline.is_scrubbing());
-        self.scrubbing = timeline.is_scrubbing();
-        self.poll(renderer);
         if (live_editing || self.content_dirty)
             && !self.request_pending
             && (!live_editing
@@ -1408,6 +1472,7 @@ impl VideoPlayback {
         } else if !live_editing {
             self.last_live_snapshot = None;
         }
+        self.present_ready(renderer, timeline, key);
         if self.should_queue_snapshot(key) {
             let captured_frame = match (captured_frame, self.process.as_ref()) {
                 (Some((size, pixels)), Some(process)) => Some(process.cpu_surfaces.cache_capture(
@@ -1428,13 +1493,13 @@ impl VideoPlayback {
                 timeline: timeline.document(),
                 revision: key.0,
                 seek_revision: timeline.seek_revision(),
-                playhead: timeline.playhead(),
+                playhead: preview_playhead,
                 playing: timeline.is_playing(),
                 scrubbing: timeline.is_scrubbing(),
                 preview_size,
                 render_scale,
                 vector_preview,
-                render_cache: render_cache.cloned(),
+                render_cache,
                 captured_frame,
                 cpu_slots: Vec::new(),
                 force_cpu: false,
@@ -1455,13 +1520,20 @@ impl VideoPlayback {
             ));
         };
         let mut release_disconnected = false;
+        let mut releases_pending = false;
         if let Ok(mut releases) = process.releases.lock() {
             while let Some(channel) = releases.front().cloned() {
-                match process.requests.try_send(Request::Release { channel }) {
+                match process.requests.try_send(Request::Release {
+                    channel: channel.clone(),
+                }) {
                     Ok(()) => {
                         releases.pop_front();
+                        self.deferred_releases.retain(|pending| *pending != channel);
                     }
-                    Err(mpsc::TrySendError::Full(_)) => break,
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        releases_pending = true;
+                        break;
+                    }
                     Err(mpsc::TrySendError::Disconnected(_)) => {
                         release_disconnected = true;
                         break;
@@ -1487,7 +1559,20 @@ impl VideoPlayback {
                 Err(mpsc::TrySendError::Full(_)) => return Ok(false),
             }
         }
+        let held_surfaces = self
+            .deferred_releases
+            .len()
+            .saturating_add(usize::from(self.channel.is_some()))
+            .saturating_add(
+                self.ready_frames
+                    .iter()
+                    .filter(|frame| frame.channel.is_some())
+                    .count(),
+            );
         if !self.request_pending
+            && !releases_pending
+            && self.ready_frames.len() < GPU_PREVIEW_SURFACE_COUNT - 1
+            && held_surfaces < GPU_PREVIEW_SURFACE_COUNT
             && let Some((generation, mut snapshot)) = self.pending.take()
         {
             snapshot.cpu_slots = process.cpu_surfaces.prepare([
@@ -1527,11 +1612,130 @@ impl VideoPlayback {
         ))
     }
 
-    fn poll(&mut self, renderer: &mut kama_ui::Renderer) {
+    fn discard_frame(&self, frame: ReadyFrame) {
+        if let (Some(channel), Some(process)) = (frame.channel, self.process.as_ref()) {
+            queue_release(&process.releases, channel);
+        }
+    }
+
+    fn present_ready(
+        &mut self,
+        renderer: &mut kama_ui::Renderer,
+        timeline: &TimelineState,
+        key: (u64, u64, i64, [u32; 2]),
+    ) {
+        let scheduled = timeline.is_playing() && !timeline.is_scrubbing() && self.transport_started;
+        let mut selected: Option<ReadyFrame> = None;
+        let mut future = VecDeque::new();
+        while let Some(frame) = self.ready_frames.pop_front() {
+            if !frame_matches_current_request(
+                frame.generation,
+                frame.revision,
+                frame.seek_revision,
+                frame.playhead,
+                self.generation,
+                Some(key),
+                self.scrubbing,
+            ) || (scheduled
+                && self
+                    .presented_playhead
+                    .is_some_and(|previous| frame.playhead < previous))
+            {
+                self.discard_frame(frame);
+                continue;
+            }
+            if frame.pending && timeline.is_playing() && !timeline.is_scrubbing() {
+                self.waiting_for_video = true;
+                self.retry_pending = true;
+                self.discard_frame(frame);
+                continue;
+            }
+            if scheduled && frame.playhead > timeline.playhead() + 0.0005 {
+                future.push_back(frame);
+                continue;
+            }
+            if selected
+                .as_ref()
+                .is_some_and(|selected| selected.playhead > frame.playhead)
+            {
+                self.discard_frame(frame);
+            } else if let Some(previous) = selected.replace(frame) {
+                self.discard_frame(previous);
+            }
+        }
+        self.ready_frames = future;
+        let Some(frame) = selected else {
+            return;
+        };
+        let renderer_key = renderer.registration_id();
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let id = match self.texture_ids.get(&renderer_key).copied() {
+            Some(id) => renderer.replace_external_texture(id, view).map(|()| id),
+            None => renderer.register_external_texture(view),
+        };
+        let id = match id {
+            Ok(id) => id,
+            Err(error) => {
+                self.discard_frame(frame);
+                messages::error(
+                    "Video worker",
+                    format!("register preview texture: {error:#}"),
+                );
+                return;
+            }
+        };
+        self.texture_ids.insert(renderer_key, id);
+        self.active_renderer_key = Some(renderer_key);
+        let old_channel = std::mem::replace(&mut self.channel, frame.channel);
+        let old_texture = self.texture.replace(frame.texture);
+        self.source_geometry = frame.source_geometry;
+        self.waiting_for_video = frame.pending;
+        self.retry_pending = frame.pending;
+        if !frame.pending {
+            self.presented_playhead = Some(frame.playhead);
+            self.ready_transport = Some((
+                frame.seek_revision,
+                self.transport_key.is_some_and(|key| key.1),
+                self.transport_key.is_some_and(|key| key.2),
+                self.readiness_revision.unwrap_or_default(),
+            ));
+        }
+        if let Some(old_texture) = old_texture {
+            if let Some(channel) = &old_channel {
+                self.deferred_releases.push_back(channel.clone());
+            }
+            let releases = self
+                .process
+                .as_ref()
+                .map(|process| Arc::clone(&process.releases));
+            renderer.queue().on_submitted_work_done(move || {
+                drop(old_texture);
+                if let (Some(channel), Some(releases)) = (old_channel, releases) {
+                    queue_release(&releases, channel);
+                }
+            });
+        }
+    }
+
+    fn poll(&mut self, renderer: &kama_ui::Renderer) {
         let Some(process) = self.process.as_ref() else {
             return;
         };
         while let Ok(response) = process.responses.try_recv() {
+            if matches!(&response, Response::Frame { generation, seek_revision, pending: false, .. }
+                if *generation == self.generation
+                    && self.transport_key.is_some_and(|key| key.0 == *seek_revision))
+                && self.transport_started
+                && matches!(self.transport_key, Some((_, true, false)))
+                && let Some(started) = self.request_started
+            {
+                let sample = started.elapsed().as_secs_f32().min(0.250);
+                self.frame_latency = Some(self.frame_latency.map_or(sample, |previous| {
+                    (sample - previous).mul_add(0.25, previous)
+                }));
+            }
             match response {
                 Response::Ready { pid } => {
                     if self
@@ -1554,83 +1758,21 @@ impl VideoPlayback {
                     channel,
                     texture,
                     source_geometry,
-                } if frame_matches_current_request(
-                    generation,
-                    revision,
-                    seek_revision,
-                    playhead,
-                    self.generation,
-                    self.key,
-                    self.scrubbing,
-                ) =>
-                {
+                } => {
                     self.request_pending = false;
                     self.request_started = None;
                     self.inflight_capture = None;
                     self.retain_capture_files();
-                    let renderer_key = renderer.registration_id();
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    let id = match self.texture_ids.get(&renderer_key).copied() {
-                        Some(id) => renderer.replace_external_texture(id, view).map(|()| id),
-                        None => renderer.register_external_texture(view),
-                    };
-                    match id {
-                        Ok(id) => {
-                            self.texture_ids.insert(renderer_key, id);
-                            self.active_renderer_key = Some(renderer_key);
-                            let old_channel = std::mem::replace(&mut self.channel, channel);
-                            let old_texture = self.texture.replace(texture);
-                            self.source_geometry = source_geometry;
-                            self.waiting_for_video = pending;
-                            self.retry_pending = pending;
-                            if !pending {
-                                self.ready_transport = Some((
-                                    seek_revision,
-                                    self.transport_key.is_some_and(|key| key.1),
-                                    self.transport_key.is_some_and(|key| key.2),
-                                    self.readiness_revision.unwrap_or_default(),
-                                ));
-                            }
-                            self.status = match self.status {
-                                VideoWorkerStatus::Ready { pid } => {
-                                    VideoWorkerStatus::Ready { pid }
-                                }
-                                other => other,
-                            };
-                            if let Some(old_texture) = old_texture {
-                                let releases = self
-                                    .process
-                                    .as_ref()
-                                    .map(|process| Arc::clone(&process.releases));
-                                renderer.queue().on_submitted_work_done(move || {
-                                    drop(old_texture);
-                                    if let (Some(channel), Some(releases)) = (old_channel, releases)
-                                    {
-                                        queue_release(&releases, channel);
-                                    }
-                                });
-                            }
-                        }
-                        Err(error) => {
-                            if let (Some(process), Some(channel)) = (self.process.as_ref(), channel)
-                            {
-                                queue_release(&process.releases, channel);
-                            }
-                            messages::error(
-                                "Video worker",
-                                format!("register preview texture: {error:#}"),
-                            );
-                        }
-                    }
-                }
-                Response::Frame { channel, .. } => {
-                    self.request_pending = false;
-                    self.request_started = None;
-                    self.inflight_capture = None;
-                    self.retain_capture_files();
-                    if let (Some(channel), Some(process)) = (channel, self.process.as_ref()) {
-                        queue_release(&process.releases, channel);
-                    }
+                    self.ready_frames.push_back(ReadyFrame {
+                        generation,
+                        revision,
+                        seek_revision,
+                        playhead,
+                        pending,
+                        channel,
+                        texture,
+                        source_geometry,
+                    });
                 }
                 Response::Error(message) => {
                     self.request_pending = false;
@@ -1947,7 +2089,7 @@ pub fn run_video_worker() -> Result<()> {
                         surfaces
                             .get(&candidate)
                             .map(|surface| surface.texture().clone())
-                    } else if surfaces.len() < 2 {
+                    } else if surfaces.len() < GPU_PREVIEW_SURFACE_COUNT {
                         let allocation = if metal_registry_id.is_some() {
                             shared_surface::SharedSurface::allocate(
                                 &device,
@@ -1981,8 +2123,10 @@ pub fn run_video_worker() -> Result<()> {
                             }
                         }
                     } else {
-                        gpu_surface_error = Some("GPU preview surface slots are full".into());
-                        None
+                        write_response(&WireResponse::Error {
+                            message: "video frame slots are full".into(),
+                        })?;
+                        continue;
                     }
                 } else {
                     None
@@ -2038,25 +2182,37 @@ pub fn run_video_worker() -> Result<()> {
                     dimensions[0],
                     dimensions[1],
                 );
-                let render_result = frame_renderer.refresh_preview_on(
-                    &device,
-                    &queue,
-                    &project,
-                    &timeline,
-                    &effects,
-                    &plugins,
-                    snapshot.render_cache.as_ref(),
-                    [width.max(1), height.max(1)],
-                    snapshot.render_scale,
-                    snapshot.vector_preview,
-                    snapshot.scrubbing,
-                    captured_frame
-                        .as_ref()
-                        .map(|((capture_width, capture_height), pixels)| {
-                            ([*capture_width, *capture_height], pixels.as_slice())
-                        }),
-                    &output,
-                );
+                let decode_deadline = deadline_after(Duration::from_millis(250));
+                let render_result = loop {
+                    let result = frame_renderer.refresh_preview_on(
+                        &device,
+                        &queue,
+                        &project,
+                        &timeline,
+                        &effects,
+                        &plugins,
+                        snapshot.render_cache.as_ref(),
+                        [width.max(1), height.max(1)],
+                        snapshot.render_scale,
+                        snapshot.vector_preview,
+                        snapshot.scrubbing,
+                        captured_frame
+                            .as_ref()
+                            .map(|((capture_width, capture_height), pixels)| {
+                                ([*capture_width, *capture_height], pixels.as_slice())
+                            }),
+                        &output,
+                    );
+                    if result.is_err()
+                        || !snapshot.playing
+                        || snapshot.scrubbing
+                        || !frame_renderer.is_waiting_for_video()
+                        || Instant::now() >= decode_deadline
+                    {
+                        break result;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                };
                 let has_rendered = match render_result {
                     Ok(has_rendered) => has_rendered,
                     Err(error) => {
@@ -2069,7 +2225,11 @@ pub fn run_video_worker() -> Result<()> {
                         continue;
                     }
                 };
-                if !has_rendered {
+                if !has_rendered
+                    || (snapshot.playing
+                        && !snapshot.scrubbing
+                        && frame_renderer.is_waiting_for_video())
+                {
                     if let Some(channel) = channel {
                         free_surfaces.push_back(channel);
                     }

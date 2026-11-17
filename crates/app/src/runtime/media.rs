@@ -2864,10 +2864,7 @@ impl VideoDecoder {
             && preview_key.width == width
             && preview_key.height == height
         {
-            return (
-                Some(Arc::clone(preview)),
-                self.session.has_work() || retry_waiting,
-            );
+            return (Some(Arc::clone(preview)), true);
         }
 
         let held = self
@@ -2917,7 +2914,10 @@ impl VideoDecoder {
         } else {
             None
         };
-        (presented, self.session.has_work() || retry_waiting)
+        (
+            presented,
+            !interactive_scrub || self.session.has_work() || retry_waiting,
+        )
     }
 
     pub fn preload(

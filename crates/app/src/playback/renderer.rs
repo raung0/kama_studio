@@ -1266,6 +1266,7 @@ impl FrameRenderer {
             height,
             false,
         );
+        self.waiting_for_video |= pending;
         if let Some(frame) = frame {
             return Ok(Some(frame));
         }

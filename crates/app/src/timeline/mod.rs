@@ -2482,6 +2482,25 @@ impl TimelineState {
         self.playhead
     }
 
+    pub(crate) fn preview_playhead_after(&self, lead: f32) -> f32 {
+        if !self.playing || self.is_scrubbing() {
+            return self.playhead;
+        }
+        let mut target = self.playhead + lead.max(0.0);
+        let last_frame_before =
+            |end: f32| (end - self.frame_rate.max(1.0).recip()).max(self.playhead);
+        if let Some(end) = self.end_time {
+            target = target.min(last_frame_before(end));
+        }
+        if let Some((start, end)) = self.loop_range
+            && end > start
+            && self.playhead < end
+        {
+            target = target.min(last_frame_before(end));
+        }
+        target
+    }
+
     pub(crate) const fn seek_revision(&self) -> u64 {
         self.seek_revision
     }

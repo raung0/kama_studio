@@ -1644,15 +1644,7 @@ impl EditorApp {
             self.editor.project.active_composition,
             self.editor.project.active_settings().frame_rate,
         );
-        let render_cache_preview = (!render_editing && !self.monitor.vector_preview())
-            .then(|| {
-                self.render_panel.cached_preview(
-                    self.editor.timeline.playhead(),
-                    self.editor.project.active_settings().frame_rate,
-                    self.editor.project.active_composition,
-                )
-            })
-            .flatten();
+        let use_render_cache = !render_editing && !self.monitor.vector_preview();
         let preview_size = self.monitor.preview_render_size(&self.editor.project);
         self.monitor.sync_point_selection(
             &self.editor.timeline,
@@ -1666,6 +1658,9 @@ impl EditorApp {
         }
         let render_scale = self.monitor.preview_render_scale(&self.editor.project);
         let captured_preview = self.monitor.captured_preview();
+        let render_panel = &self.render_panel;
+        let frame_rate = self.editor.project.active_settings().frame_rate;
+        let composition = self.editor.project.active_composition;
         let video_failed = self.video.sync(
             &mut self.renderer,
             &self.editor.project,
@@ -1674,7 +1669,11 @@ impl EditorApp {
             preview_size,
             render_scale,
             self.monitor.vector_preview(),
-            render_cache_preview.as_ref(),
+            |playhead| {
+                use_render_cache
+                    .then(|| render_panel.cached_preview(playhead, frame_rate, composition))
+                    .flatten()
+            },
             captured_preview,
             render_editing,
         )?;
