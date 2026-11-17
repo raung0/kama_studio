@@ -202,3 +202,9 @@ command-timeline-delete-selection = 選択範囲を削除
 command-application-command-palette = コマンドパレット
 command-application-settings = 設定
 command-application-exit = Kama を終了
+
+monitor-vector-preview = ズームに応じたベクタープレビュー
+monitor-cache-preview = プレビューをキャッシュ
+settings-copy-marks-on-extraction = コンポジションの抽出時にマーカーをコピー
+timeline-custom-mark-color = カスタムカラー
+timeline-add-mark = マーカーを追加

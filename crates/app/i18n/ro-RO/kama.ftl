@@ -202,3 +202,9 @@ command-timeline-delete-selection = Șterge selecția
 command-application-command-palette = Paleta de comenzi
 command-application-settings = Setări
 command-application-exit = Ieșire din Kama
+
+monitor-vector-preview = Previzualizare vectorială adaptată la zoom
+monitor-cache-preview = Memorează previzualizarea în cache
+settings-copy-marks-on-extraction = Copiază marcajele la extragerea compoziției
+timeline-custom-mark-color = Culoare personalizată
+timeline-add-mark = Adaugă marcaj

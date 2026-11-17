@@ -205,3 +205,6 @@ command-timeline-delete-selection = Delete Selection
 command-application-command-palette = Command Palette
 command-application-settings = Settings
 command-application-exit = Exit Kama
+
+monitor-vector-preview = Zoom-aware vector preview
+monitor-cache-preview = Cache preview
