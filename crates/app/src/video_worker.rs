@@ -1286,7 +1286,7 @@ impl VideoPlayback {
                 self.last_pid = Some(process.pid);
                 self.process = Some(process);
                 self.status = VideoWorkerStatus::Restarting;
-                self.startup_deadline = deadline_after(Duration::from_secs(15));
+                self.startup_deadline = deadline_after(Duration::from_secs(5));
             }
             Err(error) => {
                 self.status = VideoWorkerStatus::StartupFailed;
@@ -1692,6 +1692,14 @@ impl VideoPlayback {
         });
         if let Some(detail) = exit_detail {
             self.fail_with_detail(VideoWorkerStatus::Crashed, &detail);
+        } else if matches!(self.status, VideoWorkerStatus::Restarting)
+            && Instant::now() >= self.startup_deadline
+        {
+            self.fail_with_detail(
+                VideoWorkerStatus::Unresponsive,
+                ": restart timed out; retrying",
+            );
+            self.restart(&renderer.device_handle(), &renderer.queue_handle());
         } else if (matches!(
             self.status,
             VideoWorkerStatus::Starting | VideoWorkerStatus::Restarting

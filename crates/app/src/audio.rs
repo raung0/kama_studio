@@ -1741,6 +1741,13 @@ impl AudioPlayback {
         if self.process.is_none() {
             return false;
         }
+        if matches!(self.status, AudioWorkerStatus::Restarting)
+            && Instant::now() >= self.startup_deadline
+        {
+            self.fail_worker("audio worker restart timed out; retrying".to_owned());
+            self.restart();
+            return true;
+        }
         let reason = match self.status {
             AudioWorkerStatus::Starting | AudioWorkerStatus::Restarting
                 if Instant::now() > self.startup_deadline =>
@@ -1839,7 +1846,7 @@ impl AudioPlayback {
                 }
                 self.process = Some(process);
                 self.status = AudioWorkerStatus::Restarting;
-                self.startup_deadline = deadline_after(Duration::from_secs(10));
+                self.startup_deadline = deadline_after(Duration::from_secs(5));
                 self.last_response_at = Instant::now();
                 self.transport_waiting_since = None;
                 self.crash_reported = false;

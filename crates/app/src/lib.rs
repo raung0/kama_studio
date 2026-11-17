@@ -4958,6 +4958,9 @@ impl EditorApp {
     }
 
     fn request_exit(&mut self) {
+        self.editor
+            .timeline
+            .set_worker_transport(self.editor.timeline.playhead(), false);
         self.request_discard_action(PendingDiscardAction::Exit);
     }
 
