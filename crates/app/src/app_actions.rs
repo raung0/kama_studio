@@ -98,6 +98,16 @@ impl EditorApp {
                 self.pipeline_graph.follow_selection();
                 self.open_panel(PanelKind::Pipeline);
             }
+            InspectorAction::OpenPluginEditor(node) => {
+                if let Some(pipeline) = self
+                    .editor
+                    .timeline
+                    .selected_pipeline()
+                    .and_then(|instance| instance.pipeline)
+                {
+                    self.audio.open_plugin_editor(pipeline, node);
+                }
+            }
         }
     }
 
@@ -849,8 +859,52 @@ impl EditorApp {
     }
 
     pub(super) fn sync_effect_runtime(&mut self) {
+        self.plugins.restore_native_metadata(&self.editor.project);
         self.effects.rebuild(&self.editor.project.pipelines);
         self.video.invalidate();
+    }
+
+    pub(super) fn apply_native_plugin_updates(&mut self) {
+        let updates = self.audio.take_plugin_updates();
+        if updates.is_empty() {
+            return;
+        }
+        let before = crate::history::HistorySnapshot::capture(
+            &self.editor.project,
+            &self.editor.timeline.document(),
+        );
+        for update in updates {
+            let Some(pipeline) = self.editor.project.pipeline_mut(update.pipeline) else {
+                continue;
+            };
+            let Some(node) = pipeline
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == update.node)
+            else {
+                continue;
+            };
+            for (input, value) in update.parameters {
+                if let Some(crate::effects::Binding::Constant(current)) =
+                    node.inputs.get_mut(&input)
+                {
+                    *current = crate::effects::GpuValue::F32(value);
+                }
+            }
+            if let Some(state) = update.state {
+                node.host_inputs.insert(
+                    crate::native_audio::STATE_INPUT.into(),
+                    crate::project::HostBinding::Constant(crate::project::HostValue::String(state)),
+                );
+            }
+        }
+        self.editor.history.record_after(
+            "Plugin editor",
+            &before,
+            &self.editor.project,
+            &self.editor.timeline.document(),
+            true,
+        );
     }
 
     pub(super) fn edit_shared_graph_input(
@@ -965,6 +1019,14 @@ impl EditorApp {
         let mut local_changed = false;
         match action {
             PipelineGraphAction::None => return,
+            PipelineGraphAction::OpenPluginEditor(target) => {
+                if let GraphNodeTarget::Shared(node) = target {
+                    if let Some(pipeline) = self.graph_pipeline() {
+                        self.audio.open_plugin_editor(pipeline, node);
+                    }
+                }
+                return;
+            }
             PipelineGraphAction::SelectPipeline(pipeline) => {
                 if let Some(pipeline) = pipeline {
                     self.pipeline_graph.open_pipeline(pipeline);

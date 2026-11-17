@@ -1942,12 +1942,18 @@ pub fn effect_menu_path(effect: &crate::plugin::EffectDefinition) -> Vec<String>
 }
 
 pub fn audio_effect_menu_path(effect: &crate::plugin::AudioEffectDefinition) -> Vec<String> {
+    if let Some(descriptor) = &effect.native {
+        return vec![descriptor.format.label().into()];
+    }
     let mut path = vec!["Audio Effects".into()];
     path.extend(category_menu_path(&effect.category));
     path
 }
 
 pub fn audio_effect_plugin_path(key: &str) -> Vec<String> {
+    if let Some(native) = key.strip_prefix("native.") {
+        return vec![native.split('.').next().unwrap_or("Audio Effects").into()];
+    }
     let plugin = key.split('.').next().unwrap_or("plugin");
     plugin_menu_path(plugin)
 }
@@ -2391,7 +2397,10 @@ pub fn palette_entries(
             for effect in plugins.audio_effects() {
                 entries.push(
                     palette_add(
-                        &effect.name,
+                        effect
+                            .native
+                            .as_ref()
+                            .map_or(effect.name.as_str(), |descriptor| descriptor.name.as_str()),
                         format!("{} {}", effect.description, effect.key),
                         audio_effect_menu_path(effect),
                         AppIcon::Audio,
@@ -2448,7 +2457,12 @@ pub fn palette_entries(
                 for effect in plugins.audio_effects() {
                     entries.push(
                         palette_add(
-                            &effect.name,
+                            effect
+                                .native
+                                .as_ref()
+                                .map_or(effect.name.as_str(), |descriptor| {
+                                    descriptor.name.as_str()
+                                }),
                             format!("{} {}", effect.description, effect.key),
                             audio_effect_menu_path(effect),
                             AppIcon::Audio,

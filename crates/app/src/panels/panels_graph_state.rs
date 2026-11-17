@@ -1,5 +1,5 @@
 use super::{
-    ANGLE_ROW_H, AppIcon, BUILTIN_GRADIENT_GENERATOR, Color, ColorButton, ComboBox,
+    ANGLE_ROW_H, AppIcon, BUILTIN_GRADIENT_GENERATOR, Button, Color, ColorButton, ComboBox,
     ContextMenuClick, ContextMenuItem, CursorShape, EnumControlsExt, FormatKey, GeneratorSource,
     GpuValue, GraphicEqBuild, Hash, HashMap, HashSet, IconId, Icons, Ime, InputType, Key, KeyEvent,
     ModifiersState, NamedKey, NumberControlsExt, NumberInput, NumberSettings, PipelineKind,
@@ -223,6 +223,7 @@ default_state! {
 #[derive(Clone, Debug)]
 pub enum PipelineGraphAction {
     None,
+    OpenPluginEditor(GraphNodeTarget),
     SelectPipeline(Option<u64>),
     Create,
     RemovePipeline(u64),
@@ -1273,6 +1274,14 @@ fn graph_card_height(card: &GraphCard, graph: GraphModel<'_>) -> f32 {
             (card.image_inputs.len().saturating_sub(1) as f32)
                 .mul_add(GRAPH_IMAGE_INPUT_H, GRAPH_CARD_BASE_H)
                 + property_height
+                + if graph
+                    .effect(card.kind)
+                    .is_some_and(|node| node.node_type.starts_with("native."))
+                {
+                    GRAPH_INPUT_H
+                } else {
+                    0.0
+                }
                 + card
                     .host_inputs
                     .iter()
@@ -1407,6 +1416,16 @@ fn graph_enable_button_rect(card: Rect) -> Rect {
         (header.height - size).mul_add(0.5, header.y),
         size,
         size,
+    )
+}
+
+fn graph_plugin_gui_rect(card: Rect) -> Rect {
+    let scale = graph_card_scale(card);
+    Rect::new(
+        8.0f32.mul_add(scale, card.x),
+        (GRAPH_INPUT_H + 8.0).mul_add(-scale, card.bottom()),
+        16.0f32.mul_add(-scale, card.width).max(1.0),
+        GRAPH_INPUT_H * scale,
     )
 }
 
@@ -3129,6 +3148,19 @@ impl PipelineGraphState {
                 });
             }
 
+            if graph
+                .effect(target)
+                .is_some_and(|node| node.node_type.starts_with("native."))
+            {
+                Button::build(
+                    ctx,
+                    FormatKey::new(format_args!("pipeline-plugin-gui-{index}")),
+                    graph_plugin_gui_rect(card_rect),
+                    "GUI",
+                    graph_style,
+                );
+            }
+
             match card.kind {
                 GraphNodeTarget::Output => {
                     let ty = visual_types.output(GraphNodeTarget::Output);
@@ -3927,6 +3959,13 @@ impl PipelineGraphState {
             };
             if card_rect.contains(point) {
                 let target = card.kind;
+                if graph
+                    .effect(target)
+                    .is_some_and(|node| node.node_type.starts_with("native."))
+                    && graph_plugin_gui_rect(card_rect).contains(point)
+                {
+                    return PipelineGraphAction::OpenPluginEditor(target);
+                }
                 if graph
                     .effect(target)
                     .is_some_and(|node| node.inputs.contains_key("enabled"))

@@ -36,6 +36,8 @@ struct PreferencesFile {
     keybinds: HashMap<String, Option<KeyBinding>>,
     #[serde(default)]
     plugin_paths: String,
+    #[serde(default)]
+    native_plugin_paths: crate::native_audio::SearchPaths,
     #[serde(default = "default_rounded_corners")]
     rounded_corners: bool,
     #[serde(default = "default_brightness")]
@@ -172,6 +174,7 @@ impl Default for PreferencesFile {
             light_accent: default_light_accent(),
             keybinds: HashMap::new(),
             plugin_paths: String::new(),
+            native_plugin_paths: crate::native_audio::SearchPaths::default(),
             rounded_corners: default_rounded_corners(),
             brightness: default_brightness(),
             accent_mixing: default_accent_mixing(),
@@ -192,6 +195,12 @@ pub fn load_plugin_paths() -> String {
     read_json::<PreferencesFile>(&path())
         .unwrap_or_default()
         .plugin_paths
+}
+
+pub fn load_native_plugin_paths() -> crate::native_audio::SearchPaths {
+    read_json::<PreferencesFile>(&path())
+        .unwrap_or_default()
+        .native_plugin_paths
 }
 
 pub fn load(registry: &mut CommandRegistry) {
@@ -243,6 +252,7 @@ pub fn save(registry: &CommandRegistry, plugin_paths: &str) {
             .map(|definition| (definition.id.clone(), definition.shortcut))
             .collect(),
         plugin_paths: plugin_paths.to_owned(),
+        native_plugin_paths: load_native_plugin_paths(),
         rounded_corners: kama_ui::rounded_corners_enabled(),
         brightness: theme::brightness(),
         accent_mixing: theme::accent_mixing(),
@@ -378,6 +388,7 @@ enum SettingEntry {
     RoundedCorners,
     HardwareDecoding,
     PluginPaths,
+    NativePluginPaths(usize),
 }
 
 fn filtered_settings(query: &str) -> Vec<SettingEntry> {
@@ -433,6 +444,22 @@ fn filtered_settings(query: &str) -> Vec<SettingEntry> {
         (
             SettingEntry::PluginPaths,
             "Plugin paths folders directories extensions search path",
+        ),
+        (
+            SettingEntry::NativePluginPaths(0),
+            "VST3 plugin paths directories scan search restart",
+        ),
+        (
+            SettingEntry::NativePluginPaths(1),
+            "VST2 plugin paths directories scan search restart",
+        ),
+        (
+            SettingEntry::NativePluginPaths(2),
+            "LV2 plugin paths directories scan search restart",
+        ),
+        (
+            SettingEntry::NativePluginPaths(3),
+            "CLAP plugin paths directories scan search restart",
         ),
     ];
     if query.trim().is_empty() {
@@ -582,6 +609,7 @@ pub struct SettingsDialog {
     reveal_strength: Slider,
     reveal_accent_mix: Slider,
     plugin_paths: TextEdit,
+    native_paths: [TextEdit; 4],
 }
 
 impl SettingsDialog {
@@ -614,10 +642,29 @@ impl SettingsDialog {
             reveal_strength: Slider::new(kama_ui::reveal_strength()),
             reveal_accent_mix: Slider::new(kama_ui::reveal_accent_mix()),
             plugin_paths: TextEdit::single_line(plugin_paths),
+            native_paths: {
+                let paths = load_native_plugin_paths();
+                crate::native_audio::Format::ALL
+                    .map(|format| TextEdit::single_line(paths.get(format)))
+            },
         }
     }
     pub(crate) fn plugin_paths(&self) -> &str {
         self.plugin_paths.text()
+    }
+
+    fn save_native_paths(&self) {
+        let mut preferences = read_json::<PreferencesFile>(&path()).unwrap_or_default();
+        let [vst3, vst2, lv2, clap] = &self.native_paths;
+        preferences.native_plugin_paths = crate::native_audio::SearchPaths {
+            vst3: vst3.text().into(),
+            vst2: vst2.text().into(),
+            lv2: lv2.text().into(),
+            clap: clap.text().into(),
+        };
+        if let Err(error) = atomic_write_json(&path(), &preferences) {
+            crate::messages::error("Plugin paths", format!("{error:#}"));
+        }
     }
     pub(crate) fn is_closed(&self) -> bool {
         self.search.closed && self.animation.finished(std::time::Instant::now())
@@ -634,6 +681,9 @@ impl SettingsDialog {
         self.reveal_strength.tick(dt);
         self.reveal_accent_mix.tick(dt);
         self.plugin_paths.tick(dt);
+        for editor in &mut self.native_paths {
+            editor.tick(dt);
+        }
     }
     pub(crate) fn is_animating(&self) -> bool {
         self.animation.is_animating()
@@ -648,6 +698,7 @@ impl SettingsDialog {
             || self.reveal_strength.is_animating()
             || self.reveal_accent_mix.is_animating()
             || self.plugin_paths.is_animating()
+            || self.native_paths.iter().any(TextEdit::is_animating)
     }
     pub(crate) fn restart_entry_animation(&mut self) {
         self.animation.restart();
@@ -779,6 +830,8 @@ impl SettingsDialog {
                                 crate::i18n::text(if hardware_decoding_enabled() { "settings-on" } else { "settings-off" }),
                             ),
                             SettingEntry::PluginPaths => (crate::i18n::text("settings-plugin-paths"), String::new()),
+                            SettingEntry::NativePluginPaths(index) => (
+                                crate::i18n::text_with_name("settings-native-plugin-paths", crate::native_audio::Format::ALL.get(index).map_or("Plugin", |format| format.label())), String::new()),
                         };
                         kama_ui::ui!(ctx, {
                             Rect(("settings-name", index), row.label) {
@@ -895,6 +948,11 @@ impl SettingsDialog {
                                     component_style(),
                                 );
                             }
+                            SettingEntry::NativePluginPaths(index) => {
+                                if let Some(editor) = self.native_paths.get_mut(index) {
+                                    editor.build(ctx, format!("settings-native-paths-{index}"), row.value, "folder;folder;…", component_style());
+                                }
+                            }
                         }
                     }
 
@@ -966,7 +1024,18 @@ impl SettingsDialog {
     }
 
     fn activate(&mut self, entry: SettingEntry) {
+        for editor in &mut self.native_paths {
+            editor.set_focused(false);
+        }
         match entry {
+            SettingEntry::NativePluginPaths(index) => {
+                self.search.query.set_focused(false);
+                self.plugin_paths.set_focused(false);
+                self.close_accent_pickers();
+                if let Some(editor) = self.native_paths.get_mut(index) {
+                    editor.set_focused(true);
+                }
+            }
             SettingEntry::CopyMarksOnExtraction => {
                 self.language_combo.close();
                 self.theme_combo.close();
@@ -1074,6 +1143,30 @@ impl SettingsDialog {
         let entries = filtered_settings(self.search.query.text());
         let language_options = crate::i18n::language_options();
         let layout = self.search.rects(rect, entries.len(), 0.57);
+        let native_hit = entries
+            .iter()
+            .zip(layout.items.iter())
+            .find_map(|(entry, row)| {
+                if let SettingEntry::NativePluginPaths(index) = entry {
+                    row.value.contains(point).then_some((*index, row.value))
+                } else {
+                    None
+                }
+            });
+        for (index, editor) in self.native_paths.iter_mut().enumerate() {
+            if native_hit.is_none_or(|(hit, _)| hit != index) {
+                editor.set_focused(false);
+            }
+        }
+        if let Some((index, value)) = native_hit {
+            self.plugin_paths.set_focused(false);
+            self.search.query.set_focused(false);
+            self.close_accent_pickers();
+            if let Some(editor) = self.native_paths.get_mut(index) {
+                editor.pointer_pressed(value, point, modifiers);
+            }
+            return true;
+        }
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::Language)
@@ -1358,6 +1451,11 @@ impl SettingsDialog {
         if self.plugin_paths.is_focused() {
             changed |= self.plugin_paths.pointer_moved(point);
         }
+        for editor in &mut self.native_paths {
+            if editor.is_focused() {
+                changed |= editor.pointer_moved(point);
+            }
+        }
         for entry in [SettingEntry::DarkAccent, SettingEntry::LightAccent] {
             let Some(index) = entries.iter().position(|candidate| *candidate == entry) else {
                 continue;
@@ -1379,8 +1477,13 @@ impl SettingsDialog {
         changed
     }
 
-    pub(crate) const fn pointer_released(&mut self) -> bool {
-        self.dark_accent.pointer_released()
+    pub(crate) fn pointer_released(&mut self) -> bool {
+        let native_changed = self
+            .native_paths
+            .iter_mut()
+            .fold(false, |changed, editor| editor.pointer_released() | changed);
+        native_changed
+            | self.dark_accent.pointer_released()
             | self.light_accent.pointer_released()
             | self.brightness.pointer_released()
             | self.accent_mixing.pointer_released()
@@ -1418,6 +1521,27 @@ impl SettingsDialog {
     }
 
     pub(crate) fn handle_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) -> bool {
+        if let Some(editor) = self
+            .native_paths
+            .iter_mut()
+            .find(|editor| editor.is_focused())
+        {
+            if matches!(
+                &event.logical_key,
+                Key::Named(NamedKey::Escape | NamedKey::Enter)
+            ) {
+                editor.set_focused(false);
+                self.search.query.set_focused(true);
+                self.save_native_paths();
+                return true;
+            }
+            let response = editor.handle_key(event, modifiers);
+            let (changed, handled) = (response.changed, response.handled);
+            if changed {
+                self.save_native_paths();
+            }
+            return handled;
+        }
         if event.state != ElementState::Pressed {
             return false;
         }
@@ -1582,6 +1706,18 @@ impl SettingsDialog {
     }
 
     pub(crate) fn handle_ime(&mut self, event: &Ime) -> bool {
+        if let Some(editor) = self
+            .native_paths
+            .iter_mut()
+            .find(|editor| editor.is_focused())
+        {
+            let response = editor.handle_ime(event);
+            let (changed, handled) = (response.changed, response.handled);
+            if changed {
+                self.save_native_paths();
+            }
+            return handled;
+        }
         if self.plugin_paths.is_focused() {
             return self.plugin_paths.handle_ime(event).handled;
         }
@@ -1610,6 +1746,14 @@ impl SettingsDialog {
     pub(crate) fn caret_rect(&self, _width: f32, _height: f32) -> Option<Rect> {
         let entries = filtered_settings(self.search.query.text());
         let layout = self.search.cached_rects()?;
+        for (index, editor) in self.native_paths.iter().enumerate() {
+            if editor.is_focused() {
+                let row = entries
+                    .iter()
+                    .position(|entry| *entry == SettingEntry::NativePluginPaths(index))?;
+                return Some(editor.caret_rect(layout.items.get(row)?.value));
+            }
+        }
         if let Some(index) = entries
             .iter()
             .position(|entry| *entry == SettingEntry::PluginPaths)

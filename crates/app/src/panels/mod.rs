@@ -584,6 +584,7 @@ pub enum InspectorAction {
     RemoveEffect(u64),
     MakeIndependent,
     OpenGraph,
+    OpenPluginEditor(u64),
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -2500,6 +2501,15 @@ impl InspectorState {
                             EffectControlRow::EmptyParameters => {
                                 value_row(ctx, properties, y, "Parameters", "None");
                             }
+                            EffectControlRow::PluginEditor { node } => {
+                                Button::build(
+                                    ctx,
+                                    format!("inspector-plugin-gui-{}", node.id),
+                                    row_hit(properties, y),
+                                    "GUI",
+                                    crate::widgets::component_style(),
+                                );
+                            }
                             EffectControlRow::EmptyPipeline => {
                                 value_row(ctx, body, y, "Effects", "No effects - use + Effect");
                             }
@@ -3778,6 +3788,7 @@ impl InspectorState {
             && self.controls_section.open_amount() > 0.98
         {
             enum EffectHit {
+                OpenPluginEditor(u64),
                 Move(u64, i32),
                 ToggleEnabled(u64),
                 ToggleKeyframe(u64),
@@ -3829,6 +3840,9 @@ impl InspectorState {
                                 node.id,
                                 keyframe_rect(properties, row_y).contains(point),
                             )),
+                            EffectControlRow::PluginEditor { node } => row_hit(properties, row_y)
+                                .contains(point)
+                                .then_some(EffectHit::OpenPluginEditor(node.id)),
                             EffectControlRow::Input { node, input } => {
                                 let target = PluginPropertyTarget::Pipeline {
                                     node: node.id,
@@ -3863,6 +3877,9 @@ impl InspectorState {
                 match hit {
                     EffectHit::Move(node, direction) => {
                         self.pending_action = Some(InspectorAction::MoveEffect(node, direction));
+                    }
+                    EffectHit::OpenPluginEditor(node) => {
+                        self.pending_action = Some(InspectorAction::OpenPluginEditor(node));
                     }
                     EffectHit::ToggleEnabled(node) => {
                         let enabled = timeline
@@ -4645,6 +4662,9 @@ const EFFECT_NODE_GAP: f32 = 7.0;
 const EFFECT_NODE_CONTENT_PAD: f32 = 10.0;
 
 enum EffectControlRow<'a> {
+    PluginEditor {
+        node: &'a crate::effects::EffectNode,
+    },
     Header {
         node: &'a crate::effects::EffectNode,
         body: Rect,
@@ -4705,6 +4725,11 @@ fn effect_body_rows<'a>(
 ) -> (Vec<(f32, EffectControlRow<'a>)>, f32) {
     let mut controls = Vec::new();
     let mut heights = Vec::new();
+
+    if node.node_type.starts_with("native.") {
+        controls.push(EffectControlRow::PluginEditor { node });
+        heights.push(ROW_H);
+    }
 
     if is_graphic_eq(plugins, &node.node_type) {
         if node.inputs.contains_key("band_count") {

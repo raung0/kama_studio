@@ -29,7 +29,7 @@ impl EditorApp {
         self.editor
             .timeline
             .ensure_composition_visual_pipelines(&self.plugins);
-        self.audio.clear();
+        self.audio.unload_plugins();
         self.media.clear_selection();
         self.waveform_textures.clear();
         self.editor.history.reset(

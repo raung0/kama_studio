@@ -1068,6 +1068,7 @@ pub enum NodeExecution {
     GeneratorGpu,
     GeneratorCpu,
     CpuWasm,
+    NativeAudio,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

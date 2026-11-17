@@ -1,5 +1,6 @@
 pub fn run(kind: &str) -> anyhow::Result<()> {
     match kind {
+        "plugin-scan" => crate::native_audio::run_scanner(),
         "audio" => crate::audio::run_audio_worker(),
         "media" => crate::media_worker::run(),
         "render" => crate::render::run_processing_worker(),
@@ -10,9 +11,9 @@ pub fn run(kind: &str) -> anyhow::Result<()> {
 
 pub fn is_processing_child() -> bool {
     std::env::args().any(|argument| {
-        argument
-            .strip_prefix("--kama-worker=")
-            .is_some_and(|kind| matches!(kind, "audio" | "media" | "render" | "video"))
+        argument.strip_prefix("--kama-worker=").is_some_and(|kind| {
+            matches!(kind, "audio" | "media" | "render" | "video" | "plugin-scan")
+        })
     }) || [
         "KAMA_AUDIO_WORKER_TEST_CHILD",
         "KAMA_MEDIA_WORKER_TEST_CHILD",

@@ -2808,6 +2808,7 @@ impl VideoGpuRuntime {
                     build_standalone_shader(node_type, plugins)
                 }
                 NodeExecution::CpuWasm
+                | NodeExecution::NativeAudio
                 | NodeExecution::GeneratorGpu
                 | NodeExecution::GeneratorCpu => {
                     bail!("non-GPU fragment reached GPU shader compiler")

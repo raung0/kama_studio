@@ -24,7 +24,7 @@ vfs = { version = "0.13", features = ["embedded-fs"] }
 kama-ui = { path = "../ui" }
 kama-editor-core = { path = "../editor-core" }
 pollster = "1.0.1"
-winit = { version = "0.30", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 self_update = { version = "0.44", default-features = false, features = ["reqwest", "rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
@@ -47,6 +47,14 @@ symphonia-core = "0.5.5"
 wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
 memmap2 = "0.9.11"
+manguebyte-host = { version = "0.2", default-features = false, features = ["clap", "vst3", "lv2"] }
+manguebyte-core = "0.2"
+manguebyte-dsp = "0.2"
+vst = { version = "0.4", features = ["disable_deprecation_warning"] }
+libloading = "0.9"
+oxrdf = "0.3"
+oxttl = "0.2"
+url = "2"
 ciborium = "0.2"
 wasmtime = "50.0.0"
 

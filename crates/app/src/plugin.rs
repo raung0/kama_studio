@@ -523,6 +523,7 @@ pub struct AudioEffectDefinition {
     pub entry: String,
     pub inputs: Vec<PluginInput>,
     pub view: Option<String>,
+    pub native: Option<crate::native_audio::Descriptor>,
 }
 
 impl AudioEffectDefinition {
@@ -531,7 +532,11 @@ impl AudioEffectDefinition {
             id: node_id,
             node_type: self.key.clone(),
 
-            execution: NodeExecution::SpatialGpu,
+            execution: if self.native.is_some() {
+                NodeExecution::NativeAudio
+            } else {
+                NodeExecution::SpatialGpu
+            },
             ui_position: None,
             image_inputs: BTreeMap::from([("audio".into(), ImageBinding::Disconnected)]),
             stack_input: Some("audio".into()),
@@ -553,6 +558,14 @@ impl AudioEffectDefinition {
             },
             host_inputs: {
                 let mut inputs = BTreeMap::new();
+                if let Some(descriptor) = &self.native {
+                    inputs.insert(
+                        crate::native_audio::DESCRIPTOR_INPUT.into(),
+                        HostBinding::Constant(HostValue::String(serde_json::to_string(
+                            descriptor,
+                        )?)),
+                    );
+                }
                 for input in &self.inputs {
                     if matches!(
                         input.ty,
@@ -671,6 +684,33 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
+    pub fn restore_native_metadata(&mut self, project: &crate::project::Project) {
+        for node in project
+            .pipelines
+            .iter()
+            .flat_map(|pipeline| &pipeline.nodes)
+        {
+            if self.audio_effects.contains_key(&node.node_type) {
+                continue;
+            }
+            let descriptor = node
+                .host_inputs
+                .get(crate::native_audio::DESCRIPTOR_INPUT)
+                .and_then(|binding| binding.evaluate(0.0))
+                .and_then(|value| match value {
+                    HostValue::String(value) => {
+                        serde_json::from_str::<crate::native_audio::Descriptor>(&value).ok()
+                    }
+                    _ => None,
+                });
+            if let Some(descriptor) = descriptor {
+                if descriptor.key() == node.node_type {
+                    self.audio_effects
+                        .insert(node.node_type.clone(), descriptor.definition());
+                }
+            }
+        }
+    }
     pub fn load_default(configured_paths: &str) -> Result<Self> {
         let mut registry = Self::default();
         let builtin_root = PathBuf::from(embedded_vfs::BUILTIN_PLUGIN_ROOT);
@@ -693,6 +733,16 @@ impl PluginRegistry {
             }
         }
         registry.validate_wasm();
+        if !std::env::args().any(|argument| argument == "--kama-worker=plugin-scan") {
+            for descriptor in
+                crate::native_audio::discover(&crate::preferences::load_native_plugin_paths())
+            {
+                let definition = descriptor.definition();
+                registry
+                    .audio_effects
+                    .insert(definition.key.clone(), definition);
+            }
+        }
         Ok(registry)
     }
 
@@ -892,6 +942,20 @@ impl PluginRegistry {
 
     pub fn audio_effects(&self) -> impl Iterator<Item = &AudioEffectDefinition> {
         sorted_definitions(self.audio_effects.values())
+    }
+
+    pub fn rescan_audio_plugins(&mut self) -> usize {
+        let descriptors =
+            crate::native_audio::rescan(&crate::preferences::load_native_plugin_paths());
+        self.audio_effects
+            .retain(|_, effect| effect.native.is_none());
+        let count = descriptors.len();
+        for descriptor in descriptors {
+            let definition = descriptor.definition();
+            self.audio_effects
+                .insert(definition.key.clone(), definition);
+        }
+        count
     }
 
     pub fn generator(&self, key: &str) -> Option<&GeneratorDefinition> {
@@ -1153,6 +1217,7 @@ impl PluginRegistry {
                     entry: effect.entry,
                     inputs,
                     view: effect.view,
+                    native: None,
                 },
             );
         }

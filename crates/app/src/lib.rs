@@ -69,6 +69,7 @@ mod messages;
 mod meters;
 mod model3d;
 mod monitor;
+mod native_audio;
 mod panels;
 mod playback;
 mod plugin;
@@ -1618,6 +1619,7 @@ impl EditorApp {
                 .set_worker_transport(self.editor.timeline.playhead(), false);
         }
         let clock_target = self.audio.take_clock_target();
+        self.apply_native_plugin_updates();
         if video_ready
             && self.audio.playback_ready(&self.editor.timeline)
             && let Some(target) = clock_target
@@ -5844,6 +5846,7 @@ impl EditorApp {
                 | PaletteAction::AddPanel(_, _)
                 | PaletteAction::RestartAudioWorker
                 | PaletteAction::RestartVideoWorker
+                | PaletteAction::RescanAudioPlugins
         );
         #[cfg(debug_assertions)]
         let records_history = records_history
@@ -5866,6 +5869,10 @@ impl EditorApp {
             PaletteAction::CrashVideoWorker => self.video.crash_for_test(),
             PaletteAction::RestartAudioWorker => self.restart_audio_worker(),
             PaletteAction::RestartVideoWorker => self.restart_video_worker(),
+            PaletteAction::RescanAudioPlugins => {
+                self.plugins.rescan_audio_plugins();
+                self.sync_effect_runtime();
+            }
             PaletteAction::NewProject => self.new_project(),
             PaletteAction::NewComposition => {
                 self.open_modal(Modal::Composition(NewCompositionDialog::new(

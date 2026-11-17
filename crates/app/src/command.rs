@@ -27,6 +27,7 @@ pub enum PaletteAction {
     CrashVideoWorker,
     RestartAudioWorker,
     RestartVideoWorker,
+    RescanAudioPlugins,
     NewProject,
     NewComposition,
     OpenProject,
@@ -704,6 +705,16 @@ impl CommandRegistry {
             None,
             None,
             EditorCommand::Action(PaletteAction::RestartAudioWorker),
+        );
+        registry.register_editor_command(
+            "audio.rescan-plugins",
+            crate::i18n::text("command-audio-rescan-plugins"),
+            Some(crate::i18n::text(
+                "command-audio-rescan-plugins-description",
+            )),
+            None,
+            None,
+            EditorCommand::Action(PaletteAction::RescanAudioPlugins),
         );
         #[cfg(debug_assertions)]
         registry.register_editor_command(

@@ -259,18 +259,65 @@ struct AudioEffectSettings {
     module: PathBuf,
     entry: String,
     parameters: Arc<HashMap<u32, HostValue>>,
+    native: Option<crate::native_audio::Descriptor>,
+    pipeline: u64,
+    node: u64,
+    state: Option<String>,
+    timeline_time: f64,
 }
 
 impl AudioEffectSettings {
     fn same_processor(&self, other: &Self) -> bool {
-        self.key == other.key && self.module == other.module && self.entry == other.entry
+        self.key == other.key
+            && self.module == other.module
+            && self.entry == other.entry
+            && self.pipeline == other.pipeline
+            && self.node == other.node
     }
 }
 
 struct AudioEffectChain {
-    processors: Vec<Option<AudioWasmProcessor>>,
+    processors: Vec<Option<AudioProcessor>>,
     channels: usize,
     sample_rate: u32,
+}
+
+enum AudioProcessor {
+    Wasm(AudioWasmProcessor),
+    Native(Box<crate::native_audio::NativeProcessor>),
+}
+
+impl AudioProcessor {
+    fn process(
+        &mut self,
+        samples: &mut [f32],
+        channels: usize,
+        sample_rate: u32,
+        parameters: &Arc<HashMap<u32, HostValue>>,
+        reset: bool,
+    ) -> Result<()> {
+        match self {
+            Self::Wasm(processor) => {
+                processor.process(samples, channels, sample_rate, parameters, reset)
+            }
+            Self::Native(processor) => processor.process(samples, channels, parameters),
+        }
+    }
+
+    fn reset(
+        &mut self,
+        channels: usize,
+        sample_rate: u32,
+        parameters: &Arc<HashMap<u32, HostValue>>,
+    ) -> Result<()> {
+        match self {
+            Self::Wasm(processor) => processor.reset(channels, sample_rate, parameters),
+            Self::Native(processor) => {
+                processor.reset();
+                Ok(())
+            }
+        }
+    }
 }
 
 impl AudioEffectChain {
@@ -285,8 +332,26 @@ impl AudioEffectChain {
         let processors = settings
             .iter()
             .map(|effect| {
-                let runtime = runtime.as_deref_mut()?;
-                match runtime.processor(&effect.module, &effect.entry, sample_capacity) {
+                let result = if let Some(descriptor) = &effect.native {
+                    crate::native_audio::NativeProcessor::new(
+                        descriptor,
+                        effect.pipeline,
+                        effect.node,
+                        effect.state.as_deref(),
+                        &effect.parameters,
+                        channels.max(1),
+                        sample_rate.max(1),
+                        AUDIO_BLOCK_FRAMES,
+                        false,
+                    )
+                    .map(|processor| AudioProcessor::Native(Box::new(processor)))
+                } else {
+                    runtime
+                        .as_deref_mut()?
+                        .processor(&effect.module, &effect.entry, sample_capacity)
+                        .map(AudioProcessor::Wasm)
+                };
+                match result {
                     Ok(processor) => Some(processor),
                     Err(error) => {
                         messages::error(
@@ -309,7 +374,7 @@ impl AudioEffectChain {
         &mut self,
         settings: &[AudioEffectSettings],
         operation: &'static str,
-        mut run: impl FnMut(&mut AudioWasmProcessor, &AudioEffectSettings) -> Result<()>,
+        mut run: impl FnMut(&mut AudioProcessor, &AudioEffectSettings) -> Result<()>,
     ) {
         for (slot, effect) in self.processors.iter_mut().zip(settings) {
             let failed = slot.as_mut().is_some_and(|processor| {
@@ -335,6 +400,9 @@ impl AudioEffectChain {
         let channels = self.channels;
         let sample_rate = self.sample_rate;
         self.apply(settings, "processing", |processor, effect| {
+            if let AudioProcessor::Native(processor) = processor {
+                processor.set_timeline_time(effect.timeline_time);
+            }
             processor.process(samples, channels, sample_rate, &effect.parameters, false)
         });
     }
@@ -588,7 +656,20 @@ fn audio_pipeline_settings(
                 }
                 continue;
             }
-            let Some(definition) = plugins.audio_effect(&node.node_type) else {
+            let recovered = node
+                .host_inputs
+                .get(crate::native_audio::DESCRIPTOR_INPUT)
+                .and_then(|binding| binding.evaluate(keyframe_time))
+                .and_then(|value| match value {
+                    HostValue::String(value) => {
+                        serde_json::from_str::<crate::native_audio::Descriptor>(&value).ok()
+                    }
+                    _ => None,
+                })
+                .filter(|descriptor| descriptor.key() == node.node_type)
+                .map(|descriptor| descriptor.definition());
+            let Some(definition) = plugins.audio_effect(&node.node_type).or(recovered.as_ref())
+            else {
                 continue;
             };
             let parameters = Arc::new(
@@ -617,6 +698,18 @@ fn audio_pipeline_settings(
                 module: definition.module.clone(),
                 entry: definition.entry.clone(),
                 parameters,
+                native: definition.native.clone(),
+                pipeline: pipeline.id,
+                node: node.id,
+                state: node
+                    .host_inputs
+                    .get(crate::native_audio::STATE_INPUT)
+                    .and_then(|binding| binding.evaluate(keyframe_time))
+                    .and_then(|value| match value {
+                        HostValue::String(value) => Some(value),
+                        _ => None,
+                    }),
+                timeline_time: keyframe_time,
             });
         }
         visiting.remove(&pipeline.id);
@@ -872,6 +965,16 @@ impl AudioEngine {
             let Some(voice) = self.voices.get_mut(&clip) else {
                 continue;
             };
+            for effect in &desired.effects {
+                if effect.native.is_some() {
+                    crate::native_audio::synchronize(
+                        effect.pipeline,
+                        effect.node,
+                        effect.state.as_deref(),
+                        &effect.parameters,
+                    );
+                }
+            }
             voice.track = desired.track;
             if voice.effects != desired.effects {
                 voice.effects.clone_from(&desired.effects);
@@ -1049,6 +1152,11 @@ enum AudioWorkerRequest {
         master_muted: bool,
     },
     Clear,
+    UnloadPlugins,
+    OpenPluginEditor {
+        pipeline: u64,
+        node: u64,
+    },
     Shutdown,
     #[cfg(debug_assertions)]
     Crash,
@@ -1057,6 +1165,13 @@ enum AudioWorkerRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AudioWorkerResponse {
+    Diagnostics {
+        entries: Vec<(bool, String, String)>,
+    },
+    PluginUpdates {
+        session: u64,
+        updates: Vec<crate::native_audio::Update>,
+    },
     Ready {
         protocol: u16,
         pid: u32,
@@ -1403,6 +1518,8 @@ fn is_test_harness_output(line: &str) -> bool {
     reason = "worker lifecycle and transport flags are independent protocol states"
 )]
 pub struct AudioPlayback {
+    plugin_updates: Vec<crate::native_audio::Update>,
+    plugin_session: u64,
     process: Option<AudioWorkerProcess>,
     last_pid: Option<u32>,
     plugin_paths: String,
@@ -1421,6 +1538,7 @@ pub struct AudioPlayback {
     playing: bool,
     pause_after_failure: bool,
     clear_pending: bool,
+    unload_plugins_pending: bool,
     transport_pending: bool,
     clock_playhead: f32,
     clock_lead: f32,
@@ -1459,6 +1577,8 @@ impl AudioPlayback {
         };
         let last_pid = process.as_ref().map(|process| process.pid);
         Self {
+            plugin_updates: Vec::new(),
+            plugin_session: 0,
             process,
             last_pid,
             plugin_paths: plugin_paths.to_owned(),
@@ -1477,6 +1597,7 @@ impl AudioPlayback {
             playing: false,
             pause_after_failure: false,
             clear_pending: false,
+            unload_plugins_pending: false,
             transport_pending: false,
             clock_playhead: 0.0,
             clock_lead: 0.0,
@@ -1514,6 +1635,11 @@ impl AudioPlayback {
         self.clear_pending = true;
         self.timeline_transport_key = None;
         self.transport_started = false;
+    }
+
+    pub fn unload_plugins(&mut self) {
+        self.clear();
+        self.unload_plugins_pending = true;
     }
 
     pub const fn set_master_muted(&mut self, muted: bool) {
@@ -1606,7 +1732,14 @@ impl AudioPlayback {
         }
         let mut invalid_ready = false;
         if let Some(process) = &self.process {
+            if self.unload_plugins_pending
+                && process.send(AudioWorkerRequest::UnloadPlugins).is_ok()
+            {
+                self.unload_plugins_pending = false;
+            }
             if self.clear_pending && process.send(AudioWorkerRequest::Clear).is_ok() {
+                self.plugin_session = self.plugin_session.wrapping_add(1);
+                self.plugin_updates.clear();
                 self.clear_pending = false;
             }
             #[cfg(debug_assertions)]
@@ -1656,6 +1789,11 @@ impl AudioPlayback {
             }
             while let Ok(response) = process.responses.try_recv() {
                 match response {
+                    AudioWorkerResponse::PluginUpdates { session, updates } => {
+                        if session == self.plugin_session {
+                            self.plugin_updates.extend(updates);
+                        }
+                    }
                     AudioWorkerResponse::State {
                         revision,
                         project_revision,
@@ -1705,6 +1843,15 @@ impl AudioPlayback {
                         self.last_response_at = Instant::now();
                         self.accepted_project_revision = Some(revision);
                         self.accepted_project_name = Some(project_name);
+                    }
+                    AudioWorkerResponse::Diagnostics { entries } => {
+                        for (is_error, source, message) in entries {
+                            if is_error {
+                                messages::error(source, message);
+                            } else {
+                                messages::warning(source, message);
+                            }
+                        }
                     }
                     AudioWorkerResponse::Error { message } => {
                         messages::error("Audio worker", message);
@@ -1785,6 +1932,21 @@ impl AudioPlayback {
                 true
             }
         }
+    }
+
+    pub fn open_plugin_editor(&mut self, pipeline: u64, node: u64) {
+        if let Some(process) = &mut self.process {
+            if process
+                .send(AudioWorkerRequest::OpenPluginEditor { pipeline, node })
+                .is_err()
+            {
+                messages::warning("Plugin editor", "Audio worker is busy; try again");
+            }
+        }
+    }
+
+    pub fn take_plugin_updates(&mut self) -> Vec<crate::native_audio::Update> {
+        std::mem::take(&mut self.plugin_updates)
     }
 
     fn check_health(&mut self) -> bool {
@@ -1878,6 +2040,8 @@ impl AudioPlayback {
     }
 
     fn start_worker(&mut self) {
+        self.plugin_session = 0;
+        self.plugin_updates.clear();
         match AudioWorkerProcess::spawn(&self.plugin_paths) {
             Ok(process) => {
                 self.last_pid = Some(process.pid);
@@ -1965,17 +2129,22 @@ impl AudioPlayback {
     }
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the stdin lock must remain held while reading subsequent worker requests"
-)]
 pub fn run_audio_worker() -> Result<()> {
-    let stdin = std::io::stdin();
+    let (requests, lines) = mpsc::sync_channel(64);
+    thread::Builder::new()
+        .name("audio-worker-input".into())
+        .spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                if requests.send(line).is_err() {
+                    break;
+                }
+            }
+        })?;
     let mut stdout = BufWriter::new(std::io::stdout().lock());
-    let mut lines = stdin.lock().lines();
     let hello = lines
-        .next()
-        .context("audio worker input closed before handshake")??;
+        .recv()
+        .context("audio worker input closed before handshake")?;
+    let hello = hello?;
     let request: AudioWorkerRequest = serde_json::from_str(&hello).context("invalid handshake")?;
     let AudioWorkerRequest::Hello {
         protocol,
@@ -2007,7 +2176,37 @@ pub fn run_audio_worker() -> Result<()> {
     let mut project_revision = None;
     let mut transport_revision = 0_u64;
     let mut transport_generation = 0_u64;
-    for line in lines {
+    let mut plugin_session = 0_u64;
+    loop {
+        crate::native_audio::pump();
+        let entries = messages::drain_for_worker()
+            .into_iter()
+            .map(|(severity, source, message)| {
+                (
+                    severity == messages::MessageSeverity::Error,
+                    source,
+                    message,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !entries.is_empty() {
+            write_audio_response(&mut stdout, &AudioWorkerResponse::Diagnostics { entries })?;
+        }
+        let updates = crate::native_audio::drain_updates();
+        if !updates.is_empty() {
+            write_audio_response(
+                &mut stdout,
+                &AudioWorkerResponse::PluginUpdates {
+                    session: plugin_session,
+                    updates,
+                },
+            )?;
+        }
+        let line = match lines.recv_timeout(Duration::from_millis(10)) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let line = line.context("read audio worker request")?;
         let request: AudioWorkerRequest = match serde_json::from_str(&line) {
             Ok(request) => request,
@@ -2022,6 +2221,70 @@ pub fn run_audio_worker() -> Result<()> {
             }
         };
         match request {
+            AudioWorkerRequest::OpenPluginEditor { pipeline, node } => {
+                let result = (|| -> Result<()> {
+                    let project = project.as_ref().context("no project loaded")?;
+                    let effect_pipeline = project.pipeline(pipeline).context("pipeline missing")?;
+                    let effect_node = effect_pipeline.node(node).context("node missing")?;
+                    let descriptor = plugins
+                        .audio_effect(&effect_node.node_type)
+                        .and_then(|definition| definition.native.clone())
+                        .or_else(|| {
+                            effect_node
+                                .host_inputs
+                                .get(crate::native_audio::DESCRIPTOR_INPUT)
+                                .and_then(|binding| binding.evaluate(0.0))
+                                .and_then(|value| match value {
+                                    HostValue::String(value) => serde_json::from_str(&value).ok(),
+                                    _ => None,
+                                })
+                        })
+                        .context("node is not a native plugin host")?;
+                    let time = f64::from(timeline.as_ref().map_or(0.0, TimelineState::playhead));
+                    let state = effect_node
+                        .host_inputs
+                        .get(crate::native_audio::STATE_INPUT)
+                        .and_then(|binding| binding.evaluate(time));
+                    let state = match &state {
+                        Some(HostValue::String(state)) => Some(state.as_str()),
+                        _ => None,
+                    };
+                    let mut values = ValueEvaluator::new(
+                        &effect_pipeline.value_nodes,
+                        ValueEvalContext {
+                            timeline_time: time,
+                            local_time: time,
+                            frame_index: 0,
+                            frame_rate: project.active_settings().frame_rate,
+                        },
+                    );
+                    let parameters = descriptor
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter| {
+                            let id = parameter.input_id();
+                            let value =
+                                resolved_node_input_cached(effect_node, None, &id, &mut values)?;
+                            Some((plugin_parameter_hash(&id), HostValue::Gpu(value)))
+                        })
+                        .collect();
+                    crate::native_audio::open_editor(
+                        pipeline,
+                        node,
+                        &descriptor,
+                        state,
+                        &parameters,
+                    )
+                })();
+                if let Err(error) = result {
+                    write_audio_response(
+                        &mut stdout,
+                        &AudioWorkerResponse::Error {
+                            message: format!("Plugin editor: {error:#}"),
+                        },
+                    )?;
+                }
+            }
             AudioWorkerRequest::Project { revision, snapshot } => {
                 if project_revision.is_some_and(|current| revision <= current) {
                     continue;
@@ -2037,6 +2300,7 @@ pub fn run_audio_worker() -> Result<()> {
                     continue;
                 }
                 let active_composition = restored.active_composition;
+                crate::native_audio::retain_project(&restored);
                 let project_name = restored.name.clone();
                 let mut restored_timeline = TimelineState::default();
                 restored_timeline.load_document(snapshot.timeline);
@@ -2114,6 +2378,7 @@ pub fn run_audio_worker() -> Result<()> {
                 )?;
             }
             AudioWorkerRequest::Clear => {
+                plugin_session = plugin_session.wrapping_add(1);
                 project = None;
                 timeline = None;
                 project_revision = None;
@@ -2121,7 +2386,12 @@ pub fn run_audio_worker() -> Result<()> {
                     engine.clear();
                 }
             }
+            AudioWorkerRequest::UnloadPlugins => crate::native_audio::clear(),
             AudioWorkerRequest::Shutdown => {
+                if let Some(engine) = &mut engine {
+                    engine.clear();
+                }
+                crate::native_audio::clear();
                 write_audio_response(&mut stdout, &AudioWorkerResponse::Stopped)?;
                 return Ok(());
             }
