@@ -176,6 +176,10 @@ monitor-capture-frame = Capturează cadrul în Media
 monitor-temporary-capture = Captură temporară de cadru
 monitor-show-capture = Afișează cadrul capturat
 messages-empty = Niciun avertisment sau eroare
+messages-copy-detailed = Copiază cu detalii
+messages-severity = Severitate
+messages-source = Sursă
+messages-occurrences = Apariții
 severity-warning = AVERTISMENT
 severity-error = EROARE
 

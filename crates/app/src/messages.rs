@@ -5,7 +5,14 @@ use std::{
 
 use kama_ui::{BuildCtx, Color, Rect, ScrollState, Size};
 
-use crate::{i18n, theme};
+use crate::{
+    assets::{AppIcon, Icons},
+    i18n, theme,
+    widgets::{
+        ContextMenuClick, ContextMenuItem, build_context_menu, context_menu_click,
+        context_menu_rect,
+    },
+};
 
 const MAX_MESSAGES: usize = 500;
 const ROW_HEIGHT: f32 = 46.0;
@@ -113,19 +120,108 @@ pub fn drain_for_worker() -> Vec<(MessageSeverity, String, String)> {
 #[derive(Default)]
 pub struct MessagesState {
     scroll: ScrollState,
+    context_menu: Option<MessageMenu>,
+    clipboard: Option<arboard::Clipboard>,
+}
+
+struct MessageMenu {
+    point: [f32; 2],
+    entry: MessageEntry,
+}
+
+fn copy_items(labels: &[String; 2]) -> [ContextMenuItem<'_, bool>; 2] {
+    [
+        ContextMenuItem::new(&labels[0], Some(AppIcon::Copy), false),
+        ContextMenuItem::new(&labels[1], Some(AppIcon::Copy), true),
+    ]
 }
 
 impl MessagesState {
+    pub fn close_context_menu(&mut self) -> bool {
+        self.context_menu.take().is_some()
+    }
+
+    pub fn pointer_right_pressed(&mut self, rect: Rect, point: [f32; 2]) {
+        self.context_menu = None;
+        if !rect.contains(point) {
+            return;
+        }
+        let local = [point[0] - rect.x, point[1] - rect.y];
+        for (index, entry) in snapshot().into_iter().rev().enumerate() {
+            let row = Rect::new(
+                PAD,
+                (index as f32).mul_add(ROW_HEIGHT, PAD - self.scroll.offset),
+                rect.width - 2.0 * PAD,
+                ROW_HEIGHT - 2.0,
+            );
+            if row.contains(local) {
+                self.context_menu = Some(MessageMenu {
+                    point: local,
+                    entry,
+                });
+                break;
+            }
+        }
+    }
+
+    pub fn pointer_pressed(&mut self, rect: Rect, point: [f32; 2]) -> bool {
+        let Some(menu) = self.context_menu.take() else {
+            return false;
+        };
+        let labels = [
+            i18n::text("command-edit-copy"),
+            i18n::text("messages-copy-detailed"),
+        ];
+        let items = copy_items(&labels);
+        let menu_rect = context_menu_rect(rect, menu.point, items.len());
+        if let ContextMenuClick::Action(detailed) = context_menu_click(menu_rect, point, &items) {
+            let text = if detailed {
+                format!(
+                    "{}: {}\n{}: {}\n{}: {}\n\n{}",
+                    i18n::text("messages-severity"),
+                    i18n::text(menu.entry.severity.label_key()),
+                    i18n::text("messages-source"),
+                    menu.entry.source,
+                    i18n::text("messages-occurrences"),
+                    menu.entry.repeats,
+                    menu.entry.message
+                )
+            } else {
+                menu.entry.message
+            };
+            if self.clipboard.is_none() {
+                match arboard::Clipboard::new() {
+                    Ok(clipboard) => self.clipboard = Some(clipboard),
+                    Err(error) => {
+                        self::error("Messages clipboard", error.to_string());
+                        return true;
+                    }
+                }
+            }
+            if let Some(clipboard) = &mut self.clipboard {
+                if let Err(error) = clipboard.set_text(text) {
+                    self::error("Messages clipboard", error.to_string());
+                }
+            }
+        }
+        menu_rect.contains(point)
+    }
+
     pub fn scroll(&mut self, rect: Rect, point: [f32; 2], delta: [f32; 2]) -> bool {
         if !rect.contains(point) {
             return false;
         }
         let content = PAD.mul_add(2.0, snapshot().len() as f32 * ROW_HEIGHT);
-        self.scroll
-            .scroll_by(-delta[1], (content - rect.height).max(0.0))
+        let scrolled = self
+            .scroll
+            .scroll_by(-delta[1], (content - rect.height).max(0.0));
+        if scrolled {
+            self.close_context_menu();
+        }
+        scrolled
     }
 
-    pub fn build(&self, ctx: &mut BuildCtx, _rect: Rect) {
+    pub fn build(&self, ctx: &mut BuildCtx, rect: Rect, cursor: [f32; 2], icons: &Icons) {
         let entries = snapshot();
         kama_ui::ui!(ctx, {
             Column {
@@ -200,5 +296,22 @@ impl MessagesState {
                 }
             }
         });
+        if let Some(menu) = &self.context_menu {
+            let labels = [
+                i18n::text("command-edit-copy"),
+                i18n::text("messages-copy-detailed"),
+            ];
+            let items = copy_items(&labels);
+            let bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
+            let menu_rect = context_menu_rect(bounds, menu.point, items.len());
+            build_context_menu(
+                ctx,
+                "messages",
+                menu_rect,
+                [cursor[0] - rect.x, cursor[1] - rect.y],
+                &items,
+                icons,
+            );
+        }
     }
 }

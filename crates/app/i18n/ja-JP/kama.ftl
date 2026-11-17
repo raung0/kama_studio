@@ -176,6 +176,10 @@ monitor-capture-frame = フレームをメディアにキャプチャ
 monitor-temporary-capture = 一時フレームキャプチャ
 monitor-show-capture = キャプチャしたフレームを表示
 messages-empty = 警告やエラーはありません
+messages-copy-detailed = 詳細をコピー
+messages-severity = 重要度
+messages-source = 発生元
+messages-occurrences = 発生回数
 severity-warning = 警告
 severity-error = エラー
 

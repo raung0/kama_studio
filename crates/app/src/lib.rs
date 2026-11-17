@@ -3322,6 +3322,9 @@ impl EditorApp {
         }
 
         let hovered_panel = self.focus_panel_at_cursor();
+        if !matches!(hovered_panel, Some((_, PanelKind::Messages))) {
+            self.messages.close_context_menu();
+        }
         if !matches!(hovered_panel, Some((_, PanelKind::Media))) {
             self.media.close_context_menu();
         }
@@ -3470,7 +3473,13 @@ impl EditorApp {
                     }
                 }
             }
-            Some((_, PanelKind::Meters | PanelKind::Messages)) => return,
+            Some((stack, PanelKind::Messages)) => {
+                if let Some(content) = self.panel_content(stack) {
+                    self.messages.pointer_pressed(content, self.cursor);
+                }
+                return;
+            }
+            Some((_, PanelKind::Meters)) => return,
             None => {}
         }
 
@@ -4178,6 +4187,11 @@ impl EditorApp {
             return;
         }
         if self.handle_modal_key(event) {
+            return;
+        }
+        if matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            && self.messages.close_context_menu()
+        {
             return;
         }
 
@@ -6438,7 +6452,7 @@ fn build_stack(
                                 widgets.build(ctx, stack.id, layout.content, &icons, popup_bounds);
                             }
                             PanelKind::Meters => meters.build(ctx, layout.content),
-                            PanelKind::Messages => messages.build(ctx, layout.content),
+                            PanelKind::Messages => messages.build(ctx, layout.content, cursor, &icons),
                         }
                     }
                 }
@@ -7112,6 +7126,9 @@ impl ApplicationHandler<AppEvent> for App {
                         if !matches!(hovered_panel, Some((_, PanelKind::Media))) {
                             editor_app.media.close_context_menu();
                         }
+                        if !matches!(hovered_panel, Some((_, PanelKind::Messages))) {
+                            editor_app.messages.close_context_menu();
+                        }
                         if !matches!(hovered_panel, Some((_, PanelKind::Inspector))) {
                             editor_app.inspector.close_context_menu();
                         }
@@ -7119,6 +7136,13 @@ impl ApplicationHandler<AppEvent> for App {
                             editor_app.monitor.dismiss_point_menu();
                         }
                         match hovered_panel {
+                            Some((stack, PanelKind::Messages)) => {
+                                if let Some(content) = editor_app.panel_content(stack) {
+                                    editor_app
+                                        .messages
+                                        .pointer_right_pressed(content, editor_app.cursor);
+                                }
+                            }
                             Some((stack, PanelKind::Monitor)) => {
                                 if let Some(content) = editor_app.panel_content(stack) {
                                     let graph_selection = editor_app

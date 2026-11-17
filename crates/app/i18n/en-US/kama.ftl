@@ -179,6 +179,10 @@ monitor-capture-frame = Capture frame to Media
 monitor-temporary-capture = Temporary frame capture
 monitor-show-capture = Show captured frame
 messages-empty = No warnings or errors
+messages-copy-detailed = Copy detailed
+messages-severity = Severity
+messages-source = Source
+messages-occurrences = Occurrences
 severity-warning = WARNING
 severity-error = ERROR
 
