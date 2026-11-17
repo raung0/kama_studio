@@ -479,7 +479,6 @@ fn sample_process_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<VideoR
         let mut fields = output_text.split_whitespace().map(str::to_owned);
         if let (Some(cpu), Some(rss)) = (fields.next(), fields.next())
             && let (Ok(cpu), Ok(rss)) = (cpu.parse::<f32>(), rss.parse::<u64>())
-            && let Ok(mut metrics) = output.lock()
         {
             #[cfg(target_os = "linux")]
             let (gpu, vram) = sample_linux_gpu_metrics(pid, &mut previous_gpu);
@@ -487,12 +486,14 @@ fn sample_process_metrics(pid: u32, output: &std::sync::Weak<Mutex<Option<VideoR
             let (gpu, vram) = sample_macos_gpu_metrics(pid, &mut previous_gpu);
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let (gpu, vram) = (None, None);
-            *metrics = Some(VideoResourceMetrics {
-                cpu,
-                ram: rss.saturating_mul(1024),
-                gpu,
-                vram,
-            });
+            if let Ok(mut metrics) = output.lock() {
+                *metrics = Some(VideoResourceMetrics {
+                    cpu,
+                    ram: rss.saturating_mul(1024),
+                    gpu,
+                    vram,
+                });
+            }
         }
         drop(output);
         thread::sleep(Duration::from_secs(1));
