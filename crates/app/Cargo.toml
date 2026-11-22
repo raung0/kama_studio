@@ -43,7 +43,7 @@ open = "5"
 cosmic-text = "0.19"
 rfd = "0.18.0"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
-symphonia-core = "0.5.5"
+symphonia-core = "0.6.1"
 wgpu = "30.0.1"
 bytemuck = { version = "1.16", features = ["derive"] }
 memmap2 = "0.9.11"
